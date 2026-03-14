@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ranklore | Own the Answer in AI Search</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .blue-glow {
+            background: radial-gradient(circle at 50% 50%, rgba(0, 102, 255, 0.08) 0%, rgba(255, 255, 255, 0) 70%);
+        }
+        .hero-border {
+            border: 1px solid rgba(0, 102, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-white text-slate-900 overflow-x-hidden">
+
+    <nav class="flex items-center justify-between px-8 py-6 max-w-7xl mx-auto">
+        <div class="text-2xl font-bold tracking-tight text-blue-600">rank<span class="text-slate-800">lore</span></div>
+        <div class="hidden md:flex space-x-8 text-sm font-medium text-slate-600">
+            <a href="#" class="hover:text-blue-600 transition">Features</a>
+            <a href="#" class="hover:text-blue-600 transition">Process</a>
+            <a href="#" class="hover:text-blue-600 transition">Pricing</a>
+        </div>
+        <div class="flex items-center space-x-4">
+            <a href="#" class="text-sm font-medium text-slate-600">Sign in</a>
+            <a href="#" class="bg-blue-600 text-white px-5 py-2 rounded-full text-sm font-semibold hover:bg-blue-700 transition shadow-lg shadow-blue-200">Get Started</a>
+        </div>
+    </nav>
+
+    <section class="relative pt-20 pb-32 px-4 blue-glow">
+        <div class="max-w-4xl mx-auto text-center">
+            <h1 class="text-5xl md:text-7xl font-bold tracking-tight leading-tight text-slate-900">
+                Know how your brand shows up in <span class="text-blue-600">AI Search.</span>
+            </h1>
+            <p class="mt-6 text-xl text-slate-500 max-w-2xl mx-auto">
+                Consumers are moving from Google to LLMs. Ranklore helps you monitor, protect, and optimize your brand’s "lore" across the AI landscape.
+            </p>
+
+            <div class="mt-12 relative max-w-2xl mx-auto">
+                <div class="bg-white rounded-2xl shadow-2xl p-4 hero-border flex items-center space-x-4 px-6 py-5">
+                    <span class="text-blue-500 text-xl">+</span>
+                    <input type="text" placeholder="Does Lumio Vision offer better value than..." class="w-full outline-none text-slate-700 bg-transparent italic" readonly>
+                    <div class="flex space-x-2">
+                        <div class="w-5 h-5 rounded-full border-2 border-slate-200"></div>
+                        <div class="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center">
+                            <div class="w-2 h-2 bg-blue-600 rounded-full"></div>
+                        </div>
+                    </div>
+                </div>
+                <p class="mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400">Be #1 in recommendations on</p>
+                
+                <div class="mt-4 flex justify-center items-center space-x-8 opacity-60 grayscale hover:grayscale-0 transition duration-500">
+                    <span class="font-bold text-lg">OpenAI</span>
+                    <span class="font-bold text-lg">Gemini</span>
+                    <span class="font-bold text-lg">Perplexity</span>
+                    <span class="font-bold text-lg">Claude</span>
+                </div>
+            </div>
+
+            <div class="mt-10">
+                <button class="bg-blue-600 text-white px-8 py-4 rounded-xl text-lg font-bold hover:bg-blue-700 transition transform hover:scale-105 shadow-xl shadow-blue-200">
+                    Get started for free &rarr;
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <section class="py-24 bg-slate-50">
+        <div class="max-w-7xl mx-auto px-8">
+            <div class="grid md:grid-cols-3 gap-12">
+                <div class="bg-white p-8 rounded-2xl hero-border">
+                    <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-6">
+                        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-slate-800">Share of Voice</h3>
+                    <p class="text-slate-500 leading-relaxed">Track how often your brand is cited as the primary recommendation compared to competitors.</p>
+                </div>
+
+                <div class="bg-white p-8 rounded-2xl hero-border border-blue-200 ring-2 ring-blue-50 ring-opacity-50">
+                    <div class="w-12 h-12 bg-blue-600 rounded-lg flex items-center justify-center mb-6">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-slate-800">Real-time Audits</h3>
+                    <p class="text-slate-500 leading-relaxed">Instantly see what AI models say about your latest product launches or press releases.</p>
+                </div>
+
+                <div class="bg-white p-8 rounded-2xl hero-border">
+                    <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-6">
+                        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-slate-800">Sentiment Protection</h3>
+                    <p class="text-slate-500 leading-relaxed">Identify and correct AI hallucinations or negative biases before they impact your sales funnel.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+<section class="py-24 bg-white">
+        <div class="max-w-7xl mx-auto px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-5xl font-bold text-slate-900 mb-4">Your brand's <span class="text-blue-600">AI footprint</span> at a glance.</h2>
+                <p class="text-slate-500 text-lg">Stop flying blind. See the actual data feeding the world's most powerful LLMs.</p>
+            </div>
+
+            <div class="bg-slate-50 rounded-3xl p-4 md:p-8 hero-border shadow-2xl relative">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                        <p class="text-xs font-bold text-slate-400 uppercase tracking-widest">Global Rank</p>
+                        <p class="text-3xl font-bold text-slate-800">#4 <span class="text-xs text-green-500">↑ 12%</span></p>
+                    </div>
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                        <p class="text-xs font-bold text-slate-400 uppercase tracking-widest">Sentiment Score</p>
+                        <p class="text-3xl font-bold text-slate-800">8.2<span class="text-sm text-slate-400 font-normal">/10</span></p>
+                    </div>
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 border-l-4 border-l-blue-600">
+                        <p class="text-xs font-bold text-slate-400 uppercase tracking-widest text-blue-600">Citations</p>
+                        <p class="text-3xl font-bold text-slate-800">1,240</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                        <p class="text-xs font-bold text-slate-400 uppercase tracking-widest">Risk Level</p>
+                        <p class="text-3xl font-bold text-orange-500 text-sm italic">Moderate</p>
+                    </div>
+                </div>
+
+                <div class="grid md:grid-cols-2 gap-8">
+                    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+                        <div class="flex items-center space-x-2 mb-4">
+                            <div class="w-3 h-3 bg-red-400 rounded-full"></div>
+                            <div class="w-3 h-3 bg-yellow-400 rounded-full"></div>
+                            <div class="w-3 h-3 bg-green-400 rounded-full"></div>
+                            <span class="text-xs text-slate-400 ml-2 font-mono italic">ranklore-query-v1.02</span>
+                        </div>
+                        <h4 class="text-sm font-bold text-slate-500 mb-2 italic">User Prompt:</h4>
+                        <p class="text-lg font-medium text-slate-800 border-l-2 border-blue-600 pl-4 py-2 bg-blue-50/30">
+                            "What are the most reliable smart TV brands available in India for 2026?"
+                        </p>
+                        
+                        <div class="mt-8">
+                            <h4 class="text-xs font-bold text-slate-400 mb-4 uppercase">Insight Extraction</h4>
+                            <div class="space-y-3">
+                                <div class="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                    <div class="bg-blue-600 h-full w-[75%]"></div>
+                                </div>
+                                <div class="flex justify-between text-xs font-medium">
+                                    <span>Brand Recommendation Probability</span>
+                                    <span class="text-blue-600">75%</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="bg-white p-4 rounded-xl shadow-sm border border-blue-100">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-xs font-bold text-slate-800">Perplexity</span>
+                                <span class="text-[10px] px-2 py-0.5 bg-green-100 text-green-700 rounded-full font-bold">ACCURATE</span>
+                            </div>
+                            <p class="text-sm text-slate-600 leading-relaxed">
+                                "The consensus points to <span class="bg-blue-100 text-blue-700 font-bold px-1 rounded">Lumio</span> as a top contender for value, specifically the Vision series..."
+                            </p>
+                        </div>
+                        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100 opacity-70">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-xs font-bold text-slate-800">ChatGPT-5</span>
+                                <span class="text-[10px] px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full font-bold">MISSED CITATION</span>
+                            </div>
+                            <p class="text-sm text-slate-600 leading-relaxed">
+                                "While brands like Sony and Samsung dominate, newer entrants focus on..."
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="absolute -bottom-6 -right-6 hidden lg:block">
+                    <div class="bg-blue-600 text-white p-6 rounded-2xl shadow-2xl rotate-3">
+                        <p class="text-2xl font-bold">98.2%</p>
+                        <p class="text-[10px] uppercase tracking-tighter">AI Accuracy Score</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+    <section class="py-24 bg-slate-50">
+        <div class="max-w-7xl mx-auto px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-4xl font-bold text-slate-900">Simple, transparent pricing.</h2>
+                <p class="mt-4 text-slate-500">Choose the plan that fits your brand's scale.</p>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
+                <div class="bg-white p-8 rounded-3xl border border-slate-200 flex flex-col">
+                    <h3 class="text-lg font-bold text-slate-800">Starter</h3>
+                    <div class="mt-4 flex items-baseline">
+                        <span class="text-4xl font-bold text-slate-900">$49</span>
+                        <span class="ml-1 text-slate-400">/mo</span>
+                    </div>
+                    <ul class="mt-8 space-y-4 text-sm text-slate-600 flex-grow">
+                        <li class="flex items-center"><span class="text-blue-500 mr-2">✓</span> Track 5 Keywords</li>
+                        <li class="flex items-center"><span class="text-blue-500 mr-2">✓</span> Weekly AI Audits</li>
+                        <li class="flex items-center"><span class="text-blue-500 mr-2">✓</span> 3 Core LLMs</li>
+                    </ul>
+                    <button class="mt-8 w-full py-3 rounded-xl border border-blue-600 text-blue-600 font-bold hover:bg-blue-50 transition">Get Started</button>
+                </div>
+
+                <div class="bg-white p-8 rounded-3xl border-2 border-blue-600 shadow-2xl shadow-blue-100 flex flex-col relative transform scale-105 z-10">
+                    <div class="absolute top-0 right-8 -translate-y-1/2 bg-blue-600 text-white text-[10px] font-bold px-3 py-1 rounded-full tracking-widest uppercase">Most Popular</div>
+                    <h3 class="text-lg font-bold text-slate-800">Professional</h3>
+                    <div class="mt-4 flex items-baseline">
+                        <span class="text-4xl font-bold text-slate-900">$199</span>
+                        <span class="ml-1 text-slate-400">/mo</span>
+                    </div>
+                    <ul class="mt-8 space-y-4 text-sm text-slate-600 flex-grow">
+                        <li class="flex items-center font-semibold text-slate-800"><span class="text-blue-500 mr-2">✓</span> Track 50 Keywords</li>
+                        <li class="flex items-center"><span class="text-blue-500 mr-2">✓</span> Daily AI Audits</li>
+                        <li class="flex items-center"><span class="text-blue-500 mr-2">✓</span> All LLMs (incl. Custom)</li>
+                        <li class="flex items-center"><span class="text-blue-500 mr-2">✓</span> Competitor Benchmarking</li>
+                    </ul>
+                    <button class="mt-8 w-full py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-700 transition">Start 7-day Trial</button>
+                </div>
+
+                <div class="bg-white p-8 rounded-3xl border border-slate-200 flex flex-col">
+                    <h3 class="text-lg font-bold text-slate-800">Enterprise</h3>
+                    <div class="mt-4 flex items-baseline">
+                        <span class="text-4xl font-bold text-slate-900">Custom</span>
+                    </div>
+                    <ul class="mt-8 space-y-4 text-sm text-slate-600 flex-grow">
+                        <li class="flex items-center"><span class="text-blue-500 mr-2">✓</span> Unlimited Tracking</li>
+                        <li class="flex items-center"><span class="text-blue-500 mr-2">✓</span> API Access</li>
+                        <li class="flex items-center"><span class="text-blue-500 mr-2">✓</span> Dedicated Account Manager</li>
+                    </ul>
+                    <button class="mt-8 w-full py-3 rounded-xl border border-slate-300 text-slate-600 font-bold hover:bg-slate-50 transition">Contact Sales</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="py-24 bg-blue-600 text-center relative overflow-hidden">
+        <div class="absolute top-0 left-0 w-64 h-64 bg-white/10 rounded-full -translate-x-1/2 -translate-y-1/2"></div>
+        <div class="absolute bottom-0 right-0 w-96 h-96 bg-blue-400/20 rounded-full translate-x-1/3 translate-y-1/3"></div>
+
+        <div class="relative z-10 max-w-4xl mx-auto px-8">
+            <h2 class="text-4xl md:text-5xl font-bold text-white mb-6">Stop letting AI hallucinate about your brand.</h2>
+            <p class="text-blue-100 text-xl mb-10 max-w-2xl mx-auto">Join 500+ marketing teams using Ranklore to dominate the generative search era.</p>
+            <div class="flex flex-col sm:flex-row justify-center items-center space-y-4 sm:space-y-0 sm:space-x-4">
+                <input type="email" placeholder="Enter your work email" class="w-full sm:w-80 px-6 py-4 rounded-xl outline-none text-slate-900 focus:ring-4 focus:ring-blue-400 transition">
+                <button class="w-full sm:w-auto px-10 py-4 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition shadow-xl">Analyze My Brand</button>
+            </div>
+            <p class="mt-6 text-blue-200 text-sm italic">No credit card required • 5-minute setup</p>
+        </div>
+    </section>
+
+    
+    <section class="py-24 bg-white">
+        <div class="max-w-3xl mx-auto px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl font-bold text-slate-900">Common Questions</h2>
+                <p class="mt-4 text-slate-500 font-medium">Everything you need to know about the new era of search.</p>
+            </div>
+
+            <div class="space-y-4">
+                <div class="group border border-slate-200 rounded-2xl overflow-hidden hover:border-blue-300 transition-colors">
+                    <div class="p-6 cursor-pointer flex justify-between items-center bg-white group-hover:bg-blue-50/30">
+                        <h3 class="font-bold text-slate-800">How does Ranklore "read" AI responses?</h3>
+                        <span class="text-blue-600 font-bold text-xl group-hover:rotate-90 transition-transform">+</span>
+                    </div>
+                    <div class="px-6 pb-6 text-slate-500 text-sm leading-relaxed">
+                        We use a proprietary network of API nodes to query LLMs (ChatGPT, Gemini, Claude, etc.) at scale. We simulate thousands of natural language prompts to see exactly how your brand is being described and cited in real-time.
+                    </div>
+                </div>
+
+                <div class="group border border-slate-200 rounded-2xl overflow-hidden hover:border-blue-300 transition-colors">
+                    <div class="p-6 cursor-pointer flex justify-between items-center bg-white group-hover:bg-blue-50/30">
+                        <h3 class="font-bold text-slate-800">Can you actually influence what an AI says?</h3>
+                        <span class="text-blue-600 font-bold text-xl group-hover:rotate-90 transition-transform">+</span>
+                    </div>
+                    <div class="px-6 pb-6 text-slate-500 text-sm leading-relaxed">
+                        Yes. While you can't "pay for ads" inside a chat, you can optimize the data sources these models rely on. Ranklore identifies which of your pages are being indexed (or ignored) and provides a roadmap for content updates that AI models prioritize.
+                    </div>
+                </div>
+
+                <div class="group border border-slate-200 rounded-2xl overflow-hidden hover:border-blue-300 transition-colors">
+                    <div class="p-6 cursor-pointer flex justify-between items-center bg-white group-hover:bg-blue-50/30">
+                        <h3 class="font-bold text-slate-800">Is this different from traditional SEO?</h3>
+                        <span class="text-blue-600 font-bold text-xl group-hover:rotate-90 transition-transform">+</span>
+                    </div>
+                    <div class="px-6 pb-6 text-slate-500 text-sm leading-relaxed">
+                        Absolutely. Traditional SEO focuses on keywords and backlinks for a blue-link result. **Generative Engine Optimization (GEO)** focuses on context, attribution, and being the "cited source" within a generated paragraph.
+                    </div>
+                </div>
+
+                <div class="group border border-slate-200 rounded-2xl overflow-hidden hover:border-blue-300 transition-colors">
+                    <div class="p-6 cursor-pointer flex justify-between items-center bg-white group-hover:bg-blue-50/30">
+                        <h3 class="font-bold text-slate-800">How often is the data updated?</h3>
+                        <span class="text-blue-600 font-bold text-xl group-hover:rotate-90 transition-transform">+</span>
+                    </div>
+                    <div class="px-6 pb-6 text-slate-500 text-sm leading-relaxed">
+                        Depending on your plan, we scan the AI landscape daily or weekly. Because models like Perplexity and Gemini have "live" web access, your brand's narrative can change in hours. We make sure you're the first to know.
+                    </div>
+                </div>
+            </div>
+            
+            <div class="mt-12 text-center">
+                <p class="text-slate-400 text-sm">Have more specific questions? <a href="#" class="text-blue-600 font-semibold underline decoration-blue-200 hover:decoration-blue-600">Chat with our team.</a></p>
+            </div>
+        </div>
+    </section>
+    <section id="features" class="py-24 bg-white">
+    <div class="max-w-7xl mx-auto px-8">
+        
+        <div class="mb-16">
+            <h2 class="text-blue-600 font-bold tracking-widest uppercase text-sm mb-4">Precision Engineering</h2>
+            <p class="text-4xl md:text-5xl font-bold text-slate-900 max-w-3xl leading-tight">
+                Everything you need to dominate the <span class="text-slate-400">Generative Era.</span>
+            </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-6">
+            
+            <div class="md:col-span-8 bg-slate-50 rounded-[2rem] p-10 border border-slate-100 hover:shadow-2xl hover:shadow-blue-100 transition duration-500 overflow-hidden relative group">
+                <div class="relative z-10">
+                    <span class="bg-blue-600 text-white text-[10px] px-3 py-1 rounded-full font-bold uppercase tracking-widest">Real-Time Metric</span>
+                    <h3 class="text-3xl font-bold mt-6 text-slate-900">AI Share of Voice (aSoV)</h3>
+                    <p class="text-slate-500 mt-4 max-w-md text-lg leading-relaxed">
+                        Quantify exactly how often your brand is recommended across ChatGPT, Claude, and Perplexity compared to your top 5 competitors.
+                    </p>
+                </div>
+                <div class="absolute bottom-0 right-0 w-1/2 h-48 bg-gradient-to-t from-blue-100/50 to-transparent translate-y-12 translate-x-12 rounded-full blur-3xl group-hover:bg-blue-200 transition"></div>
+            </div>
+
+            <div class="md:col-span-4 bg-white rounded-[2rem] p-10 border border-blue-100 hover:border-blue-400 transition duration-500">
+                <div class="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
+                    <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.828a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
+                </div>
+                <h3 class="text-xl font-bold text-slate-900">Source Attribution</h3>
+                <p class="text-slate-500 mt-2">Track which specific URLs the AI is citing. Ensure your high-converting pages are the primary sources.</p>
+            </div>
+
+            <div class="md:col-span-4 bg-white rounded-[2rem] p-10 border border-slate-100 hover:border-blue-400 transition duration-500">
+                <div class="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
+                    <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0L4 10.172a4 4 0 115.656-5.656l1.102 1.101m-.758 4.828a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
+                </div>
+                <h3 class="text-xl font-bold text-slate-900">Sentiment Shield</h3>
+                <p class="text-slate-500 mt-2">AI can be biased. We alert you the second an LLM starts associating your brand with negative sentiment or outdated info.</p>
+            </div>
+
+            <div class="md:col-span-8 bg-slate-900 rounded-[2rem] p-10 text-white relative overflow-hidden group">
+                <div class="relative z-10 flex flex-col h-full justify-between">
+                    <div>
+                        <h3 class="text-3xl font-bold">Hallucination Detection</h3>
+                        <p class="text-slate-400 mt-4 max-w-lg text-lg leading-relaxed">
+                            Stop AI from making up "facts" about your products. Ranklore identifies when a model hallucinates specs or pricing and gives you the content fix to correct it.
+                        </p>
+                    </div>
+                    <div class="mt-8">
+                        <span class="text-blue-400 font-mono text-sm tracking-tighter">Status: Active Monitoring...</span>
+                    </div>
+                </div>
+                <div class="absolute -right-20 -bottom-20 w-64 h-64 bg-blue-600/20 rounded-full blur-[80px]"></div>
+            </div>
+
+        </div>
+    </div>
+</section>
+
+    
+    <!-- How it Works -->
+    <section class="py-24 bg-white">
+        <div class="max-w-7xl mx-auto px-8">
+            <div class="mb-16 text-center">
+                <h2 class="text-3xl md:text-5xl font-bold text-slate-900 mb-4">How it <span class="text-blue-600">works.</span></h2>
+                <p class="text-slate-500 text-lg">Three simple steps to control your brand narrative.</p>
+            </div>
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="group relative bg-slate-50 p-8 rounded-3xl border border-slate-100 hover:border-blue-200 transition-colors">
+                    <div class="absolute top-0 right-0 -mt-6 -mr-6 w-24 h-24 bg-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-xl">
+                        <span class="text-4xl font-bold text-blue-100">1</span>
+                    </div>
+                    <div class="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mb-6">
+                        <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-slate-800">Scan</h3>
+                    <p class="text-slate-500">We query thousands of AI engines to map your current brand narrative across the web.</p>
+                </div>
+                <div class="group relative bg-slate-50 p-8 rounded-3xl border border-slate-100 hover:border-blue-200 transition-colors">
+                    <div class="absolute top-0 right-0 -mt-6 -mr-6 w-24 h-24 bg-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-xl">
+                        <span class="text-4xl font-bold text-blue-100">2</span>
+                    </div>
+                    <div class="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mb-6">
+                        <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-slate-800">Analyze</h3>
+                    <p class="text-slate-500">Our proprietary engine detects sentiment, hallucinations, and Share of Voice metrics.</p>
+                </div>
+                <div class="group relative bg-slate-50 p-8 rounded-3xl border border-slate-100 hover:border-blue-200 transition-colors">
+                    <div class="absolute top-0 right-0 -mt-6 -mr-6 w-24 h-24 bg-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-xl">
+                        <span class="text-4xl font-bold text-blue-100">3</span>
+                    </div>
+                    <div class="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mb-6">
+                        <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-slate-800">Optimize</h3>
+                    <p class="text-slate-500">We provide actionable recommendations to update your content and fix AI responses.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Compare Section -->
+    <section class="py-24 bg-slate-900 text-white relative overflow-hidden">
+        <div class="max-w-7xl mx-auto px-8 relative z-10">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-5xl font-bold mb-4">Traditional SEO vs <span class="text-blue-400">GEO</span></h2>
+                <p class="text-slate-400 text-lg">Stop fighting for blue links. Start fighting for the answer.</p>
+            </div>
+            <div class="grid md:grid-cols-2 gap-8 max-w-5xl mx-auto">
+                <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700">
+                    <h3 class="text-2xl font-bold text-slate-300 mb-6 pb-4 border-b border-slate-700">Traditional SEO</h3>
+                    <ul class="space-y-4">
+                        <li class="flex items-start text-slate-400"><span class="text-red-400 mr-3 mt-1">✕</span> Optimizes for 10 blue links</li>
+                        <li class="flex items-start text-slate-400"><span class="text-red-400 mr-3 mt-1">✕</span> Relies heavily on exact-match keywords</li>
+                        <li class="flex items-start text-slate-400"><span class="text-red-400 mr-3 mt-1">✕</span> Cares primarily about backlinks</li>
+                        <li class="flex items-start text-slate-400"><span class="text-red-400 mr-3 mt-1">✕</span> Blind to AI hallucinations</li>
+                    </ul>
+                </div>
+                <div class="bg-blue-600 p-8 rounded-3xl shadow-2xl shadow-blue-900/50 scale-105 transform border border-blue-500">
+                    <h3 class="text-2xl font-bold text-white mb-6 pb-4 border-b border-blue-400">Generative Engine Ops (GEO)</h3>
+                    <ul class="space-y-4">
+                        <li class="flex items-start text-blue-50"><span class="text-white bg-blue-500 rounded-full w-5 h-5 flex items-center justify-center mr-3 mt-0.5 text-xs font-bold">✓</span> Optimizes to be the single cited answer</li>
+                        <li class="flex items-start text-blue-50"><span class="text-white bg-blue-500 rounded-full w-5 h-5 flex items-center justify-center mr-3 mt-0.5 text-xs font-bold">✓</span> Focuses on comprehensive context & semantics</li>
+                        <li class="flex items-start text-blue-50"><span class="text-white bg-blue-500 rounded-full w-5 h-5 flex items-center justify-center mr-3 mt-0.5 text-xs font-bold">✓</span> Cares about brand sentiment and accuracy</li>
+                        <li class="flex items-start text-blue-50"><span class="text-white bg-blue-500 rounded-full w-5 h-5 flex items-center justify-center mr-3 mt-0.5 text-xs font-bold">✓</span> Actively monitors LLM output</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Enhanced Footer -->
+    <footer class="bg-slate-50 pt-20 pb-10 border-t border-slate-200">
+        <div class="max-w-7xl mx-auto px-8">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-12 mb-16">
+                <div class="md:col-span-1">
+                    <div class="text-2xl font-bold tracking-tight text-blue-600 mb-4">rank<span class="text-slate-800">lore</span></div>
+                    <p class="text-slate-500 text-sm leading-relaxed mb-6">Monitor, protect, and optimize your brand’s "lore" across the new AI landscape.</p>
+                    <div class="flex space-x-4">
+                        <a href="#" class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center hover:bg-blue-600 hover:text-white transition text-slate-500">𝕏</a>
+                        <a href="#" class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center hover:bg-blue-600 hover:text-white transition text-slate-500">in</a>
+                    </div>
+                </div>
+                <div>
+                    <h4 class="font-bold text-slate-800 mb-4">Platform</h4>
+                    <ul class="space-y-3 text-sm text-slate-500">
+                        <li><a href="#" class="hover:text-blue-600 transition">Share of Voice</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Hallucination Monitor</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Sentiment Shield</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Pricing</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-bold text-slate-800 mb-4">Resources</h4>
+                    <ul class="space-y-3 text-sm text-slate-500">
+                        <li><a href="#" class="hover:text-blue-600 transition">What is GEO?</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Blog</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Case Studies</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Documentation</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-bold text-slate-800 mb-4">Subscribe</h4>
+                    <p class="text-sm text-slate-500 mb-4">Get the latest insights on AI Search Optimization.</p>
+                    <div class="flex">
+                        <input type="email" placeholder="Email address" class="w-full px-4 py-2 rounded-l-lg border border-r-0 border-slate-300 outline-none text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+                        <button class="bg-blue-600 text-white px-4 py-2 rounded-r-lg text-sm font-bold hover:bg-blue-700 transition">→</button>
+                    </div>
+                </div>
+            </div>
+            <div class="pt-8 border-t border-slate-200 flex flex-col md:flex-row justify-between items-center">
+                <p class="text-slate-400 text-sm mb-4 md:mb-0">&copy; 2026 Ranklore. Part of the Circuit House electronics ecosystem.</p>
+                <div class="flex space-x-6 text-sm text-slate-400">
+                    <a href="#" class="hover:text-slate-600 transition">Privacy Policy</a>
+                    <a href="#" class="hover:text-slate-600 transition">Terms of Service</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+    <!-- How it Works -->
+    <section class="py-24 bg-white">
+        <div class="max-w-7xl mx-auto px-8">
+            <div class="mb-16 text-center">
+                <h2 class="text-3xl md:text-5xl font-bold text-slate-900 mb-4">How it <span class="text-blue-600">works.</span></h2>
+                <p class="text-slate-500 text-lg">Three simple steps to control your brand narrative.</p>
+            </div>
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="group relative bg-slate-50 p-8 rounded-3xl border border-slate-100 hover:border-blue-200 transition-colors">
+                    <div class="absolute top-0 right-0 -mt-6 -mr-6 w-24 h-24 bg-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-xl">
+                        <span class="text-4xl font-bold text-blue-100">1</span>
+                    </div>
+                    <div class="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mb-6">
+                        <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-slate-800">Scan</h3>
+                    <p class="text-slate-500">We query thousands of AI engines to map your current brand narrative across the web.</p>
+                </div>
+                <div class="group relative bg-slate-50 p-8 rounded-3xl border border-slate-100 hover:border-blue-200 transition-colors">
+                    <div class="absolute top-0 right-0 -mt-6 -mr-6 w-24 h-24 bg-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-xl">
+                        <span class="text-4xl font-bold text-blue-100">2</span>
+                    </div>
+                    <div class="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mb-6">
+                        <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-slate-800">Analyze</h3>
+                    <p class="text-slate-500">Our proprietary engine detects sentiment, hallucinations, and Share of Voice metrics.</p>
+                </div>
+                <div class="group relative bg-slate-50 p-8 rounded-3xl border border-slate-100 hover:border-blue-200 transition-colors">
+                    <div class="absolute top-0 right-0 -mt-6 -mr-6 w-24 h-24 bg-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-xl">
+                        <span class="text-4xl font-bold text-blue-100">3</span>
+                    </div>
+                    <div class="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mb-6">
+                        <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-slate-800">Optimize</h3>
+                    <p class="text-slate-500">We provide actionable recommendations to update your content and fix AI responses.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Compare Section -->
+    <section class="py-24 bg-slate-900 text-white relative overflow-hidden">
+        <div class="max-w-7xl mx-auto px-8 relative z-10">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-5xl font-bold mb-4">Traditional SEO vs <span class="text-blue-400">GEO</span></h2>
+                <p class="text-slate-400 text-lg">Stop fighting for blue links. Start fighting for the answer.</p>
+            </div>
+            <div class="grid md:grid-cols-2 gap-8 max-w-5xl mx-auto">
+                <div class="bg-slate-800/50 p-8 rounded-3xl border border-slate-700">
+                    <h3 class="text-2xl font-bold text-slate-300 mb-6 pb-4 border-b border-slate-700">Traditional SEO</h3>
+                    <ul class="space-y-4">
+                        <li class="flex items-start text-slate-400"><span class="text-red-400 mr-3 mt-1">✕</span> Optimizes for 10 blue links</li>
+                        <li class="flex items-start text-slate-400"><span class="text-red-400 mr-3 mt-1">✕</span> Relies heavily on exact-match keywords</li>
+                        <li class="flex items-start text-slate-400"><span class="text-red-400 mr-3 mt-1">✕</span> Cares primarily about backlinks</li>
+                        <li class="flex items-start text-slate-400"><span class="text-red-400 mr-3 mt-1">✕</span> Blind to AI hallucinations</li>
+                    </ul>
+                </div>
+                <div class="bg-blue-600 p-8 rounded-3xl shadow-2xl shadow-blue-900/50 scale-105 transform border border-blue-500">
+                    <h3 class="text-2xl font-bold text-white mb-6 pb-4 border-b border-blue-400">Generative Engine Ops (GEO)</h3>
+                    <ul class="space-y-4">
+                        <li class="flex items-start text-blue-50"><span class="text-white bg-blue-500 rounded-full w-5 h-5 flex items-center justify-center mr-3 mt-0.5 text-xs font-bold">✓</span> Optimizes to be the single cited answer</li>
+                        <li class="flex items-start text-blue-50"><span class="text-white bg-blue-500 rounded-full w-5 h-5 flex items-center justify-center mr-3 mt-0.5 text-xs font-bold">✓</span> Focuses on comprehensive context & semantics</li>
+                        <li class="flex items-start text-blue-50"><span class="text-white bg-blue-500 rounded-full w-5 h-5 flex items-center justify-center mr-3 mt-0.5 text-xs font-bold">✓</span> Cares about brand sentiment and accuracy</li>
+                        <li class="flex items-start text-blue-50"><span class="text-white bg-blue-500 rounded-full w-5 h-5 flex items-center justify-center mr-3 mt-0.5 text-xs font-bold">✓</span> Actively monitors LLM output</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Enhanced Footer -->
+    <footer class="bg-slate-50 pt-20 pb-10 border-t border-slate-200">
+        <div class="max-w-7xl mx-auto px-8">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-12 mb-16">
+                <div class="md:col-span-1">
+                    <div class="text-2xl font-bold tracking-tight text-blue-600 mb-4">rank<span class="text-slate-800">lore</span></div>
+                    <p class="text-slate-500 text-sm leading-relaxed mb-6">Monitor, protect, and optimize your brand’s "lore" across the new AI landscape.</p>
+                    <div class="flex space-x-4">
+                        <a href="#" class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center hover:bg-blue-600 hover:text-white transition text-slate-500">𝕏</a>
+                        <a href="#" class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center hover:bg-blue-600 hover:text-white transition text-slate-500">in</a>
+                    </div>
+                </div>
+                <div>
+                    <h4 class="font-bold text-slate-800 mb-4">Platform</h4>
+                    <ul class="space-y-3 text-sm text-slate-500">
+                        <li><a href="#" class="hover:text-blue-600 transition">Share of Voice</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Hallucination Monitor</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Sentiment Shield</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Pricing</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-bold text-slate-800 mb-4">Resources</h4>
+                    <ul class="space-y-3 text-sm text-slate-500">
+                        <li><a href="#" class="hover:text-blue-600 transition">What is GEO?</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Blog</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Case Studies</a></li>
+                        <li><a href="#" class="hover:text-blue-600 transition">Documentation</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-bold text-slate-800 mb-4">Subscribe</h4>
+                    <p class="text-sm text-slate-500 mb-4">Get the latest insights on AI Search Optimization.</p>
+                    <div class="flex">
+                        <input type="email" placeholder="Email address" class="w-full px-4 py-2 rounded-l-lg border border-r-0 border-slate-300 outline-none text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+                        <button class="bg-blue-600 text-white px-4 py-2 rounded-r-lg text-sm font-bold hover:bg-blue-700 transition">→</button>
+                    </div>
+                </div>
+            </div>
+            <div class="pt-8 border-t border-slate-200 flex flex-col md:flex-row justify-between items-center">
+                <p class="text-slate-400 text-sm mb-4 md:mb-0">&copy; 2026 Ranklore. Part of the Circuit House electronics ecosystem.</p>
+                <div class="flex space-x-6 text-sm text-slate-400">
+                    <a href="#" class="hover:text-slate-600 transition">Privacy Policy</a>
+                    <a href="#" class="hover:text-slate-600 transition">Terms of Service</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

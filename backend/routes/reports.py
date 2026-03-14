@@ -1,0 +1,895 @@
+import csv
+import io
+import json
+import re
+from collections import defaultdict
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+from flask import Blueprint, Response as FlaskResponse, jsonify
+
+from engine.analyzer import (
+    generate_content_piece,
+    generate_detailed_audit,
+    generate_global_audit,
+    generate_project_summary,
+    generate_recommendations,
+)
+from engine.perplexity_search import is_perplexity_search_enabled, search_web
+from exceptions import NotFoundError
+from models import Mention, Project, Prompt, Response, VisibilityMetric, db
+
+reports_bp = Blueprint("reports", __name__)
+
+
+def _parse_sources(raw: str) -> list[str]:
+    try:
+        data = json.loads(raw or "[]")
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _domain_from_url(url: str) -> str:
+    if not url:
+        return ""
+    parsed = urlparse(url if url.startswith("http") else f"https://{url}")
+    domain = (parsed.netloc or "").replace("www.", "").lower().strip()
+    if not domain:
+        return ""
+    if not re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", domain):
+        return ""
+    return domain
+
+
+def _latest_responses_by_prompt(prompt_id: int) -> list[Response]:
+    responses = Response.query.filter_by(prompt_id=prompt_id).order_by(Response.timestamp.desc()).all()
+    by_engine: dict[str, Response] = {}
+    for response in responses:
+        if response.engine not in by_engine:
+            by_engine[response.engine] = response
+    return list(by_engine.values())
+
+
+def _build_prompt_detail_payload(prompt_id: int) -> dict:
+    prompt = Prompt.query.get(prompt_id)
+    if not prompt:
+        raise NotFoundError("Prompt not found")
+
+    project = Project.query.get(prompt.project_id)
+    focus_brand = project.name if project else ""
+    responses = Response.query.filter_by(prompt_id=prompt_id).order_by(Response.timestamp.asc()).all()
+    if not responses:
+        return {
+            "prompt_id": prompt.id,
+            "prompt_text": prompt.prompt_text,
+            "project_id": prompt.project_id,
+            "brand_ranking": [],
+            "trend": [],
+            "sentiment": {"positive": 0, "neutral": 0, "negative": 0, "not_mentioned": 0},
+            "sources": [],
+            "competitors": [],
+            "audit": [{"title": "No analysis yet", "detail": "Run analysis for this prompt to generate detailed audit findings."}],
+            "recommended_actions": [],
+        }
+
+    latest_by_engine: dict[str, Response] = {}
+    for response in sorted(responses, key=lambda item: item.timestamp, reverse=True):
+        if response.engine not in latest_by_engine:
+            latest_by_engine[response.engine] = response
+
+    competitor_scores: dict[str, dict] = defaultdict(lambda: {"mentions": 0, "ranks": []})
+    sentiment = {"positive": 0, "neutral": 0, "negative": 0, "not_mentioned": 0}
+    source_count: dict[str, int] = defaultdict(int)
+    source_links: dict[str, set[str]] = defaultdict(set)
+    trend = []
+
+    for response in responses:
+        mentions = Mention.query.filter_by(response_id=response.id).all()
+        focus = next((m for m in mentions if m.is_focus), None)
+        trend.append(
+            {
+                "timestamp": response.timestamp,
+                "engine": response.engine,
+                "mentioned": bool(focus),
+                "rank": focus.rank if focus else None,
+            }
+        )
+
+    for engine, response in latest_by_engine.items():
+        mentions = Mention.query.filter_by(response_id=response.id).all()
+        focus = next((m for m in mentions if m.is_focus), None)
+        if focus:
+            sentiment[focus.sentiment if focus.sentiment in sentiment else "neutral"] += 1
+        else:
+            sentiment["not_mentioned"] += 1
+
+        for mention in mentions:
+            if mention.is_focus:
+                continue
+            competitor_scores[mention.brand]["mentions"] += 1
+            if mention.rank is not None:
+                competitor_scores[mention.brand]["ranks"].append(mention.rank)
+
+        for source in _parse_sources(response.sources):
+            domain = _domain_from_url(source) or source.lower()
+            source_count[domain] += 1
+            normalized_url = source if source.startswith("http") else f"https://{domain}"
+            source_links[domain].add(normalized_url)
+
+    brand_ranking = []
+    for brand, row in competitor_scores.items():
+        avg_rank = round(sum(row["ranks"]) / len(row["ranks"]), 2) if row["ranks"] else None
+        brand_ranking.append({"name": brand, "mentions": row["mentions"], "avg_rank": avg_rank})
+    brand_ranking.sort(key=lambda item: (-item["mentions"], item["avg_rank"] if item["avg_rank"] is not None else 999))
+
+    focus_mentioned = (sentiment["positive"] + sentiment["neutral"] + sentiment["negative"]) > 0
+    audit = []
+    
+    # Fetch persisted research data
+    research_resp = Response.query.filter_by(prompt_id=prompt_id, engine="perplexity_research").order_by(Response.timestamp.desc()).first()
+    research_data = {}
+    if research_resp:
+        try:
+            research_data = json.loads(research_resp.response_text)
+        except Exception:
+            pass
+
+    research_sources = research_data.get("sources", [])
+    
+    # Process latest engine results for visibility context
+    analyses = {}
+    for engine, resp in latest_by_engine.items():
+        if engine == "perplexity_research":
+            continue
+        
+        # Get mentions for this response
+        m_list = Mention.query.filter_by(response_id=resp.id).all()
+        f_m = next((m for m in m_list if m.is_focus), None)
+        
+        analyses[engine] = {
+            "focus_brand_mentioned": bool(f_m),
+            "focus_brand_rank": f_m.rank if f_m else None,
+            "focus_brand_sentiment": f_m.sentiment if f_m else "not_mentioned",
+            "focus_brand_context": f_m.context if f_m else ""
+        }
+
+    # Generate LLM-driven deep-dive audit
+    audit = generate_detailed_audit(focus_brand, prompt.prompt_text, analyses)
+
+    recommended_actions = []
+    
+    # Add research-driven recommendations
+    for src in research_sources[:6]:
+        recommended_actions.append({
+            "title": f"Act on {src.get('domain', 'authoritative source')}",
+            "detail": f"{src.get('reason', 'Critical retrieval point')}. Solution: Ensure {focus_brand} is mentioned or reviewed in this specific content: '{src.get('title', 'Target Page')}'",
+            "link": src.get("url", "")
+        })
+
+    # Fallback/standard actions if research is sparse
+    if len(recommended_actions) < 2:
+        recommended_actions.append({
+            "title": "Publish a dedicated answer page",
+            "detail": f"Create a page targeting '{prompt.prompt_text}' with explicit sections: best options, pricing tiers, comparison table, and buying recommendations.",
+            "link": project.website_url if project and project.website_url else "",
+        })
+    
+    # Merge research data into sources list
+    ui_sources = []
+    research_by_domain = defaultdict(list)
+    for s in research_sources:
+        research_by_domain[s.get("domain", "").lower()].append(s)
+
+    # Process domains found in LLM responses
+    for domain, count in sorted(source_count.items(), key=lambda item: item[1], reverse=True):
+        d_lower = domain.lower()
+        r_items = research_by_domain.pop(d_lower, [])
+        
+        # Use a list of dicts for mapped links
+        mapped_links = []
+        seen_urls = set()
+
+        # Add links from research first (these have titles)
+        for r in r_items:
+            u = r.get("url")
+            if u and u not in seen_urls:
+                mapped_links.append({
+                    "url": u,
+                    "title": r.get("title") or u.replace("https://", "").replace("www.", "").split("/")[0]
+                })
+                seen_urls.add(u)
+
+        # Add links found in responses
+        for url in source_links.get(domain, []):
+            if url not in seen_urls:
+                mapped_links.append({
+                    "url": url,
+                    "title": url.replace("https://", "").replace("www.", "").split("/")[0]
+                })
+                seen_urls.add(url)
+
+        ui_sources.append({
+            "domain": domain + (" (Target Data Source)" if len(r_items) > 0 else ""),
+            "mentions": count,
+            "links": mapped_links[:20],
+            "is_target": len(r_items) > 0
+        })
+    
+    # Add remaining research sources
+    for domain_lower, items in research_by_domain.items():
+        mapped_links = []
+        for i in items:
+            u = i.get("url")
+            if u:
+                mapped_links.append({
+                    "url": u,
+                    "title": i.get("title") or u
+                })
+
+        ui_sources.append({
+            "domain": (items[0].get("domain") or "Target Source") + " (Target Data Source)",
+            "mentions": 0,
+            "links": mapped_links,
+            "is_target": True
+        })
+
+    return {
+        "prompt_id": prompt.id,
+        "prompt_text": prompt.prompt_text,
+        "project_id": prompt.project_id,
+        "brand_ranking": brand_ranking,
+        "trend": trend,
+        "sentiment": sentiment,
+        "sources": ui_sources,
+        "competitors": brand_ranking[:12],
+        "audit": audit,
+        "recommended_actions": recommended_actions,
+    }
+
+
+def _build_prompt_rankings(project_id: int) -> list[dict]:
+    rows = []
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    for prompt in prompts:
+        latest_responses = _latest_responses_by_prompt(prompt.id)
+        ranks = []
+        for response in latest_responses:
+            mention = Mention.query.filter_by(response_id=response.id, is_focus=True).first()
+            if mention and mention.rank is not None:
+                ranks.append(float(mention.rank))
+
+        rows.append(
+            {
+                "prompt_id": prompt.id,
+                "prompt_text": prompt.prompt_text,
+                "avg_rank": round(sum(ranks) / len(ranks), 2) if ranks else None,
+                "engines_analyzed": len(latest_responses),
+            }
+        )
+    return rows
+
+
+def _build_competitor_visibility(project_id: int) -> list[dict]:
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    prompt_ids = [p.id for p in prompts]
+    if not prompt_ids:
+        return []
+
+    considered_response_ids: set[int] = set()
+    for prompt_id in prompt_ids:
+        considered_response_ids.update(r.id for r in _latest_responses_by_prompt(prompt_id))
+
+    if not considered_response_ids:
+        return []
+
+    mentions = Mention.query.filter(Mention.response_id.in_(considered_response_ids)).all()
+    grouped: dict[str, dict] = defaultdict(lambda: {"mentions": 0, "ranks": [], "is_focus": False, "sentiments": []})
+
+    for mention in mentions:
+        key = mention.brand.strip()
+        grouped[key]["mentions"] += 1
+        grouped[key]["is_focus"] = mention.is_focus
+        grouped[key]["sentiments"].append(mention.sentiment)
+        if mention.rank is not None:
+            grouped[key]["ranks"].append(float(mention.rank))
+
+    total_responses = max(1, len(considered_response_ids))
+    rows = []
+    for brand, row in grouped.items():
+        mention_rate = row["mentions"] / total_responses
+        rank_bonus = 0.0
+        if row["ranks"]:
+            avg_rank = sum(row["ranks"]) / len(row["ranks"])
+            rank_bonus = max(0, 30 - (avg_rank - 1) * 5)
+        positive = row["sentiments"].count("positive")
+        negative = row["sentiments"].count("negative")
+        sentiment_bonus = ((positive - negative) / len(row["sentiments"])) * 10 + 10 if row["sentiments"] else 10
+
+        score = min(100, mention_rate * 60 + rank_bonus + max(0, sentiment_bonus))
+
+        rows.append(
+            {
+                "brand": brand,
+                "visibility_score": round(score, 1),
+                "mentions": row["mentions"],
+                "avg_rank": round(sum(row["ranks"]) / len(row["ranks"]), 2) if row["ranks"] else None,
+                "is_focus": row["is_focus"],
+            }
+        )
+
+    rows.sort(key=lambda item: (not item["is_focus"], -item["visibility_score"], item["brand"].lower()))
+    return rows
+
+
+def _collect_competitor_sources(project_id: int) -> list[str]:
+    prompt_ids = [p.id for p in Prompt.query.filter_by(project_id=project_id).all()]
+    if not prompt_ids:
+        return []
+
+    responses = Response.query.filter(Response.prompt_id.in_(prompt_ids)).all()
+    source_count: dict[str, int] = defaultdict(int)
+    for response in responses:
+        for source in _parse_sources(response.sources):
+            source_count[source] += 1
+
+    return [source for source, _count in sorted(source_count.items(), key=lambda item: item[1], reverse=True)]
+
+
+def _build_dashboard_payload(project_id: int) -> dict:
+    project = Project.query.get(project_id)
+    if not project:
+        raise NotFoundError("Project not found")
+
+    metrics = VisibilityMetric.query.filter_by(project_id=project_id).order_by(VisibilityMetric.date.asc()).all()
+    visibility_trend = [{"date": metric.date, "score": metric.score} for metric in metrics]
+    current_score = visibility_trend[-1]["score"] if visibility_trend else 0
+
+    prompt_rankings = _build_prompt_rankings(project_id)
+    competitors = _build_competitor_visibility(project_id)
+    competitor_sources = _collect_competitor_sources(project_id)
+    recommendations = generate_recommendations(project.name, prompt_rankings, competitor_sources)
+
+    return {
+        "project": {
+            "id": project.id,
+            "name": project.name,
+            "category": project.category,
+            "region": project.region,
+            "website_url": project.website_url,
+            "competitors": project.get_competitors_list(),
+        },
+        "current_visibility_score": current_score,
+        "visibility_trend": visibility_trend,
+        "prompt_rankings": prompt_rankings,
+        "competitors": competitors,
+        "recommendations": recommendations,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _build_deep_analysis_payload(project_id: int) -> dict:
+    project = Project.query.get(project_id)
+    if not project:
+        raise NotFoundError("Project not found")
+
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    prompt_rows: list[dict] = []
+    llm_summary: dict[str, dict] = defaultdict(
+        lambda: {
+            "responses": 0,
+            "focus_mentions": 0,
+            "ranks": [],
+            "positive": 0,
+            "neutral": 0,
+            "negative": 0,
+            "not_mentioned": 0,
+            "sources": defaultdict(int),
+        }
+    )
+
+    source_by_llm: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    source_global: dict[str, int] = defaultdict(int)
+
+    for prompt in prompts:
+        latest_responses = _latest_responses_by_prompt(prompt.id)
+        llm_result: dict[str, dict] = {}
+
+        for response in latest_responses:
+            mentions = Mention.query.filter_by(response_id=response.id).all()
+            focus_mention = next((m for m in mentions if m.is_focus), None)
+            sentiment = focus_mention.sentiment if focus_mention else "not_mentioned"
+            rank = focus_mention.rank if focus_mention else None
+            mentioned = focus_mention is not None
+            sources = _parse_sources(response.sources)
+
+            llm_result[response.engine] = {
+                "mentioned": mentioned,
+                "rank": rank,
+                "sentiment": sentiment,
+                "sources": sources,
+                "top_competitors": [
+                    {"brand": m.brand, "rank": m.rank}
+                    for m in mentions
+                    if not m.is_focus
+                ][:5],
+                "response_id": response.id,
+            }
+
+            summary = llm_summary[response.engine]
+            summary["responses"] += 1
+            if mentioned:
+                summary["focus_mentions"] += 1
+                if rank is not None:
+                    summary["ranks"].append(rank)
+                if sentiment in {"positive", "neutral", "negative"}:
+                    summary[sentiment] += 1
+            else:
+                summary["not_mentioned"] += 1
+
+            for source in sources:
+                normalized = source.strip()
+                if not normalized:
+                    continue
+                summary["sources"][normalized] += 1
+                source_by_llm[response.engine][normalized] += 1
+                source_global[normalized] += 1
+
+        prompt_rows.append(
+            {
+                "prompt_id": prompt.id,
+                "prompt_text": prompt.prompt_text,
+                "prompt_type": prompt.prompt_type,
+                "country": prompt.country,
+                "tags": prompt.get_tags(),
+                "selected_models": prompt.get_models(),
+                "is_active": prompt.is_active,
+                "engines": llm_result,
+            }
+        )
+
+    llm_rows = []
+    for llm, summary in llm_summary.items():
+        avg_rank = round(sum(summary["ranks"]) / len(summary["ranks"]), 2) if summary["ranks"] else None
+        mention_rate = round((summary["focus_mentions"] / summary["responses"]) * 100, 1) if summary["responses"] else 0
+        llm_rows.append(
+            {
+                "llm": llm,
+                "mention_rate": mention_rate,
+                "avg_rank": avg_rank,
+                "positive": summary["positive"],
+                "neutral": summary["neutral"],
+                "negative": summary["negative"],
+                "not_mentioned": summary["not_mentioned"],
+                "top_sources": [
+                    {"source": source, "count": count}
+                    for source, count in sorted(summary["sources"].items(), key=lambda item: item[1], reverse=True)[:8]
+                ],
+            }
+        )
+
+    llm_rows.sort(key=lambda item: item["mention_rate"], reverse=True)
+
+    missing_prompts = []
+    for prompt_row in prompt_rows:
+        mentioned_anywhere = any(engine_data.get("mentioned") for engine_data in prompt_row["engines"].values())
+        if not mentioned_anywhere:
+            missing_prompts.append(prompt_row["prompt_text"])
+
+    upload_targets = [
+        {"source": source, "count": count}
+        for source, count in sorted(source_global.items(), key=lambda item: item[1], reverse=True)[:12]
+    ]
+
+    search_intel = {"enabled": is_perplexity_search_enabled(), "domains": [], "queries": []}
+    if search_intel["enabled"]:
+        candidate_queries = []
+        candidate_queries.extend(missing_prompts[:3])
+        if not candidate_queries:
+            candidate_queries.extend([row["prompt_text"] for row in prompt_rows[:3]])
+
+        domain_counts: dict[str, int] = defaultdict(int)
+        query_rows = []
+        for query in candidate_queries[:3]:
+            result = search_web(query=query, max_results=5, max_tokens_per_page=320)
+            query_rows.append(
+                {
+                    "query": query,
+                    "ok": result.get("ok", False),
+                    "result_count": len(result.get("results", [])),
+                }
+            )
+            for item in result.get("results", []):
+                domain = _domain_from_url(item.get("url", ""))
+                if domain:
+                    domain_counts[domain] += 1
+
+        search_intel["retrieval_points"] = []
+        for query in candidate_queries[:3]:
+            # Try to fetch from persisted research if possible
+            p = Prompt.query.filter_by(project_id=project_id, prompt_text=query).first()
+            if p:
+                r_resp = Response.query.filter_by(prompt_id=p.id, engine="perplexity_research").order_by(Response.timestamp.desc()).first()
+                if r_resp:
+                    try:
+                        r_data = json.loads(r_resp.response_text)
+                        for src in r_data.get("sources", [])[:5]:
+                            search_intel["retrieval_points"].append({
+                                "domain": src.get("domain"),
+                                "title": src.get("title"),
+                                "url": src.get("url"),
+                                "query": query
+                            })
+                    except: pass
+
+        search_intel["domains"] = [
+            {"domain": domain, "count": count}
+            for domain, count in sorted(domain_counts.items(), key=lambda item: item[1], reverse=True)[:10]
+        ]
+        search_intel["queries"] = query_rows
+
+    action_plan = []
+    if missing_prompts:
+        action_plan.append(
+            {
+                "title": "Create direct answer pages for missing prompts",
+                "detail": f"Your brand is absent in {len(missing_prompts)} prompt(s). Publish pages that directly answer those exact queries with comparison tables and FAQs.",
+                "priority": "high",
+            }
+        )
+    if upload_targets:
+        top_target_names = ", ".join([item["source"] for item in upload_targets[:5]])
+        action_plan.append(
+            {
+                "title": "Prioritize high-influence sources",
+                "detail": f"LLMs are repeatedly citing: {top_target_names}. Focus review submissions, PR mentions, and expert contributions on these domains first.",
+                "priority": "high",
+            }
+        )
+    if search_intel["domains"]:
+        top_domains = ", ".join([item["domain"] for item in search_intel["domains"][:5]])
+        action_plan.append(
+            {
+                "title": "Perplexity search domain targeting",
+                "detail": f"Perplexity search for your prompts returns these domains most often: {top_domains}. Prioritize publication and backlinks on these sites.",
+                "priority": "high",
+            }
+        )
+    action_plan.append(
+        {
+            "title": "Build model-specific optimization cadence",
+            "detail": "Track which LLM has the lowest mention rate and run weekly prompt-focused content updates until its mention rate crosses 70%.",
+            "priority": "medium",
+        }
+    )
+
+    return {
+        "project_id": project.id,
+        "project_name": project.name,
+        "prompt_matrix": prompt_rows,
+        "llm_summary": llm_rows,
+        "upload_targets": upload_targets,
+        "search_intel": search_intel,
+        "missing_prompts": missing_prompts,
+        "action_plan": action_plan,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@reports_bp.route("/project/<int:project_id>/dashboard", methods=["GET"])
+def get_dashboard_metrics(project_id):
+    return jsonify(_build_dashboard_payload(project_id))
+
+
+@reports_bp.route("/project/<int:project_id>/intel-summary", methods=["GET"])
+def get_project_intel_summary(project_id):
+    project = Project.query.get(project_id)
+    if not project:
+        raise NotFoundError("Project not found")
+
+    dashboard = _build_dashboard_payload(project_id)
+    prompt_rankings = dashboard.get("prompt_rankings", [])
+
+    project_meta = {
+        "name": project.name,
+        "category": project.category,
+        "region": project.region
+    }
+
+    summary = generate_project_summary(project.name, project_meta, prompt_rankings)
+    return jsonify(summary)
+
+
+@reports_bp.route("/project/<int:project_id>/global-audit", methods=["GET"])
+def get_project_global_audit(project_id):
+    project = Project.query.get(project_id)
+    if not project:
+        raise NotFoundError("Project not found")
+
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    all_prompts_data = []
+    for p in prompts:
+        try:
+            # We use the detail builder but stripping unnecessary parts
+            p_data = _build_prompt_detail_payload(p.id)
+            all_prompts_data.append({
+                "prompt_text": p.prompt_text,
+                "audit": p_data.get("audit", [])
+            })
+        except: continue
+
+    global_audit = generate_global_audit(project.name, all_prompts_data)
+    return jsonify(global_audit)
+
+
+@reports_bp.route("/project/<int:project_id>/actions/execute", methods=["POST"])
+def execute_project_action(project_id):
+    from flask import request
+    
+    project = Project.query.get(project_id)
+    if not project:
+        raise NotFoundError("Project not found")
+
+    data = request.json or {}
+    directive = data.get("directive")
+    content_type = data.get("content_type", "Article")
+    query = data.get("query", "")
+    
+    if not directive:
+        return jsonify({"error": "Directive is required"}), 400
+
+    # Gather context for content generation
+    competitors = project.get_competitors_list()
+    context_data = {
+        "query": query,
+        "competitors": competitors,
+        "industry": project.category
+    }
+
+    engine = data.get("model", "deepseek")
+    content = generate_content_piece(project.name, directive, content_type, context_data, engine=engine)
+    return jsonify(content)
+
+
+@reports_bp.route("/project/<int:project_id>/deep-analysis", methods=["GET"])
+def get_deep_analysis(project_id):
+    return jsonify(_build_deep_analysis_payload(project_id))
+
+
+@reports_bp.route("/project/<int:project_id>/export.csv", methods=["GET"])
+def export_project_csv(project_id):
+    payload = _build_dashboard_payload(project_id)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow(["RankLore AI Visibility Report"])
+    writer.writerow(["Project", payload["project"]["name"]])
+    writer.writerow(["Generated At", payload["updated_at"]])
+    writer.writerow(["Current Visibility Score", payload["current_visibility_score"]])
+    writer.writerow([])
+
+    writer.writerow(["Prompt Rankings"])
+    writer.writerow(["Prompt", "Average Rank", "Engines Analyzed"])
+    for row in payload["prompt_rankings"]:
+        writer.writerow([row["prompt_text"], row["avg_rank"] if row["avg_rank"] is not None else "Not mentioned", row["engines_analyzed"]])
+
+    writer.writerow([])
+    writer.writerow(["Competitor Visibility"])
+    writer.writerow(["Brand", "Visibility Score", "Mentions", "Average Rank", "Focus Brand"])
+    for row in payload["competitors"]:
+        writer.writerow([row["brand"], row["visibility_score"], row["mentions"], row["avg_rank"] if row["avg_rank"] is not None else "-", "Yes" if row["is_focus"] else "No"])
+
+    content = output.getvalue()
+    output.close()
+
+    return FlaskResponse(
+        content,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=ranklore_project_{project_id}.csv"},
+    )
+
+
+@reports_bp.route("/project/<int:project_id>/export.pdf", methods=["GET"])
+def export_project_pdf(project_id):
+    payload = _build_dashboard_payload(project_id)
+
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+    except Exception:
+        # Fallback to plain text when reportlab is unavailable.
+        text = (
+            f"RankLore AI Visibility Report\n"
+            f"Project: {payload['project']['name']}\n"
+            f"Current Score: {payload['current_visibility_score']}\n"
+            f"Generated: {payload['updated_at']}\n"
+        )
+        return FlaskResponse(
+            text,
+            mimetype="text/plain",
+            headers={"Content-Disposition": f"attachment; filename=ranklore_project_{project_id}.txt"},
+        )
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    y = height - 40
+
+    def write_line(line: str, offset: int = 16):
+        nonlocal y
+        if y < 50:
+            pdf.showPage()
+            y = height - 40
+        pdf.drawString(40, y, line[:120])
+        y -= offset
+
+    pdf.setTitle(f"RankLore Report - {payload['project']['name']}")
+    pdf.setFont("Helvetica-Bold", 14)
+    write_line("RankLore AI Visibility Report", 22)
+    pdf.setFont("Helvetica", 11)
+    write_line(f"Project: {payload['project']['name']}")
+    write_line(f"Current Visibility Score: {payload['current_visibility_score']}")
+    write_line(f"Generated: {payload['updated_at']}")
+    write_line("", 12)
+
+    pdf.setFont("Helvetica-Bold", 12)
+    write_line("Prompt Rankings", 18)
+    pdf.setFont("Helvetica", 10)
+    for row in payload["prompt_rankings"]:
+        rank = f"#{row['avg_rank']}" if row["avg_rank"] is not None else "Not mentioned"
+        write_line(f"- {row['prompt_text']} | {rank} | engines: {row['engines_analyzed']}")
+
+    write_line("", 12)
+    pdf.setFont("Helvetica-Bold", 12)
+    write_line("Competitor Visibility", 18)
+    pdf.setFont("Helvetica", 10)
+    for row in payload["competitors"]:
+        write_line(f"- {row['brand']}: score {row['visibility_score']}, mentions {row['mentions']}, avg rank {row['avg_rank'] or '-'}")
+
+    write_line("", 12)
+    pdf.setFont("Helvetica-Bold", 12)
+    write_line("Recommendations", 18)
+    pdf.setFont("Helvetica", 10)
+    write_line(payload["recommendations"]["recommendation_text"])
+
+    pdf.save()
+    buffer.seek(0)
+
+    return FlaskResponse(
+        buffer.getvalue(),
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=ranklore_project_{project_id}.pdf"},
+    )
+
+
+@reports_bp.route("/project/<int:project_id>/prompt-analysis", methods=["GET"])
+def prompt_analysis_table(project_id):
+    payload = _build_deep_analysis_payload(project_id)
+    rows = []
+    for prompt_row in payload["prompt_matrix"]:
+        engines = prompt_row.get("engines", {})
+        engine_items = list(engines.items())
+        analyzed = len(engine_items)
+        mention_count = sum(1 for _, item in engine_items if item.get("mentioned"))
+        visibility = round((mention_count / analyzed) * 100, 1) if analyzed else 0.0
+        ranked = [item.get("rank") for _, item in engine_items if item.get("rank") is not None]
+        avg_rank = round(sum(ranked) / len(ranked), 2) if ranked else None
+        sentiments = [item.get("sentiment", "not_mentioned") for _, item in engine_items]
+        primary_sentiment = "not_mentioned"
+        if sentiments:
+            primary_sentiment = max(set(sentiments), key=sentiments.count)
+
+        rows.append(
+            {
+                "prompt_id": prompt_row["prompt_id"],
+                "prompt_text": prompt_row["prompt_text"],
+                "prompt_type": prompt_row["prompt_type"],
+                "country": prompt_row["country"],
+                "tags": prompt_row["tags"],
+                "models": [engine for engine, _ in engine_items],
+                "visibility": visibility,
+                "sentiment": primary_sentiment,
+                "avg_rank": avg_rank,
+                "engines_analyzed": analyzed,
+                "is_active": prompt_row["is_active"],
+            }
+        )
+
+    rows.sort(key=lambda row: row["prompt_text"].lower())
+    return jsonify({"rows": rows, "count": len(rows), "generated_at": payload["generated_at"]})
+
+
+@reports_bp.route("/prompt/<int:prompt_id>/detail", methods=["GET"])
+def prompt_detail(prompt_id):
+    return jsonify(_build_prompt_detail_payload(prompt_id))
+
+
+@reports_bp.route("/project/<int:project_id>/sources", methods=["GET"])
+def sources_intelligence(project_id):
+    project = Project.query.get(project_id)
+    if not project:
+        raise NotFoundError("Project not found")
+
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    prompt_ids = [p.id for p in prompts]
+    responses = Response.query.filter(Response.prompt_id.in_(prompt_ids)).all() if prompt_ids else []
+
+    domain_count: dict[str, int] = defaultdict(int)
+    urls_by_domain: dict[str, list[str]] = defaultdict(list)
+    mentions_by_domain: dict[str, int] = defaultdict(int)
+
+    for response in responses:
+        sources = _parse_sources(response.sources)
+        for source in sources:
+            domain = _domain_from_url(source)
+            if not domain:
+                domain = source.lower()
+            domain_count[domain] += 1
+            if len(urls_by_domain[domain]) < 20:
+                normalized_url = source if source.startswith("http") else f"https://{domain}"
+                if normalized_url not in urls_by_domain[domain]:
+                    urls_by_domain[domain].append(normalized_url)
+
+        mention_count = Mention.query.filter_by(response_id=response.id).count()
+        for source in sources:
+            domain = _domain_from_url(source) or source.lower()
+            mentions_by_domain[domain] += mention_count
+
+    domains = []
+    for domain, count in sorted(domain_count.items(), key=lambda item: item[1], reverse=True):
+        domains.append(
+            {
+                "domain": domain,
+                "source_mentions": count,
+                "brand_mentions": mentions_by_domain.get(domain, 0),
+                "links": urls_by_domain.get(domain, []),
+            }
+        )
+
+    return jsonify({"domains": domains[:100], "count": len(domains)})
+
+
+@reports_bp.route("/project/<int:project_id>/competitors", methods=["GET"])
+def competitor_table(project_id):
+    competitors = _build_competitor_visibility(project_id)
+    total = sum(item["visibility_score"] for item in competitors) or 1
+    table = []
+    for item in competitors:
+        table.append(
+            {
+                "brand": item["brand"],
+                "market_share": round((item["visibility_score"] / total) * 100, 2),
+                "visibility": item["visibility_score"],
+                "avg_rank": item["avg_rank"],
+                "mentions": item["mentions"],
+                "sentiment_proxy": max(0, min(100, round(100 - ((item["avg_rank"] or 10) * 8), 1))),
+                "is_focus": item["is_focus"],
+            }
+        )
+
+    return jsonify({"rows": table, "count": len(table)})
+
+
+@reports_bp.route("/overview", methods=["GET"])
+def global_overview():
+    projects = Project.query.order_by(Project.created_at.desc()).all()
+    rows = []
+
+    for project in projects:
+        metrics = VisibilityMetric.query.filter_by(project_id=project.id).order_by(VisibilityMetric.date.asc()).all()
+        current_score = metrics[-1].score if metrics else 0
+        rows.append(
+            {
+                "project_id": project.id,
+                "name": project.name,
+                "category": project.category,
+                "region": project.region,
+                "current_score": current_score,
+                "tracked_prompts": Prompt.query.filter_by(project_id=project.id).count(),
+                "updated_at": metrics[-1].date if metrics else None,
+            }
+        )
+
+    rows.sort(key=lambda item: item["current_score"], reverse=True)
+    return jsonify({"projects": rows, "count": len(rows)})

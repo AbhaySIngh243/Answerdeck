@@ -1,0 +1,28 @@
+# Ignore environment variables
+.env
+.env.*
+
+# Ignore SQLite databases
+*.db
+*.sqlite3
+backend/app.db
+
+# Ignore Python specific files
+backend/__pycache__/
+*.pyc
+*.pyo
+.Python
+backend/.venv/
+backend/env/
+backend/venv/
+
+# Ignore Node specific files
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+.DS_Store
+
+# Ignore IDE specific files
+.vscode/
+.idea/
+.codex/

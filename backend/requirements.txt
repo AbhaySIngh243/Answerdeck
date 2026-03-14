@@ -1,0 +1,10 @@
+﻿flask
+flask-cors
+flask-executor
+flask-sqlalchemy
+pydantic
+python-dotenv
+openai
+anthropic
+reportlab
+requests
