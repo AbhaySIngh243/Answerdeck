@@ -1,4 +1,4 @@
-﻿flask
+flask
 flask-cors
 flask-executor
 flask-sqlalchemy
@@ -8,3 +8,4 @@ openai
 anthropic
 reportlab
 requests
+gunicorn
