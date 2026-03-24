@@ -1,4 +1,4 @@
-﻿"""Flask application entrypoint."""
+"""Flask application entrypoint."""
 
 import os
 import sys
@@ -6,8 +6,10 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify
 from flask_cors import CORS
+from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(__file__))
+load_dotenv(override=False)
 
 from database import init_db
 from exceptions import APIError
@@ -20,7 +22,12 @@ from routes.reports import reports_bp
 
 def create_app() -> Flask:
     app = Flask(__name__)
-    CORS(app)
+    cors_origins = os.getenv("CORS_ORIGINS", "")
+    if cors_origins:
+        origins = [o.strip() for o in cors_origins.split(",") if o.strip()]
+        CORS(app, origins=origins)
+    else:
+        CORS(app)
 
     init_db(app)
 

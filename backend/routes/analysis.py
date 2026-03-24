@@ -1,11 +1,12 @@
 """Analysis routes and background execution pipeline."""
 
+import os
 import json
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timezone, timedelta
+from typing import Any, Optional
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, g
 
 from engine.analyzer import (
     analyze_single_response,
@@ -17,37 +18,107 @@ from engine.analyzer import (
 from engine.llm_clients import get_available_engine_catalog, query_engines
 from exceptions import NotFoundError
 from extensions import executor
-from models import Mention, Project, Prompt, Response, VisibilityMetric, db
+from models import AnalysisJob, Mention, Project, Prompt, Response, VisibilityMetric, db
+from auth import require_auth
 
 analysis_bp = Blueprint("analysis", __name__)
 
-# In-memory job store. Swap with Redis/job table for distributed workers.
-JOB_STATUSES: dict[str, dict] = {}
+MAX_CONCURRENT_JOBS_PER_USER = int(os.getenv("MAX_CONCURRENT_JOBS_PER_USER", "3"))
+MAX_CONCURRENT_JOBS_GLOBAL = int(os.getenv("MAX_CONCURRENT_JOBS_GLOBAL", "8"))
+MAX_QUEUED_JOBS_GLOBAL = int(os.getenv("MAX_QUEUED_JOBS_GLOBAL", "24"))
+PENDING_JOB_TIMEOUT_MINUTES = int(os.getenv("PENDING_JOB_TIMEOUT_MINUTES", "15"))
+RUNNING_JOB_TIMEOUT_MINUTES = int(os.getenv("RUNNING_JOB_TIMEOUT_MINUTES", "25"))
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def async_run_analysis(job_id: str, prompt_id: int, project_id: int, app_obj) -> None:
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _reap_stale_jobs() -> int:
+    """Fail stale queued/running jobs so capacity is eventually released."""
+    now = datetime.now(timezone.utc)
+    stale_count = 0
+    active_jobs = AnalysisJob.query.filter(AnalysisJob.status.in_(("pending", "running"))).all()
+
+    for job in active_jobs:
+        created = _parse_iso(job.created_at)
+        started = _parse_iso(job.started_at)
+
+        is_stale_pending = (
+            job.status == "pending"
+            and created is not None
+            and (now - created) > timedelta(minutes=PENDING_JOB_TIMEOUT_MINUTES)
+        )
+        is_stale_running = (
+            job.status == "running"
+            and started is not None
+            and (now - started) > timedelta(minutes=RUNNING_JOB_TIMEOUT_MINUTES)
+        )
+
+        if is_stale_pending or is_stale_running:
+            stale_count += 1
+            job.status = "failed"
+            job.error = "Job timed out while waiting/running. Please retry."
+            job.completed_at = _now_iso()
+
+    if stale_count:
+        db.session.commit()
+    return stale_count
+
+
+def _active_job_counts(user_id: str) -> tuple[int, int, int, int]:
+    user_running = AnalysisJob.query.filter_by(user_id=user_id, status="running").count()
+    user_pending = AnalysisJob.query.filter_by(user_id=user_id, status="pending").count()
+    global_running = AnalysisJob.query.filter_by(status="running").count()
+    global_pending = AnalysisJob.query.filter_by(status="pending").count()
+    return user_running, user_pending, global_running, global_pending
+
+
+def async_run_analysis(job_id: str, prompt_id: int, project_id: int, user_id: str, app_obj) -> None:
     """Background task that queries engines and persists results."""
-    JOB_STATUSES[job_id] = {"status": "running", "started_at": _now_iso()}
+    started_at = _now_iso()
 
     try:
         with app_obj.app_context():
-            prompt = Prompt.query.get(prompt_id)
-            project = Project.query.get(project_id)
+            job = AnalysisJob.query.filter_by(job_id=job_id, user_id=user_id).first()
+            if job:
+                job.status = "running"
+                job.started_at = started_at
+                db.session.commit()
+
+            # Ensure filtering by user_id in background too
+            prompt = Prompt.query.filter_by(id=prompt_id, user_id=user_id).first()
+            project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+            
             if not prompt or not project:
-                JOB_STATUSES[job_id] = {"status": "failed", "error": "Prompt or project not found"}
+                if job:
+                    job.status = "failed"
+                    job.error = "Prompt or project not found or unauthorized"
+                    job.completed_at = _now_iso()
+                    db.session.commit()
                 return
 
             selected_models = prompt.get_models()
             raw_responses = query_engines(prompt.prompt_text, selected_models=selected_models)
             if not raw_responses:
-                JOB_STATUSES[job_id] = {
-                    "status": "failed",
-                    "error": "No LLM engines configured. Add API keys for ChatGPT/Perplexity/Gemini/Claude/DeepSeek.",
-                }
+                if job:
+                    job.status = "failed"
+                    job.error = "No LLM engines configured. Add API keys for ChatGPT/Perplexity/Gemini/Claude/DeepSeek."
+                    job.completed_at = _now_iso()
+                    db.session.commit()
                 return
 
             focus_brand = project.name
@@ -160,71 +231,149 @@ def async_run_analysis(job_id: str, prompt_id: int, project_id: int, app_obj) ->
                 "timestamp": _now_iso(),
             }
 
-            JOB_STATUSES[job_id] = {
-                "status": "completed",
-                "completed_at": _now_iso(),
-                "result": payload,
-            }
+            if job:
+                job.status = "completed"
+                job.result_json = json.dumps(payload)
+                job.completed_at = _now_iso()
+                db.session.commit()
     except Exception as exc:  # pragma: no cover - safety path
         try:
             app_obj.logger.exception("analysis job failed", exc_info=exc)
         except Exception:
             pass
-        JOB_STATUSES[job_id] = {"status": "failed", "error": str(exc), "completed_at": _now_iso()}
+        try:
+            with app_obj.app_context():
+                job = AnalysisJob.query.filter_by(job_id=job_id, user_id=user_id).first()
+                if job:
+                    job.status = "failed"
+                    job.error = str(exc)
+                    job.completed_at = _now_iso()
+                    db.session.commit()
+        except Exception:
+            pass
 
 
 @analysis_bp.route("/run/<int:prompt_id>", methods=["POST"])
+@require_auth
 def run_analysis(prompt_id):
-    prompt = Prompt.query.get(prompt_id)
+    prompt = Prompt.query.filter_by(id=prompt_id, user_id=g.user.id).first()
     if not prompt:
         raise NotFoundError("Prompt not found")
 
-    project = Project.query.get(prompt.project_id)
+    project = Project.query.filter_by(id=prompt.project_id, user_id=g.user.id).first()
     if not project:
         raise NotFoundError("Project not found")
 
+    _reap_stale_jobs()
+    user_running, user_pending, global_running, global_pending = _active_job_counts(g.user.id)
+    if user_running + user_pending >= MAX_CONCURRENT_JOBS_PER_USER:
+        response = jsonify({"error": "Too many queued jobs. Please wait for current analysis to finish."})
+        response.headers["Retry-After"] = "20"
+        return response, 429
+    if global_running >= MAX_CONCURRENT_JOBS_GLOBAL or (global_running + global_pending) >= MAX_QUEUED_JOBS_GLOBAL:
+        response = jsonify({"error": "Server is busy processing analyses. Please retry shortly."})
+        response.headers["Retry-After"] = "30"
+        return response, 503
+
     job_id = str(uuid.uuid4())
-    JOB_STATUSES[job_id] = {"status": "pending", "created_at": _now_iso()}
+    created_at = _now_iso()
+    db.session.add(
+        AnalysisJob(
+            job_id=job_id,
+            user_id=g.user.id,
+            project_id=project.id,
+            prompt_id=prompt.id,
+            status="pending",
+            created_at=created_at,
+        )
+    )
+    db.session.commit()
 
     app_obj = current_app._get_current_object()
-    executor.submit(async_run_analysis, job_id, prompt.id, project.id, app_obj)
+    executor.submit(async_run_analysis, job_id, prompt.id, project.id, g.user.id, app_obj)
 
     return jsonify({"job_id": job_id, "message": "Analysis job queued"}), 202
 
 
 @analysis_bp.route("/run-all/<int:project_id>", methods=["POST"])
+@require_auth
 def run_all_prompts(project_id):
-    project = Project.query.get(project_id)
+    project = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
     if not project:
         raise NotFoundError("Project not found")
 
-    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    prompts = Prompt.query.filter_by(project_id=project_id, user_id=g.user.id).all()
     if not prompts:
         return jsonify({"message": "No prompts found for this project", "results": []}), 200
+
+    _reap_stale_jobs()
+    user_running, user_pending, global_running, global_pending = _active_job_counts(g.user.id)
+    available_user_slots = max(0, MAX_CONCURRENT_JOBS_PER_USER - (user_running + user_pending))
+    available_global_queue_slots = max(0, MAX_QUEUED_JOBS_GLOBAL - (global_running + global_pending))
+    available_global_running_slots = max(0, MAX_CONCURRENT_JOBS_GLOBAL - global_running)
+    available_slots = min(available_user_slots, available_global_queue_slots, available_global_running_slots)
+    if available_slots <= 0:
+        if available_user_slots <= 0:
+            response = jsonify({"error": "Too many queued jobs. Please wait for current analysis to finish."})
+            response.headers["Retry-After"] = "20"
+            return response, 429
+        response = jsonify({"error": "Server is busy processing analyses. Please retry shortly."})
+        response.headers["Retry-After"] = "30"
+        return response, 503
 
     app_obj = current_app._get_current_object()
     jobs: list[dict] = []
 
-    for prompt in prompts:
+    created_at = _now_iso()
+    for prompt in prompts[:available_slots]:
         job_id = str(uuid.uuid4())
-        JOB_STATUSES[job_id] = {"status": "pending", "created_at": _now_iso()}
-        executor.submit(async_run_analysis, job_id, prompt.id, project.id, app_obj)
+        db.session.add(
+            AnalysisJob(
+                job_id=job_id,
+                user_id=g.user.id,
+                project_id=project.id,
+                prompt_id=prompt.id,
+                status="pending",
+                created_at=created_at,
+            )
+        )
+        executor.submit(async_run_analysis, job_id, prompt.id, project.id, g.user.id, app_obj)
         jobs.append({"prompt_id": prompt.id, "job_id": job_id})
 
-    return jsonify({"message": f"Queued {len(prompts)} prompt(s)", "results": jobs}), 202
+    db.session.commit()
+    queued = len(jobs)
+    extra = max(0, len(prompts) - queued)
+    msg = f"Queued {queued} prompt(s)" + (f" (skipped {extra} due to capacity limits)" if extra else "")
+    return jsonify({"message": msg, "results": jobs, "skipped": extra}), 202
 
 
 @analysis_bp.route("/status/<job_id>", methods=["GET"])
+@require_auth
 def get_job_status(job_id):
-    status_info = JOB_STATUSES.get(job_id)
-    if not status_info:
+    job = AnalysisJob.query.filter_by(job_id=job_id, user_id=g.user.id).first()
+    if not job:
         raise NotFoundError("Job not found")
-    return jsonify(status_info)
+    payload: dict[str, Any] = {
+        "job_id": job.job_id,
+        "status": job.status,
+        "created_at": job.created_at,
+        "started_at": job.started_at or None,
+        "completed_at": job.completed_at or None,
+    }
+    if job.status == "failed":
+        payload["error"] = job.error or "Job failed"
+    if job.status == "completed":
+        try:
+            payload["result"] = json.loads(job.result_json or "{}")
+        except Exception:
+            payload["result"] = {}
+    return jsonify(payload)
 
 
 @analysis_bp.route("/results/<int:prompt_id>", methods=["GET"])
+@require_auth
 def get_results(prompt_id):
-    prompt = Prompt.query.get(prompt_id)
+    prompt = Prompt.query.filter_by(id=prompt_id, user_id=g.user.id).first()
     if not prompt:
         raise NotFoundError("Prompt not found")
 
@@ -264,6 +413,7 @@ def get_results(prompt_id):
 
 
 @analysis_bp.route("/engines", methods=["GET"])
+@require_auth
 def list_engines():
     catalog = get_available_engine_catalog()
     enabled = [item for item in catalog if item["enabled"]]
@@ -277,8 +427,9 @@ def list_engines():
 
 
 @analysis_bp.route("/test/<int:project_id>", methods=["POST"])
+@require_auth
 def run_test_prompt(project_id):
-    project = Project.query.get(project_id)
+    project = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
     if not project:
         raise NotFoundError("Project not found")
 

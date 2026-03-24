@@ -1,48 +1,70 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
+import BrandLogo from './BrandLogo';
 
 const Footer = () => {
   return (
-    <footer className="bg-slate-50 border-t border-slate-200 py-12 md:py-16">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8 md:mb-12">
-          
-          {/* Branding & Tagline */}
-          <div className="col-span-1 md:col-span-2">
+    <footer className="relative border-t border-[#e2e8f0] bg-white/95 py-12 backdrop-blur-md md:py-16">
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-primary/25 to-transparent"
+        aria-hidden
+      />
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="mb-8 grid grid-cols-1 gap-8 md:mb-12 md:grid-cols-4">
+          <div className="md:col-span-2">
             <div className="mb-4">
-               <span className="text-xl font-bold tracking-tight text-slate-800">
-                Rank<span className="text-brand-primary">Lore</span>
-              </span>
+              <Link to="/" aria-label="Answrdeck home">
+                <BrandLogo variant="lockup" size="md" />
+              </Link>
             </div>
-            <p className="text-slate-500 text-sm max-w-xs">
-              RankLore helps brands understand how AI recommends products.
+            <p className="max-w-xs text-[13px] leading-relaxed text-[#64748b]">
+              Stop guessing. Start appearing. Answrdeck helps brands understand and optimize how AI recommends products.
             </p>
           </div>
 
-          {/* Product Links */}
           <div>
-            <h3 className="text-sm font-semibold text-slate-800 mb-4 uppercase tracking-wider">Product</h3>
+            <h3 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#0f172a]">Product</h3>
             <ul className="space-y-3">
-              <li><a href="#features" className="text-slate-500 hover:text-brand-primary transition-colors text-sm">Features</a></li>
-              <li><a href="#pricing" className="text-slate-500 hover:text-brand-primary transition-colors text-sm">Pricing</a></li>
-              <li><a href="#docs" className="text-slate-500 hover:text-brand-primary transition-colors text-sm">Docs</a></li>
+              {['Features', 'Pricing', 'Docs'].map((l) => (
+                <li key={l}>
+                  <a
+                    href={`#${l.toLowerCase()}`}
+                    className="text-[13px] text-[#64748b] transition-colors hover:text-brand-primary"
+                  >
+                    {l}
+                  </a>
+                </li>
+              ))}
             </ul>
           </div>
 
-          {/* Company Links */}
           <div>
-            <h3 className="text-sm font-semibold text-slate-800 mb-4 uppercase tracking-wider">Company</h3>
+            <h3 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#0f172a]">Company</h3>
             <ul className="space-y-3">
-              <li><a href="#about" className="text-slate-500 hover:text-brand-primary transition-colors text-sm">About</a></li>
-              <li><a href="#contact" className="text-slate-500 hover:text-brand-primary transition-colors text-sm">Contact</a></li>
+              {['About', 'Contact', 'Privacy'].map((l) => (
+                <li key={l}>
+                  <a
+                    href={`#${l.toLowerCase()}`}
+                    className="text-[13px] text-[#64748b] transition-colors hover:text-brand-primary"
+                  >
+                    {l}
+                  </a>
+                </li>
+              ))}
             </ul>
           </div>
-
         </div>
-        
-        <div className="border-t border-slate-200 pt-8 flex flex-col md:flex-row justify-between items-center">
-          <p className="text-slate-400 text-sm">
-            &copy; {new Date().getFullYear()} RankLore. All rights reserved.
-          </p>
+
+        <div className="flex flex-col items-center justify-between gap-4 border-t border-[#e2e8f0] pt-8 md:flex-row">
+          <p className="text-xs text-[#64748b]">&copy; {new Date().getFullYear()} Answrdeck. All rights reserved.</p>
+          <div className="flex items-center gap-4 text-xs text-[#64748b]">
+            <a href="#" className="transition-colors hover:text-brand-primary">
+              Terms
+            </a>
+            <a href="#" className="transition-colors hover:text-brand-primary">
+              Privacy
+            </a>
+          </div>
         </div>
       </div>
     </footer>

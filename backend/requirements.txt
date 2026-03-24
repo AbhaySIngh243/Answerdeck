@@ -9,3 +9,5 @@ anthropic
 reportlab
 requests
 gunicorn
+psycopg2-binary
+PyJWT

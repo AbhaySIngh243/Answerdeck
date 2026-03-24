@@ -1,6 +1,7 @@
 """Analysis helpers for response parsing, scoring, and recommendations."""
 
 import json
+import os
 import re
 from collections import defaultdict
 from typing import Any
@@ -29,6 +30,22 @@ NEGATIVE_WORDS = {
     "limited",
     "problem",
     "issue",
+}
+
+BRAND_EXCLUDE_TOKENS = {
+    "best",
+    "top",
+    "overall",
+    "editor",
+    "choice",
+    "options",
+    "option",
+    "comparison",
+    "review",
+    "reviews",
+    "guide",
+    "budget",
+    "premium",
 }
 
 
@@ -109,6 +126,50 @@ def _extract_ranked_lines(response_text: str) -> list[str]:
     return [s.strip() for s in sentences if s.strip()]
 
 
+def _extract_notable_brands_from_ranked_lines(ranked_lines: list[str], tracked_lower: set[str]) -> list[dict[str, Any]]:
+    """Heuristic extraction of additional notable brands not explicitly configured."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for line_idx, line in enumerate(ranked_lines, start=1):
+        explicit_rank_match = re.match(r"^(\d+)\s*[\).:-]", line)
+        explicit_rank = int(explicit_rank_match.group(1)) if explicit_rank_match else line_idx
+        clean = re.sub(r"^(\d+[\).:-]|[-*])\s*", "", line).strip()
+
+        # First segment usually holds the primary brand in ranked lists.
+        segment = re.split(r"[—\-:|,(]", clean, maxsplit=1)[0].strip()
+        if not segment:
+            continue
+
+        # Keep compact brand-like labels: "Samsung", "LG", "Whirlpool", "Panasonic".
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9 '&+./]{1,40}$", segment):
+            continue
+        if len(segment.split()) > 4:
+            continue
+
+        normalized = segment.lower().strip()
+        if normalized in tracked_lower or normalized in seen:
+            continue
+        if normalized in BRAND_EXCLUDE_TOKENS:
+            continue
+
+        # Drop obvious non-brand fragments.
+        if not re.search(r"[A-Za-z]", normalized):
+            continue
+
+        seen.add(normalized)
+        out.append(
+            {
+                "brand": segment,
+                "rank": explicit_rank,
+                "context": line,
+                "sentiment": _sentiment_for_context(line),
+            }
+        )
+
+    return out
+
+
 def _sentiment_for_context(context: str) -> str:
     lowered = context.lower()
     pos = sum(1 for token in POSITIVE_WORDS if token in lowered)
@@ -163,6 +224,18 @@ def _heuristic_analysis(
                 "context": context,
             }
 
+    # Add notable non-configured competitors discovered in ranked lines.
+    tracked_lower = {b.lower() for b in tracked_clean}
+    for notable in _extract_notable_brands_from_ranked_lines(ranked_lines, tracked_lower):
+        key = notable["brand"].lower()
+        if key in mentions:
+            continue
+        mentions[key] = {
+            "brand": notable["brand"],
+            "rank": notable.get("rank"),
+            "context": notable.get("context", ""),
+        }
+
     details = []
     for item in mentions.values():
         details.append(
@@ -199,6 +272,17 @@ def analyze_single_response(
 
     competitors = competitor_brands or []
 
+    heuristic = _heuristic_analysis(response_text, focus_brand, competitors)
+
+    # Fast path: heuristic already extracted ranked brand details.
+    if heuristic.get("all_brand_details"):
+        return heuristic
+
+    # Optional fallback to LLM parser for edge cases where heuristic extraction misses.
+    use_llm_parser = os.getenv("RANKLORE_USE_LLM_PARSER", "false").lower() in {"1", "true", "yes"}
+    if not use_llm_parser:
+        return heuristic
+
     llm_prompt = f"""You are a brand intelligence analyst.
 
 ORIGINAL QUERY: "{query}"
@@ -231,7 +315,7 @@ Return only valid JSON:
     except Exception:
         pass
 
-    return _heuristic_analysis(response_text, focus_brand, competitors)
+    return heuristic
 
 
 def calculate_visibility_score(brand_mentions: list[dict], total_engines: int) -> float:
@@ -406,6 +490,15 @@ def generate_recommendations(
     prompt_rankings: list[dict],
     competitor_sources: list[str],
 ) -> dict[str, Any]:
+    analyzed_count = sum(1 for row in prompt_rankings if (row.get("engines_analyzed") or 0) > 0)
+    if analyzed_count == 0:
+        return {
+            "missing_from_prompts": [],
+            "competitor_sources": [],
+            "recommendation_text": "No analysis data yet. Run prompt analysis to generate evidence-backed recommendations.",
+            "has_data": False,
+        }
+
     missing = [row["prompt_text"] for row in prompt_rankings if row.get("avg_rank") is None]
 
     actions: list[str] = []
@@ -427,6 +520,7 @@ def generate_recommendations(
         "missing_from_prompts": missing,
         "competitor_sources": competitor_sources,
         "recommendation_text": " ".join(actions),
+        "has_data": True,
     }
 
 
@@ -487,30 +581,100 @@ def generate_project_summary(
     prompt_rankings: list[dict],
 ) -> dict[str, Any]:
     """Synthesize overall project performance into a strategic executive summary."""
-    low_visibility_prompts = [p["prompt_text"] for p in prompt_rankings if p.get("avg_rank") is None or p.get("avg_rank") > 5]
-    
-    prompt = f"""You are a Visionary Brand Intelligence Director.
-Summarize the AI Visibility health for "{focus_brand}" (Project: {project_metadata.get('name')}).
+    # --- Metric-driven health (kept deterministic) ---
+    if not prompt_rankings:
+        computed_health = "Neutral"
+        coverage_ratio = 0.0
+        avg_rank = None
+    else:
+        total = len(prompt_rankings)
+        ranked = [row for row in prompt_rankings if row.get("avg_rank") is not None]
+        ranked_count = len(ranked)
+        coverage_ratio = ranked_count / total if total else 0.0
+        avg_rank = sum(float(row["avg_rank"]) for row in ranked) / ranked_count if ranked_count else None
 
-METRICS SUMMARY:
-- Industry: {project_metadata.get('category')}
-- Target Region: {project_metadata.get('region')}
-- Active Prompts: {len(prompt_rankings)}
-- At-Risk Intents (Low Visibility): {len(low_visibility_prompts)}
+        if ranked_count == 0:
+            computed_health = "Critical"
+        elif coverage_ratio >= 0.7 and avg_rank is not None and avg_rank <= 3.0:
+            computed_health = "Strong"
+        elif coverage_ratio < 0.4 or (avg_rank is not None and avg_rank > 6.0):
+            computed_health = "Critical"
+        else:
+            computed_health = "Neutral"
+
+    # Bucket prompts for roadmap guidance.
+    low_visibility_prompts = [
+        p["prompt_text"]
+        for p in prompt_rankings
+        if p.get("prompt_text") and (p.get("avg_rank") is None or float(p.get("avg_rank")) > 5.0)
+    ]
+    top_visibility_prompts = [
+        p["prompt_text"]
+        for p in prompt_rankings
+        if p.get("prompt_text") and p.get("avg_rank") is not None and float(p.get("avg_rank")) <= 3.0
+    ]
+
+    # De-dup while preserving order.
+    def _dedupe(items: list[str]) -> list[str]:
+        seen = set()
+        out = []
+        for x in items:
+            if x in seen:
+                continue
+            seen.add(x)
+            out.append(x)
+        return out
+
+    low_visibility_prompts = _dedupe(low_visibility_prompts)[:6]
+    top_visibility_prompts = _dedupe(top_visibility_prompts)[:6]
+
+    # --- LLM-driven narrative, constrained by computed_health ---
+    prompt = f"""You are a Visionary Brand Intelligence Director.
+You MUST base your narrative and roadmap on the metric-derived visibility health below.
+
+COMPUTED VISIBILITY HEALTH (DO NOT CHANGE):
+- overall_health: "{computed_health}"
+- coverage_ratio: {coverage_ratio:.2f}
+- avg_rank: {avg_rank if avg_rank is not None else "null"}
+
+PROJECT:
+- name: {project_metadata.get('name')}
+- industry: {project_metadata.get('category')}
+- target_region: {project_metadata.get('region')}
+
+FOCUS BRAND:
+"{focus_brand}"
+
+PROMPT INTENT BUCKETS:
+- Top (best-ranking) intents (avg_rank <= 3.0): {top_visibility_prompts}
+- At-risk intents (avg_rank is null or > 5.0): {low_visibility_prompts}
 
 Return ONLY valid JSON:
 {{
-  "overall_health": "Critical | Neutral | Strong",
-  "executive_summary": "A 2-3 sentence high-level narrative of brand dominance or displacement.",
+  "overall_health": "{computed_health}",
+  "executive_summary": "Write a 2-3 sentence summary that matches the computed health: if Strong, describe defending and expanding winning intents; if Critical, describe recovery from missing/weak intent coverage; if Neutral, describe stabilization and precision improvement.",
   "strategic_roadmap": [
-    {{"phase": "Immediate Fix", "action": "Specific tactic for {focus_brand} to rank higher in low visibility intents"}},
-    {{"phase": "Market Gain", "action": "Specific tactic to capture more AI recommendation share"}}
+    {{
+      "phase": "Primary Action",
+      "action": "Highly specific, publishable steps. Must mention the intent coverage strategy that matches overall_health."
+    }},
+    {{
+      "phase": "Next 2-4 Weeks",
+      "action": "Highly specific steps for the next window, including how to measure improvement (what metric should rise and when)."
+    }}
   ],
-  "competitive_threats": ["Brand A is eating share in X intent", "AI models favor Y type of content"],
-  "top_priority_prompts": ["Prompt text 1", "Prompt text 2"]
+  "competitive_threats": ["Threat 1 tied to intent coverage", "Threat 2 tied to retrieval/citation behavior"],
+  "top_priority_prompts": {json.dumps(top_visibility_prompts[:2] if computed_health == 'Strong' else (low_visibility_prompts[:2] if computed_health == 'Critical' else (low_visibility_prompts[:1] + top_visibility_prompts[:1])) ) }
 }}
 
-CRITICAL: The strategic_roadmap MUST provide highly specific, actionable content creation and positioning steps for {focus_brand} to actually rank better in those queries."""
+CRITICAL VALIDATION RULES:
+1. The "overall_health" field MUST equal "{computed_health}" exactly.
+2. Do not describe recovery steps when overall_health is Strong.
+3. Do not describe maintenance/defense when overall_health is Critical.
+4. The roadmap actions must be tactical and tied to intent coverage and AI retrieval behavior for "{focus_brand}".
+5. strategic_roadmap[0].action MUST include at least one of the prompts from "top_priority_prompts" verbatim (exact text match).
+6. competitive_threats MUST clearly tie to retrieval/citation behavior and intent coverage gaps for "{focus_brand}" (based on overall_health).
+"""
 
     raw = chat("chatgpt", prompt)
     try:
@@ -521,11 +685,18 @@ CRITICAL: The strategic_roadmap MUST provide highly specific, actionable content
         pass
 
     return {
-        "overall_health": "Neutral",
-        "executive_summary": f"Initial analysis for {focus_brand} shows mixed visibility across {len(prompt_rankings)} intents. Coverage optimization is required.",
+        "overall_health": computed_health,
+        "executive_summary": (
+            f"Metric-derived visibility health for {focus_brand} is {computed_health}. "
+            "Use the intent buckets to guide content creation and retrieval alignment."
+        ),
         "strategic_roadmap": [],
         "competitive_threats": [],
-        "top_priority_prompts": low_visibility_prompts[:3]
+        "top_priority_prompts": (
+            top_visibility_prompts[:2]
+            if computed_health == "Strong"
+            else (low_visibility_prompts[:2] if computed_health == "Critical" else low_visibility_prompts[:1] + top_visibility_prompts[:1])
+        ),
     }
 
 
@@ -572,6 +743,75 @@ Return ONLY valid JSON:
             "seo_tags": [],
             "placement_advice": "Check manual distribution strategy."
         }
+
+
+def generate_action_playbook(
+    focus_brand: str,
+    action_title: str,
+    action_detail: str,
+    industry: str = "",
+    engine: str = "chatgpt",
+) -> dict[str, Any]:
+    """Generate a deep, step-by-step execution playbook for a single action plan item."""
+
+    prompt = f"""You are a Senior AI Visibility Strategist working with a paying client: "{focus_brand}" in the "{industry or 'general'}" industry.
+
+The client has this strategic action item from their AI visibility audit:
+TITLE: {action_title}
+DETAIL: {action_detail}
+
+Produce an in-depth, step-by-step execution playbook so the client can implement this action TODAY. Think like a $500/hr consultant — be specific, not generic.
+
+REQUIREMENTS:
+1. Explain briefly WHY this matters: how LLMs (ChatGPT, Perplexity, Claude, Gemini) actually decide what to cite and recommend (the retrieval & ranking mechanics relevant to this action).
+2. Give 5-8 concrete numbered steps. Each step must have:
+   - A short imperative title (e.g. "Audit your existing FAQ schema")
+   - 2-4 sentences of detailed HOW-TO instruction (tools, exact techniques, where to click, what to write)
+   - One concrete example or template specific to the brand/industry where possible
+3. Include a "Quick Wins" section: 2-3 things they can do in under 30 minutes that will have immediate impact.
+4. Include a "Common Mistakes" section: 2-3 pitfalls to avoid with a one-line explanation each.
+5. If relevant, mention specific free/paid tools (e.g. Ahrefs, Surfer SEO, Schema.org validator, Google Search Console) and how to use them for this specific action.
+
+Return ONLY valid JSON:
+{{
+  "why_it_matters": "2-3 sentence explanation of how LLMs use this signal in their retrieval/ranking",
+  "steps": [
+    {{
+      "title": "Step title",
+      "detail": "Detailed how-to instruction",
+      "example": "Concrete example or template (optional, use null if not applicable)"
+    }}
+  ],
+  "quick_wins": [
+    {{ "title": "Quick win title", "detail": "What to do in under 30 min" }}
+  ],
+  "common_mistakes": [
+    {{ "title": "Mistake title", "detail": "Why it's bad and what to do instead" }}
+  ],
+  "tools_mentioned": ["Tool Name 1", "Tool Name 2"]
+}}"""
+
+    raw = chat(engine, prompt)
+    try:
+        parsed = _clean_json(raw)
+        if isinstance(parsed, dict) and "steps" in parsed:
+            return parsed
+    except Exception:
+        pass
+
+    return {
+        "why_it_matters": "LLMs prioritize structured, entity-rich content from authoritative sources when generating recommendations.",
+        "steps": [
+            {
+                "title": "Review the action detail above",
+                "detail": f"Start by understanding the specific recommendation: {action_detail[:200]}",
+                "example": None,
+            }
+        ],
+        "quick_wins": [],
+        "common_mistakes": [],
+        "tools_mentioned": [],
+    }
 
 
 def generate_global_audit(

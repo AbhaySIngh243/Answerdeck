@@ -3,15 +3,18 @@ routes/projects.py
 CRUD for brand projects.
 """
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from datetime import datetime
 import json
 from models import db, Project
 from schemas import ProjectCreateSchema, ProjectUpdateSchema
 from pydantic import ValidationError as PydanticValidationError
 from exceptions import NotFoundError, ValidationError
+from auth import require_auth
 
 projects_bp = Blueprint("projects", __name__)
+
+MAX_PROJECTS_PER_USER = 3
 
 
 def _parse_competitors(value):
@@ -41,8 +44,10 @@ def _parse_list(value):
 
 
 @projects_bp.route("/", methods=["GET"])
+@require_auth
 def get_projects():
-    projects = Project.query.order_by(Project.created_at.desc()).all()
+    # Filter by user_id
+    projects = Project.query.filter_by(user_id=g.user.id).order_by(Project.created_at.desc()).all()
     result = []
     for p in projects:
         data = {
@@ -60,8 +65,10 @@ def get_projects():
 
 
 @projects_bp.route("/<int:project_id>", methods=["GET"])
+@require_auth
 def get_project(project_id):
-    p = Project.query.get(project_id)
+    # Filter by user_id
+    p = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
     if not p:
         raise NotFoundError("Project not found")
         
@@ -79,7 +86,11 @@ def get_project(project_id):
 
 
 @projects_bp.route("/", methods=["POST"])
+@require_auth
 def create_project():
+    count = Project.query.filter_by(user_id=g.user.id).count()
+    if count >= MAX_PROJECTS_PER_USER:
+        raise ValidationError(f"Maximum {MAX_PROJECTS_PER_USER} projects per account. Delete a project to create a new one.")
     data = request.get_json(force=True) or {}
     try:
         validated = ProjectCreateSchema(**data)
@@ -88,6 +99,7 @@ def create_project():
         
     competitors = _parse_competitors(validated.competitors)
     new_project = Project(
+        user_id=g.user.id, # Assign owner
         name=validated.name,
         category=validated.category,
         competitors=competitors,
@@ -102,8 +114,10 @@ def create_project():
 
 
 @projects_bp.route("/<int:project_id>", methods=["PUT", "PATCH"])
+@require_auth
 def update_project(project_id):
-    p = Project.query.get(project_id)
+    # Filter by user_id
+    p = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
     if not p:
         raise NotFoundError("Project not found")
 
@@ -131,8 +145,10 @@ def update_project(project_id):
 
 
 @projects_bp.route("/<int:project_id>", methods=["DELETE"])
+@require_auth
 def delete_project(project_id):
-    p = Project.query.get(project_id)
+    # Filter by user_id
+    p = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
     if p:
         db.session.delete(p)
         db.session.commit()
@@ -140,8 +156,10 @@ def delete_project(project_id):
 
 
 @projects_bp.route("/<int:project_id>/invite", methods=["POST"])
+@require_auth
 def invite_collaborator(project_id):
-    project = Project.query.get(project_id)
+    # Filter by user_id
+    project = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
     if not project:
         raise NotFoundError("Project not found")
 

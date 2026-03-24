@@ -7,6 +7,8 @@ import FeaturesSection from './FeaturesSection';
 import ProductPreview from './ProductPreview';
 import CTASection from './CTASection';
 import Footer from './Footer';
+import RevealSection from './RevealSection';
+import SectionTransition from './SectionTransition';
 
 function LandingPage() {
   return (
@@ -14,11 +16,26 @@ function LandingPage() {
       <Navbar />
       <main>
         <HeroSection />
-        <ProblemSection />
-        <HowItWorks />
-        <FeaturesSection />
-        <ProductPreview />
-        <CTASection />
+        <SectionTransition />
+        <RevealSection as="div">
+          <ProblemSection />
+        </RevealSection>
+        <SectionTransition />
+        <RevealSection as="div">
+          <HowItWorks />
+        </RevealSection>
+        <SectionTransition />
+        <RevealSection as="div">
+          <FeaturesSection />
+        </RevealSection>
+        <SectionTransition />
+        <RevealSection as="div">
+          <ProductPreview />
+        </RevealSection>
+        <SectionTransition />
+        <RevealSection as="div">
+          <CTASection />
+        </RevealSection>
       </main>
       <Footer />
     </>

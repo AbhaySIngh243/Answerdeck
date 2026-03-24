@@ -1,7 +1,9 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 
 const SettingsView = () => {
-  const [timezone, setTimezone] = useState(localStorage.getItem('ranklore_timezone') || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  const [timezone, setTimezone] = useState(
+    localStorage.getItem('ranklore_timezone') || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  );
   const [defaultCountry, setDefaultCountry] = useState(localStorage.getItem('ranklore_default_country') || '');
 
   const save = () => {
@@ -11,24 +13,40 @@ const SettingsView = () => {
   };
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-neutral-900">Settings</h1>
-        <p className="text-neutral-500 mt-1">Configure workspace defaults for prompt analysis.</p>
+        <p className="landing-eyebrow text-left">Account</p>
+        <h1 className="mt-2 text-3xl font-extrabold tracking-[-0.03em] text-[#0f172a]">Settings</h1>
+        <p className="mt-1 text-[#64748b]">Configure workspace defaults for prompt analysis.</p>
       </div>
 
-      <div className="bg-white border border-neutral-200 rounded-xl p-6 space-y-4">
-        <label className="block text-sm font-medium text-neutral-700">
+      <div className="space-y-4 rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm">
+        <label className="block text-sm font-medium text-slate-800">
           Timezone
-          <input value={timezone} onChange={(event) => setTimezone(event.target.value)} className="mt-1 w-full border border-neutral-200 rounded-lg px-4 py-2" />
+          <input
+            value={timezone}
+            onChange={(event) => setTimezone(event.target.value)}
+            className="mt-1 w-full rounded-xl border border-[#e2e8f0] bg-[#f8fafc] px-4 py-2.5 text-[#0f172a] outline-none transition focus:border-brand-primary focus:ring-2 focus:ring-brand-primary/20"
+          />
         </label>
 
-        <label className="block text-sm font-medium text-neutral-700">
-          Default Country
-          <input value={defaultCountry} onChange={(event) => setDefaultCountry(event.target.value)} className="mt-1 w-full border border-neutral-200 rounded-lg px-4 py-2" placeholder="e.g. United States" />
+        <label className="block text-sm font-medium text-slate-800">
+          Default country
+          <input
+            value={defaultCountry}
+            onChange={(event) => setDefaultCountry(event.target.value)}
+            className="mt-1 w-full rounded-xl border border-[#e2e8f0] bg-[#f8fafc] px-4 py-2.5 text-[#0f172a] outline-none transition placeholder:text-slate-400 focus:border-brand-primary focus:ring-2 focus:ring-brand-primary/20"
+            placeholder="e.g. United States"
+          />
         </label>
 
-        <button onClick={save} className="bg-brand-primary text-white px-4 py-2 rounded-lg font-medium hover:bg-brand-secondary">Save Settings</button>
+        <button
+          type="button"
+          onClick={save}
+          className="rounded-xl bg-brand-primary px-5 py-2.5 font-semibold text-white shadow-md shadow-blue-500/20 transition-colors hover:bg-[#3b82f6]"
+        >
+          Save settings
+        </button>
       </div>
     </div>
   );

@@ -1,12 +1,12 @@
-﻿from flask_sqlalchemy import SQLAlchemy
+from flask_sqlalchemy import SQLAlchemy
 import json
 
 db = SQLAlchemy()
 
-
 class Project(db.Model):
     __tablename__ = 'projects'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(db.String, nullable=False, index=True) # Linked to Supabase Auth user.id
     name = db.Column(db.String, nullable=False)
     category = db.Column(db.String, default="")
     competitors = db.Column(db.String, default="[]")
@@ -34,6 +34,7 @@ class Project(db.Model):
 class Prompt(db.Model):
     __tablename__ = 'prompts'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(db.String, nullable=False, index=True) # Linked to Supabase Auth user.id
     project_id = db.Column(db.Integer, db.ForeignKey('projects.id', ondelete="CASCADE"), nullable=False)
     prompt_text = db.Column(db.String, nullable=False)
     prompt_type = db.Column(db.String, default="Manual")
@@ -89,3 +90,20 @@ class VisibilityMetric(db.Model):
     project_id = db.Column(db.Integer, db.ForeignKey('projects.id', ondelete="CASCADE"), nullable=False)
     score = db.Column(db.Float, nullable=False)
     date = db.Column(db.String, nullable=False)
+
+
+class AnalysisJob(db.Model):
+    __tablename__ = "analysis_jobs"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    job_id = db.Column(db.String, nullable=False, unique=True, index=True)
+    user_id = db.Column(db.String, nullable=False, index=True)
+    project_id = db.Column(db.Integer, nullable=False, index=True)
+    prompt_id = db.Column(db.Integer, nullable=False, index=True)
+
+    status = db.Column(db.String, nullable=False, default="pending", index=True)  # pending|running|completed|failed
+    error = db.Column(db.String, default="")
+    result_json = db.Column(db.Text, default="")
+
+    created_at = db.Column(db.String, nullable=False)
+    started_at = db.Column(db.String, default="")
+    completed_at = db.Column(db.String, default="")

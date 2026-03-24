@@ -1,17 +1,122 @@
+import { getAuthToken } from './authTokenStore';
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
 
-async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, options);
-  const contentType = response.headers.get('content-type') || '';
-  const isJson = contentType.includes('application/json');
-  const payload = isJson ? await response.json() : await response.text();
+/** LLM / analysis routes often exceed the default 30s client timeout. */
+const LONG_REQUEST_TIMEOUT_MS = Number(
+  import.meta.env.VITE_API_LONG_TIMEOUT_MS || 180000,
+);
 
-  if (!response.ok) {
-    const errorMessage = isJson ? payload.error || payload.message || 'Request failed' : 'Request failed';
-    throw new Error(errorMessage);
+function apiBaseLooksLocal() {
+  try {
+    const { hostname } = new URL(API_BASE_URL);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+/** Slightly longer default on local so reports/dashboard GETs are less brittle while the backend is busy. */
+const DEFAULT_REQUEST_TIMEOUT_MS = Number(
+  import.meta.env.VITE_API_TIMEOUT_MS || (apiBaseLooksLocal() ? 60000 : 30000),
+);
+
+function timeoutHintMessage(timeoutMs) {
+  if (apiBaseLooksLocal()) {
+    return `Request timed out after ${timeoutMs}ms. For local dev: confirm the backend is running (e.g. python app.py in backend/), then retry. Slow LLM work uses a longer limit — set VITE_API_LONG_TIMEOUT_MS in frontend/.env if needed (default ${LONG_REQUEST_TIMEOUT_MS}ms for those routes).`;
+  }
+  return `Request timed out after ${timeoutMs}ms. Check VITE_API_BASE_URL, CORS on the server, and that the API host is up.`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildHelpfulError({ url, response, payload, isJson }) {
+  const status = response?.status;
+  const statusText = response?.statusText || '';
+  const requestId =
+    response?.headers?.get?.('x-request-id') ||
+    response?.headers?.get?.('x-render-request-id') ||
+    '';
+
+  if (status === 401) {
+    return new Error('Session expired or unauthorized. Please sign in again.');
   }
 
-  return payload;
+  const backendMessage =
+    isJson && payload && typeof payload === 'object'
+      ? payload.error || payload.message || payload.detail
+      : null;
+
+  const prefix = status ? `API ${status}${statusText ? ` ${statusText}` : ''}` : 'API error';
+  const suffix = requestId ? ` (request_id: ${requestId})` : '';
+  const details = backendMessage ? `: ${backendMessage}` : '';
+  const err = new Error(`${prefix}${details}${suffix}`);
+
+  // Attach a few fields for UI/telemetry if needed.
+  err.name = 'ApiError';
+  err.status = status;
+  err.url = url;
+  err.requestId = requestId || null;
+  return err;
+}
+
+async function getAuthHeader() {
+  const token = await getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function request(path, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
+  const headers = { ...options.headers };
+
+  if (!headers.Authorization) {
+    const authHeader = await getAuthHeader();
+    if (authHeader?.Authorization) headers.Authorization = authHeader.Authorization;
+  }
+
+  const url = `${API_BASE_URL}${path}`;
+  const timeoutMs = Number(options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  const retries = Number(options.retries ?? (method === 'GET' ? 2 : 0));
+
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, headers, signal: controller.signal });
+      const contentType = response.headers.get('content-type') || '';
+      const isJson = contentType.includes('application/json');
+      const payload = isJson ? await response.json() : await response.text();
+
+      if (!response.ok) {
+        throw buildHelpfulError({ url, response, payload, isJson });
+      }
+
+      return payload;
+    } catch (err) {
+      const isAbort = err?.name === 'AbortError';
+      const isNetwork =
+        isAbort ||
+        err?.message?.includes('Failed to fetch') ||
+        err?.message?.includes('NetworkError') ||
+        err?.message?.includes('Load failed');
+
+      lastErr = isAbort ? new Error(timeoutHintMessage(timeoutMs)) : err;
+
+      // Retry only safe reads and only for network-like failures or 5xx.
+      const status = err?.status;
+      const shouldRetry = method === 'GET' && (isNetwork || (typeof status === 'number' && status >= 500));
+      if (!shouldRetry || attempt === retries) break;
+
+      await sleep(250 * Math.pow(2, attempt));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw lastErr || new Error('Request failed');
 }
 
 export const api = {
@@ -65,10 +170,12 @@ export const api = {
   runPromptAnalysis: (promptId) =>
     request(`/analysis/run/${promptId}`, {
       method: 'POST',
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     }),
   runAllPromptAnalysis: (projectId) =>
     request(`/analysis/run-all/${projectId}`, {
       method: 'POST',
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     }),
   getJobStatus: (jobId) => request(`/analysis/status/${jobId}`),
   getPromptResults: (promptId) => request(`/analysis/results/${promptId}`),
@@ -78,6 +185,7 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     }),
 
   getProjectDashboard: (projectId) => request(`/reports/project/${projectId}/dashboard`),
@@ -88,19 +196,28 @@ export const api = {
   getCompetitorIntelligence: (projectId) => request(`/reports/project/${projectId}/competitors`),
   getIntelSummary: (projectId) => request(`/reports/project/${projectId}/intel-summary`),
   getGlobalAudit: (projectId) => request(`/reports/project/${projectId}/global-audit`),
+  getActionPlaybook: (projectId, body) =>
+    request(`/reports/project/${projectId}/actions/playbook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    }),
   executeAction: (projectId, body) =>
     request(`/reports/project/${projectId}/actions/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     }),
   getOverview: () => request('/reports/overview'),
 };
 
 export async function downloadFile(path, filename) {
-  const response = await fetch(`${API_BASE_URL}${path}`);
+  const headers = await getAuthHeader();
+  const response = await fetch(`${API_BASE_URL}${path}`, { headers: headers || {} });
   if (!response.ok) {
-    throw new Error('Download failed');
+    throw buildHelpfulError({ url: `${API_BASE_URL}${path}`, response, payload: null, isJson: false });
   }
 
   const blob = await response.blob();

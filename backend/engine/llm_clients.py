@@ -1,7 +1,7 @@
 """Client wrappers for all configured LLM engines."""
 
 import os
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from anthropic import Anthropic
@@ -122,11 +122,32 @@ def query_engines(query: str, selected_models: list[str] | None = None) -> dict[
     )
     full_prompt = f"{system_prompt}\n\nQuestion: {query}"
 
+    enabled_engines = list(get_enabled_engines(selected_models).keys())
+    if not enabled_engines:
+        return {}
+
+    max_workers = max(1, int(os.getenv("RANKLORE_ENGINE_CONCURRENCY", str(len(enabled_engines)))))
+    max_workers = min(max_workers, len(enabled_engines))
+
     results: dict[str, str] = {}
-    for engine_name in get_enabled_engines(selected_models):
-        results[engine_name] = chat(engine_name, full_prompt)
-        time.sleep(0.4)
-    return results
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_to_engine = {
+            pool.submit(chat, engine_name, full_prompt): engine_name
+            for engine_name in enabled_engines
+        }
+        for future in as_completed(future_to_engine):
+            engine_name = future_to_engine[future]
+            try:
+                results[engine_name] = future.result()
+            except Exception as exc:
+                results[engine_name] = f"[{engine_name} error: {exc}]"
+
+    # Preserve deterministic display order.
+    ordered_results: dict[str, str] = {}
+    for engine_name in enabled_engines:
+        if engine_name in results:
+            ordered_results[engine_name] = results[engine_name]
+    return ordered_results
 
 
 def get_api_status() -> dict[str, bool]:

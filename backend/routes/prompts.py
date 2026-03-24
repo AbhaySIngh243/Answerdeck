@@ -1,16 +1,19 @@
-﻿"""CRUD for prompts within a project."""
+"""CRUD for prompts within a project."""
 
 import json
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 from pydantic import ValidationError as PydanticValidationError
 
 from exceptions import NotFoundError, ValidationError
 from models import Prompt, Project, db
 from schemas import PromptCreateSchema, PromptUpdateSchema
+from auth import require_auth
 
 prompts_bp = Blueprint("prompts", __name__)
+
+MAX_PROMPTS_PER_PROJECT = 10
 
 
 def _json_list(values):
@@ -22,8 +25,14 @@ def _json_list(values):
 
 
 @prompts_bp.route("/project/<int:project_id>", methods=["GET"])
+@require_auth
 def get_prompts(project_id):
-    prompts = Prompt.query.filter_by(project_id=project_id).order_by(Prompt.created_at.desc()).all()
+    # Ensure project belongs to user
+    project = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
+    if not project:
+        raise NotFoundError("Project not found")
+
+    prompts = Prompt.query.filter_by(project_id=project_id, user_id=g.user.id).order_by(Prompt.created_at.desc()).all()
     return jsonify(
         [
             {
@@ -43,8 +52,9 @@ def get_prompts(project_id):
 
 
 @prompts_bp.route("/<int:prompt_id>", methods=["GET"])
+@require_auth
 def get_prompt(prompt_id):
-    prompt = Prompt.query.get(prompt_id)
+    prompt = Prompt.query.filter_by(id=prompt_id, user_id=g.user.id).first()
     if not prompt:
         raise NotFoundError("Prompt not found")
     return jsonify(
@@ -63,11 +73,14 @@ def get_prompt(prompt_id):
 
 
 @prompts_bp.route("/project/<int:project_id>", methods=["POST"])
+@require_auth
 def add_prompt(project_id):
-    project = Project.query.get(project_id)
+    project = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
     if not project:
         raise NotFoundError("Project not found")
-
+    prompt_count = Prompt.query.filter_by(project_id=project_id).count()
+    if prompt_count >= MAX_PROMPTS_PER_PROJECT:
+        raise ValidationError(f"Maximum {MAX_PROMPTS_PER_PROJECT} prompts per project. Delete a prompt to add another.")
     data = request.get_json(force=True) or {}
     try:
         validated = PromptCreateSchema(**data)
@@ -75,6 +88,7 @@ def add_prompt(project_id):
         raise ValidationError(payload=exc.errors())
 
     new_prompt = Prompt(
+        user_id=g.user.id,
         project_id=project_id,
         prompt_text=validated.prompt_text,
         prompt_type=validated.prompt_type or "Manual",
@@ -91,8 +105,9 @@ def add_prompt(project_id):
 
 
 @prompts_bp.route("/<int:prompt_id>", methods=["PUT", "PATCH"])
+@require_auth
 def update_prompt(prompt_id):
-    prompt = Prompt.query.get(prompt_id)
+    prompt = Prompt.query.filter_by(id=prompt_id, user_id=g.user.id).first()
     if not prompt:
         raise NotFoundError("Prompt not found")
 
@@ -120,8 +135,9 @@ def update_prompt(prompt_id):
 
 
 @prompts_bp.route("/<int:prompt_id>", methods=["DELETE"])
+@require_auth
 def delete_prompt(prompt_id):
-    prompt = Prompt.query.get(prompt_id)
+    prompt = Prompt.query.filter_by(id=prompt_id, user_id=g.user.id).first()
     if prompt:
         db.session.delete(prompt)
         db.session.commit()
