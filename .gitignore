@@ -1,6 +1,8 @@
 # Ignore environment variables
 .env
 .env.*
+!.env.example
+!backend/.env.example
 
 # Ignore SQLite databases
 *.db
