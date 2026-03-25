@@ -11,3 +11,4 @@ requests
 gunicorn
 psycopg2-binary
 PyJWT
+cryptography
