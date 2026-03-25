@@ -44,13 +44,16 @@ def _parse_sources(raw: str) -> list[str]:
 def _domain_from_url(url: str) -> str:
     if not url:
         return ""
-    parsed = urlparse(url if url.startswith("http") else f"https://{url}")
+    cleaned = url.strip()
+    parsed = urlparse(cleaned if cleaned.startswith("http") else f"https://{cleaned}")
     domain = (parsed.netloc or "").replace("www.", "").lower().strip()
-    if not domain:
-        return ""
-    if not re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", domain):
-        return ""
-    return domain
+    if domain and re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", domain):
+        return domain
+    # Fallback: treat the raw string as a label (e.g. "TechRadar", "PCMag").
+    fallback = re.sub(r"^https?://", "", cleaned).replace("www.", "").strip().rstrip("/")
+    if fallback and len(fallback) < 80:
+        return fallback.lower()
+    return ""
 
 
 def _latest_responses_by_prompt(prompt_id: int) -> list[Response]:
@@ -803,13 +806,16 @@ def get_project_global_audit(project_id):
     all_prompts_data = []
     for p in prompts:
         try:
-            # We use the detail builder but stripping unnecessary parts
             p_data = _build_prompt_detail_payload(p.id)
             all_prompts_data.append({
                 "prompt_text": p.prompt_text,
                 "audit": p_data.get("audit", [])
             })
-        except: continue
+        except Exception:
+            all_prompts_data.append({
+                "prompt_text": p.prompt_text,
+                "audit": [{"title": "Data unavailable", "priority": "medium"}]
+            })
 
     global_audit = generate_global_audit(project.name, all_prompts_data)
     return jsonify(global_audit)

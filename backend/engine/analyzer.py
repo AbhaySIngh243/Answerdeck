@@ -33,19 +33,36 @@ NEGATIVE_WORDS = {
 }
 
 BRAND_EXCLUDE_TOKENS = {
-    "best",
-    "top",
-    "overall",
-    "editor",
-    "choice",
-    "options",
-    "option",
-    "comparison",
-    "review",
-    "reviews",
-    "guide",
-    "budget",
-    "premium",
+    "best", "top", "overall", "editor", "choice", "options", "option",
+    "comparison", "review", "reviews", "guide", "budget", "premium",
+    "features", "feature", "quality", "performance", "price", "value",
+    "pros", "cons", "summary", "conclusion", "recommendation", "verdict",
+    "runner", "up", "honorable", "mention", "alternative", "alternatives",
+    "overview", "introduction", "note", "notes", "important", "key",
+    "takeaway", "takeaways", "considerations", "factors", "criteria",
+    "specifications", "specs", "design", "build", "display", "battery",
+    "camera", "storage", "memory", "processor", "speed", "connectivity",
+    "software", "hardware", "durability", "warranty", "support",
+    "customer", "service", "pricing", "cost", "affordable", "expensive",
+    "cheap", "high", "low", "mid", "range", "tier", "level", "class",
+    "category", "type", "model", "series", "edition", "version",
+    "generation", "update", "release", "latest", "new", "old",
+    "first", "second", "third", "fourth", "fifth", "pick",
+    "here", "why", "how", "what", "when", "where", "which",
+    "answer", "question", "solution", "result", "results",
+    "list", "ranking", "rankings", "rated", "rating", "ratings",
+    "our", "my", "your", "their", "its", "this", "that", "these",
+}
+
+DESCRIPTIVE_PHRASES = {
+    "battery life", "display quality", "build quality", "sound quality",
+    "image quality", "video quality", "picture quality", "audio quality",
+    "processing power", "storage capacity", "screen size", "price range",
+    "customer support", "user experience", "ease of use", "value for money",
+    "bang for buck", "smart features", "key features", "main features",
+    "top pick", "top picks", "best overall", "best value", "best budget",
+    "runner up", "editors choice", "our pick", "final verdict",
+    "bottom line", "quick summary", "in summary", "to summarize",
 }
 
 
@@ -62,54 +79,71 @@ def _empty_analysis() -> dict[str, Any]:
 
 
 def _clean_json(raw: str) -> Any:
-    # Remove thought blocks or other prefixes
-    if "</think>" in raw:
-        raw = raw.split("</think>")[-1].strip()
-    
-    # Remove markdown code fences
+    if not raw or not raw.strip():
+        raise ValueError("Empty JSON response")
+
+    # Remove thought blocks (DeepSeek/Claude reasoning traces).
+    for marker in ("</think>", "<|end_of_thinking|>"):
+        if marker in raw:
+            raw = raw.split(marker)[-1].strip()
+
+    # Remove markdown code fences.
     raw = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", raw, flags=re.DOTALL).strip()
-    
-    # Try to find the first '{' or '[' and the last '}' or ']'
-    try:
-        start_curly = raw.find('{')
-        start_bracket = raw.find('[')
-        
-        start = -1
-        if start_curly != -1 and (start_bracket == -1 or start_curly < start_bracket):
-            start = start_curly
-            end = raw.rfind('}')
-        elif start_bracket != -1:
-            start = start_bracket
-            end = raw.rfind(']')
-            
-        if start != -1 and end != -1:
-            raw = raw[start:end+1]
-            
-        return json.loads(raw)
-    except Exception:
-        # Fallback to simple strip if extraction fails
-        raw = re.sub(r"```json|```", "", raw).strip()
-        return json.loads(raw)
+
+    # Locate the outermost JSON structure.
+    start_curly = raw.find("{")
+    start_bracket = raw.find("[")
+
+    start = -1
+    end = -1
+    if start_curly != -1 and (start_bracket == -1 or start_curly < start_bracket):
+        start = start_curly
+        end = raw.rfind("}")
+    elif start_bracket != -1:
+        start = start_bracket
+        end = raw.rfind("]")
+
+    if start != -1 and end != -1 and end >= start:
+        candidate = raw[start : end + 1]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # Final fallback: strip residual markdown and try again.
+    raw = re.sub(r"```json|```", "", raw).strip()
+    return json.loads(raw)
 
 
 def _extract_sources(response_text: str) -> list[str]:
     sources: set[str] = set()
 
-    domain_matches = re.findall(r"(?:https?://)?(?:www\.)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", response_text)
+    # Capture full URLs first (higher fidelity).
+    url_matches = re.findall(r"https?://[^\s<>\"')\]]+", response_text)
+    for url in url_matches:
+        cleaned = url.rstrip(".,;:!?)")
+        if any(blocked in cleaned.lower() for blocked in {"example.com", "localhost"}):
+            continue
+        sources.add(cleaned)
+
+    # Also capture bare domains (e.g. "cnet.com", "techradar.com").
+    domain_matches = re.findall(r"(?<!\S)(?:www\.)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?!\S)", response_text)
     for domain in domain_matches:
         if any(blocked in domain.lower() for blocked in {"example.com", "localhost"}):
             continue
-        sources.add(domain.lower())
+        if not re.search(r"https?://.*" + re.escape(domain), response_text):
+            sources.add(domain.lower())
 
+    # Parse explicit "Sources:" lines.
     source_line_match = re.search(r"sources?\s*[:\-]\s*(.+)", response_text, flags=re.IGNORECASE)
     if source_line_match:
         chunks = re.split(r",|\||;", source_line_match.group(1))
         for chunk in chunks:
-            value = chunk.strip(" .")
-            if value:
+            value = chunk.strip(" .[]")
+            if value and len(value) < 120:
                 sources.add(value)
 
-    return sorted(sources)[:20]
+    return sorted(sources)[:30]
 
 
 def _extract_ranked_lines(response_text: str) -> list[str]:
@@ -141,20 +175,27 @@ def _extract_notable_brands_from_ranked_lines(ranked_lines: list[str], tracked_l
         if not segment:
             continue
 
-        # Keep compact brand-like labels: "Samsung", "LG", "Whirlpool", "Panasonic".
         if not re.match(r"^[A-Za-z0-9][A-Za-z0-9 '&+./]{1,40}$", segment):
             continue
-        if len(segment.split()) > 4:
+        words = segment.split()
+        if len(words) > 3:
             continue
 
         normalized = segment.lower().strip()
         if normalized in tracked_lower or normalized in seen:
             continue
-        if normalized in BRAND_EXCLUDE_TOKENS:
+
+        if any(tok in BRAND_EXCLUDE_TOKENS for tok in normalized.split()):
             continue
 
-        # Drop obvious non-brand fragments.
+        if normalized in DESCRIPTIVE_PHRASES:
+            continue
+
         if not re.search(r"[A-Za-z]", normalized):
+            continue
+
+        # Brands almost always contain at least one capitalized word.
+        if not re.search(r"[A-Z]", segment):
             continue
 
         seen.add(normalized)
