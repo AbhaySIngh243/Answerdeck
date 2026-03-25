@@ -32,15 +32,20 @@ def _jwk_client():
 def verify_clerk_token(token: str) -> ClerkUser:
     signing_key = _jwk_client().get_signing_key_from_jwt(token)
 
+    # Do not pass issuer= into jwt.decode: Clerk's iss and CLERK_JWT_ISSUER can differ
+    # by a trailing slash; PyJWT treats that as a hard failure.
     kwargs = {
         "algorithms": ["RS256"],
-        "options": {"require": ["exp", "iat", "sub"]},
+        "options": {"require": ["exp", "sub"]},
+        "leeway": 60,
     }
+    payload = jwt.decode(token, signing_key.key, **kwargs)
+
     issuer = _issuer()
     if issuer:
-        kwargs["issuer"] = issuer
-
-    payload = jwt.decode(token, signing_key.key, **kwargs)
+        iss = payload.get("iss")
+        if not iss or str(iss).rstrip("/") != str(issuer).rstrip("/"):
+            raise jwt.InvalidIssuerError(f"Invalid issuer (expected {issuer!r}, got {iss!r})")
     user_id = payload.get("sub")
     if not user_id or not isinstance(user_id, str):
         raise ValueError("Missing subject in Clerk token")

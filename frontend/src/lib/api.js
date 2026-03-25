@@ -41,7 +41,24 @@ function buildHelpfulError({ url, response, payload, isJson }) {
     '';
 
   if (status === 401) {
-    return new Error('Session expired or unauthorized. Please sign in again.');
+    const detail =
+      isJson && payload && typeof payload === 'object' && typeof payload.detail === 'string'
+        ? payload.detail
+        : '';
+    const code =
+      isJson && payload && typeof payload === 'object' && typeof payload.error === 'string'
+        ? payload.error
+        : '';
+    if (code === 'Missing or invalid authorization header') {
+      return new Error(
+        'API request had no auth token. Try signing out and signing in again, then redeploy the frontend if the issue persists.',
+      );
+    }
+    return new Error(
+      detail
+        ? `Unauthorized: ${detail}`
+        : 'Session expired or unauthorized. Please sign in again.',
+    );
   }
 
   const backendMessage =
