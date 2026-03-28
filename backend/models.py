@@ -1,5 +1,6 @@
 from flask_sqlalchemy import SQLAlchemy
 import json
+import re
 
 db = SQLAlchemy()
 
@@ -20,9 +21,30 @@ class Project(db.Model):
 
     def get_competitors_list(self):
         try:
-            return json.loads(self.competitors)
+            parsed = json.loads(self.competitors)
         except Exception:
+            parsed = self.competitors
+
+        if isinstance(parsed, str):
+            raw_items = [parsed]
+        elif isinstance(parsed, list):
+            raw_items = parsed
+        else:
             return []
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_items:
+            for part in re.split(r"[,\n;]+", str(raw or "")):
+                item = part.strip()
+                if not item:
+                    continue
+                key = item.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                cleaned.append(item)
+        return cleaned
 
     def get_collaborators_list(self):
         try:

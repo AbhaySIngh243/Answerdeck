@@ -18,7 +18,7 @@ from engine.analyzer import (
     is_spurious_brand_mention,
     research_prompt_sources,
 )
-from engine.llm_clients import get_available_engine_catalog, query_engines
+from engine.llm_clients import get_available_engine_catalog, get_search_layer_status, query_engines
 from exceptions import NotFoundError
 from extensions import executor
 from models import AnalysisJob, Mention, Project, Prompt, Response, VisibilityMetric, db
@@ -438,6 +438,7 @@ def list_engines():
         {
             "enabled_engines": [{"id": item["id"], "name": item["name"], "model": item["model"]} for item in enabled],
             "available_engines": catalog,
+            "search_layer": get_search_layer_status(),
             "count": len(enabled),
         }
     )

@@ -49,6 +49,7 @@ RANKLORE_LLM_TEMPERATURE = float(os.getenv("RANKLORE_LLM_TEMPERATURE", "0.0"))
 RANKLORE_SEARCH_AUGMENT_ENABLED = os.getenv("RANKLORE_SEARCH_AUGMENT_ENABLED", "true").lower() in {"1", "true", "yes"}
 RANKLORE_SEARCH_AUGMENT_MAX_RESULTS = max(1, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_MAX_RESULTS", "5")), 8))
 RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS = max(80, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS", "200")), 320))
+URL_PATTERN = re.compile(r"https?://[^\s<>\"')\]]+")
 
 def _build_client(api_key: str, base_url: str | None = None) -> OpenAI | None:
     if not api_key:
@@ -118,9 +119,75 @@ def get_enabled_engines(selected_models: list[str] | None = None) -> dict[str, d
     return {engine: ENGINE_CONFIG[engine] for engine in selected if ENGINE_CONFIG[engine].get("client") is not None}
 
 
+def _normalize_url(url: str) -> str:
+    cleaned = str(url or "").strip().rstrip(".,;:!?)")
+    return cleaned if cleaned.startswith("http://") or cleaned.startswith("https://") else ""
+
+
+def _extract_urls_from_text(text: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in URL_PATTERN.findall(str(text or "")):
+        normalized = _normalize_url(match)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            urls.append(normalized)
+    return urls
+
+
+def _collect_urls_from_any(payload: Any, urls: list[str], seen: set[str], visited: set[int], depth: int = 0) -> None:
+    if payload is None or depth > 8:
+        return
+    pid = id(payload)
+    if pid in visited:
+        return
+    visited.add(pid)
+
+    if isinstance(payload, str):
+        for value in _extract_urls_from_text(payload):
+            if value not in seen:
+                seen.add(value)
+                urls.append(value)
+        return
+
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_lower = str(key).lower()
+            if key_lower in {"url", "uri", "href", "link", "source"} and isinstance(value, str):
+                normalized = _normalize_url(value)
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    urls.append(normalized)
+            _collect_urls_from_any(value, urls, seen, visited, depth + 1)
+        return
+
+    if isinstance(payload, (list, tuple, set)):
+        for value in payload:
+            _collect_urls_from_any(value, urls, seen, visited, depth + 1)
+        return
+
+    for attr in ("model_dump", "to_dict", "dict"):
+        fn = getattr(payload, attr, None)
+        if callable(fn):
+            try:
+                dumped = fn() if attr != "model_dump" else fn(mode="python")
+                _collect_urls_from_any(dumped, urls, seen, visited, depth + 1)
+                return
+            except Exception:
+                pass
+
+    if hasattr(payload, "__dict__"):
+        try:
+            _collect_urls_from_any(vars(payload), urls, seen, visited, depth + 1)
+        except Exception:
+            pass
+
+
 def _extract_openai_response_citation_urls(response: Any) -> list[str]:
     urls: list[str] = []
     seen: set[str] = set()
+
+    # Preferred path: structured annotations.
     try:
         output_items = getattr(response, "output", []) or []
         for output_item in output_items:
@@ -131,19 +198,29 @@ def _extract_openai_response_citation_urls(response: Any) -> list[str]:
                     ann_type = getattr(ann, "type", "")
                     if ann_type != "url_citation":
                         continue
-                    url = getattr(ann, "url", "") or ""
-                    if not url:
-                        continue
-                    if url not in seen:
-                        seen.add(url)
-                        urls.append(url)
+                    normalized = _normalize_url(getattr(ann, "url", "") or "")
+                    if normalized and normalized not in seen:
+                        seen.add(normalized)
+                        urls.append(normalized)
     except Exception:
-        return []
-    return urls
+        pass
+
+    # Fallback: recursively scan the full object for URL-like fields.
+    _collect_urls_from_any(response, urls, seen, visited=set())
+    output_text = getattr(response, "output_text", "") or ""
+    _collect_urls_from_any(output_text, urls, seen, visited=set())
+    return urls[:20]
 
 
 def _format_sources_tail(urls: list[str]) -> str:
-    clean = [u.strip() for u in urls if u and u.strip()]
+    clean: list[str] = []
+    seen: set[str] = set()
+    for raw in urls:
+        normalized = _normalize_url(raw)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        clean.append(normalized)
     if not clean:
         return ""
     lines = "\n".join(f"- {url}" for url in clean[:12])
@@ -180,39 +257,58 @@ def _domain_label(url: str) -> str:
         return url
 
 
-def _build_search_grounding_block(query: str) -> str:
-    if not RANKLORE_SEARCH_AUGMENT_ENABLED:
-        return ""
-    if not is_perplexity_search_enabled():
-        return ""
+def _build_search_grounding_context(query: str) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "enabled": RANKLORE_SEARCH_AUGMENT_ENABLED,
+        "provider": get_search_provider_name(),
+        "available": is_perplexity_search_enabled(),
+        "ok": False,
+        "error": "",
+        "block": "",
+        "urls": [],
+    }
+    if not context["enabled"]:
+        context["error"] = "search augmentation disabled"
+        return context
+    if not context["available"]:
+        context["error"] = "no web search provider configured"
+        return context
 
     result = search_web(query=query, max_results=RANKLORE_SEARCH_AUGMENT_MAX_RESULTS, max_tokens_per_page=320)
+    context["provider"] = result.get("provider") or context["provider"]
     if not result.get("ok"):
-        return ""
+        context["error"] = str(result.get("error") or "search failed")
+        return context
 
     rows = result.get("results", []) or []
     if not rows:
-        return ""
+        context["error"] = "search returned no results"
+        return context
 
-    provider = result.get("provider") or get_search_provider_name()
     lines = []
+    urls: list[str] = []
     for idx, item in enumerate(rows[:RANKLORE_SEARCH_AUGMENT_MAX_RESULTS], start=1):
         title = _clip_prompt_text(item.get("title", ""), 110)
         snippet = _clip_prompt_text(item.get("snippet", ""), RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS)
-        url = str(item.get("url") or "").strip()
+        url = _normalize_url(item.get("url") or "")
         if not url:
             continue
+        urls.append(url)
         lines.append(f"{idx}. {title} [{_domain_label(url)}]\n   {snippet}\n   URL: {url}")
 
     if not lines:
-        return ""
+        context["error"] = "search results had no usable URLs"
+        return context
 
-    return (
+    context["ok"] = True
+    context["urls"] = urls
+    context["block"] = (
         "Web Grounding Context (recent external search signals)\n"
-        f"Provider: {provider}\n"
+        f"Provider: {context['provider']}\n"
         + "\n".join(lines)
         + "\nUse these as supporting evidence, keep ranking logic explicit, and include direct URLs under a final 'Sources:' section."
     )
+    return context
 
 
 def _extract_perplexity_citation_urls(response: Any) -> list[str]:
@@ -222,11 +318,21 @@ def _extract_perplexity_citation_urls(response: Any) -> list[str]:
     if not candidates and isinstance(response, dict):
         candidates = response.get("citations")
     for item in candidates or []:
-        value = str(item or "").strip()
-        if value and value not in seen:
-            seen.add(value)
-            urls.append(value)
-    return urls
+        normalized = _normalize_url(str(item or "").strip())
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            urls.append(normalized)
+
+    # Some Perplexity payloads place citations under choices[].message.
+    try:
+        choices = getattr(response, "choices", None)
+        if choices:
+            _collect_urls_from_any(choices, urls, seen, visited=set())
+    except Exception:
+        pass
+
+    _collect_urls_from_any(response, urls, seen, visited=set())
+    return urls[:20]
 
 
 def chat(engine: str, prompt: str, temperature: float | None = None) -> str:
@@ -326,7 +432,9 @@ def query_engines(query: str, selected_models: list[str] | None = None) -> dict[
         )
         full_prompt = f"{system_prompt}\n\nQuestion: {query}"
 
-    grounding_block = _build_search_grounding_block(query)
+    grounding = _build_search_grounding_context(query)
+    grounding_block = grounding.get("block", "")
+    grounding_urls = grounding.get("urls", []) or []
     if grounding_block:
         full_prompt = (
             f"{full_prompt}\n\n"
@@ -351,7 +459,12 @@ def query_engines(query: str, selected_models: list[str] | None = None) -> dict[
         for future in as_completed(future_to_engine):
             engine_name = future_to_engine[future]
             try:
-                results[engine_name] = future.result()
+                text = future.result()
+                # Keep citations reliable: when model output has no URLs, attach grounding URLs.
+                if text and not text.startswith("[") and grounding_urls:
+                    if not _extract_urls_from_text(text):
+                        text = f"{text}{_format_sources_tail(grounding_urls)}"
+                results[engine_name] = text
             except Exception as exc:
                 results[engine_name] = f"[{engine_name} error: {exc}]"
 
@@ -380,3 +493,19 @@ def get_available_engine_catalog() -> list[dict[str, str]]:
             }
         )
     return catalog
+
+
+def get_search_layer_status() -> dict[str, Any]:
+    provider = get_search_provider_name()
+    provider_available = is_perplexity_search_enabled()
+    return {
+        "search_augment_enabled": RANKLORE_SEARCH_AUGMENT_ENABLED,
+        "provider": provider,
+        "provider_available": provider_available,
+        "openai_web_search_enabled": OPENAI_ENABLE_WEB_SEARCH and bool(OPENAI_API_KEY),
+        "status": (
+            "ready"
+            if RANKLORE_SEARCH_AUGMENT_ENABLED and provider_available
+            else ("disabled" if not RANKLORE_SEARCH_AUGMENT_ENABLED else "missing_provider")
+        ),
+    }

@@ -50,9 +50,17 @@ BRAND_EXCLUDE_TOKENS = {
     "generation", "update", "release", "latest", "new", "old",
     "first", "second", "third", "fourth", "fifth", "pick",
     "here", "why", "how", "what", "when", "where", "which",
+    "for", "and", "or", "with", "without", "from", "by", "in", "on", "at", "to", "of",
+    "vs", "versus", "most", "more", "less",
+    "you", "we", "they", "he", "she", "it", "can", "could", "should", "would", "will", "may", "might", "must",
+    "is", "are", "was", "were", "be", "been", "being",
     "answer", "question", "solution", "result", "results",
     "list", "ranking", "rankings", "rated", "rating", "ratings",
     "our", "my", "your", "their", "its", "this", "that", "these",
+    "tv", "tvs", "oled", "qled", "uhd", "led", "4k", "8k",
+    "online", "store", "stores", "shop", "shops", "retailer", "retailers",
+    "marketplace", "marketplaces", "shopping", "seller", "sellers",
+    "dealer", "dealers", "website", "websites",
 }
 
 DESCRIPTIVE_PHRASES = {
@@ -65,6 +73,59 @@ DESCRIPTIVE_PHRASES = {
     "runner up", "editors choice", "our pick", "final verdict",
     "bottom line", "quick summary", "in summary", "to summarize",
 }
+
+CHANNEL_NOUN_TOKENS = frozenset(
+    {
+        "online",
+        "store",
+        "stores",
+        "shop",
+        "shops",
+        "retailer",
+        "retailers",
+        "marketplace",
+        "marketplaces",
+        "seller",
+        "sellers",
+        "dealer",
+        "dealers",
+        "website",
+        "websites",
+    }
+)
+
+RETAILER_LITERALS = frozenset(
+    {
+        "amazon",
+        "flipkart",
+        "walmart",
+        "target",
+        "ebay",
+        "best buy",
+        "costco",
+        "aliexpress",
+    }
+)
+
+RETAIL_CONTEXT_HINTS = frozenset(
+    {
+        "where to buy",
+        "buy ",
+        "buying",
+        "available on",
+        "available at",
+        "shop",
+        "store",
+        "retailer",
+        "marketplace",
+        "purchase",
+        "price on",
+    }
+)
+
+BRAND_CANDIDATE_RE = re.compile(
+    r"\b([A-Z][A-Za-z0-9&+./'-]{1,}(?:\s+[A-Z0-9][A-Za-z0-9&+./'-]{1,}){0,2})\b"
+)
 
 
 def _empty_analysis() -> dict[str, Any]:
@@ -284,57 +345,140 @@ def _extract_ranked_lines(response_text: str) -> list[str]:
     return [s.strip() for s in sentences if s.strip()]
 
 
-def _extract_notable_brands_from_ranked_lines(ranked_lines: list[str], tracked_lower: set[str]) -> list[dict[str, Any]]:
+def _tokenize_lower_words(value: str) -> list[str]:
+    return [token for token in re.findall(r"[a-z0-9]+", (value or "").lower()) if token]
+
+
+def _clean_brand_candidate(value: str) -> str:
+    cleaned = re.sub(r"^[\s\"'`*_-]+|[\s\"'`*_,.;:!?()\[\]{}-]+$", "", value or "")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _normalize_detected_brand_label(value: str) -> str:
+    """Collapse obvious model/category suffixes to the likely brand root."""
+    cleaned = _clean_brand_candidate(value)
+    if not cleaned:
+        return ""
+    parts = cleaned.split()
+    if len(parts) >= 2:
+        second = parts[1].lower()
+        if re.search(r"\d", parts[1]) or second in {
+            "tv",
+            "tvs",
+            "phone",
+            "phones",
+            "laptop",
+            "laptops",
+            "tablet",
+            "tablets",
+            "monitor",
+            "monitors",
+            "camera",
+            "cameras",
+        }:
+            return parts[0]
+    return cleaned
+
+
+def _is_channel_or_retail_noise(candidate: str, context: str) -> bool:
+    tokens = _tokenize_lower_words(candidate)
+    if not tokens:
+        return True
+    if len(tokens) <= 4 and all(token in BRAND_EXCLUDE_TOKENS or token in CHANNEL_NOUN_TOKENS for token in tokens):
+        return True
+    label = " ".join(tokens)
+    context_lower = (context or "").lower()
+    if label in RETAILER_LITERALS and any(hint in context_lower for hint in RETAIL_CONTEXT_HINTS):
+        return True
+    return False
+
+
+def _iter_line_brand_candidates(line: str, include_lead_segment: bool = True) -> list[str]:
+    """Collect likely brand tokens from one line/sentence."""
+    clean_line = (line or "").strip()
+    if not clean_line:
+        return []
+
+    raw_candidates: list[str] = []
+
+    # Lead segment is useful for ranked list bullets, but noisy for regular prose.
+    if include_lead_segment:
+        lead_segment = re.split(r"[\u2014\u2013\-:|,(]", clean_line, maxsplit=1)[0].strip()
+        if lead_segment:
+            raw_candidates.append(lead_segment)
+
+    # Capture capitalized brand phrases anywhere in the line.
+    for match in BRAND_CANDIDATE_RE.finditer(clean_line):
+        raw_candidates.append(match.group(1))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        candidate = _normalize_detected_brand_label(raw)
+        key = _canonical_brand(candidate)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(candidate)
+    return out
+
+
+def _extract_notable_brands_from_ranked_lines(
+    ranked_lines: list[str],
+    tracked_brands: list[str],
+) -> list[dict[str, Any]]:
     """Heuristic extraction of additional notable brands not explicitly configured."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
+    tracked = [b for b in tracked_brands if b]
+
+    def _is_tracked(candidate: str) -> bool:
+        return any(_brand_matches_alias(candidate, [brand]) for brand in tracked)
 
     for line_idx, line in enumerate(ranked_lines, start=1):
         explicit_rank_match = re.match(r"^(\d+)\s*[\).:-]", line)
         explicit_rank = int(explicit_rank_match.group(1)) if explicit_rank_match else line_idx
         clean = re.sub(r"^(\d+[\).:-]|[-*])\s*", "", line).strip()
+        line_is_ranked = bool(re.match(r"^(\d+[\).:-]|[-*])\s+", line.strip()))
+        for candidate in _iter_line_brand_candidates(clean, include_lead_segment=line_is_ranked):
+            if not re.match(r"^[A-Za-z0-9][A-Za-z0-9 '&+./-]{1,48}$", candidate):
+                continue
+            if len(candidate.split()) > 4:
+                continue
+            if is_spurious_brand_mention(candidate):
+                continue
+            if _is_channel_or_retail_noise(candidate, line):
+                continue
+            if _is_tracked(candidate):
+                continue
 
-        # First segment usually holds the primary brand in ranked lists.
-        segment = re.split(r"[—\-:|,(]", clean, maxsplit=1)[0].strip()
-        if not segment:
-            continue
+            canonical = _canonical_brand(candidate)
+            if not canonical or canonical in seen:
+                continue
+            tokenized = _tokenize_lower_words(candidate)
+            if any(token in BRAND_EXCLUDE_TOKENS for token in tokenized):
+                continue
+            if len(tokenized) == 1 and (tokenized[0] in POSITIVE_WORDS or tokenized[0] in NEGATIVE_WORDS):
+                continue
+            if " ".join(tokenized) in DESCRIPTIVE_PHRASES:
+                continue
 
-        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9 '&+./]{1,48}$", segment):
-            continue
-        words = segment.split()
-        if len(words) > 4:
-            continue
+            # Reject obvious URL/domain leftovers.
+            candidate_lower = candidate.lower()
+            if re.search(r"\b(https?://|www\.|\.com|\.in|\.org|\.net)\b", candidate_lower):
+                continue
+            if len(canonical) < 2:
+                continue
 
-        normalized = segment.lower().strip()
-        if is_spurious_brand_mention(segment):
-            continue
-        if normalized in tracked_lower or normalized in seen:
-            continue
-
-        if any(tok in BRAND_EXCLUDE_TOKENS for tok in normalized.split()):
-            continue
-
-        if normalized in DESCRIPTIVE_PHRASES:
-            continue
-
-        if not re.search(r"[A-Za-z]", normalized):
-            continue
-
-        # Reject obvious non-brand leftovers from ranking lines.
-        if re.search(r"\b(https?://|www\.|\.com|\.in|\.org|\.net)\b", normalized):
-            continue
-        if len(_canonical_brand(normalized)) < 3:
-            continue
-
-        seen.add(normalized)
-        out.append(
-            {
-                "brand": segment,
-                "rank": explicit_rank,
-                "context": line,
-                "sentiment": _sentiment_for_context(line),
-            }
-        )
+            seen.add(canonical)
+            out.append(
+                {
+                    "brand": candidate,
+                    "rank": explicit_rank,
+                    "context": line,
+                    "sentiment": _sentiment_for_context(line),
+                }
+            )
 
     return out
 
@@ -356,6 +500,13 @@ _SPURIOUS_BRAND_LITERALS = frozenset(
         "uri",
         "src",
         "href",
+        "online",
+        "store",
+        "stores",
+        "retailer",
+        "retailers",
+        "marketplace",
+        "marketplaces",
     }
 )
 
@@ -366,6 +517,9 @@ def is_spurious_brand_mention(brand: str) -> bool:
     if not raw:
         return True
     k = raw.lower().strip()
+    tokens = _tokenize_lower_words(k)
+    if tokens and len(tokens) <= 4 and all(token in BRAND_EXCLUDE_TOKENS or token in CHANNEL_NOUN_TOKENS for token in tokens):
+        return True
     if k in _SPURIOUS_BRAND_LITERALS:
         return True
     # Single-token noise from broken markdown / citations
@@ -493,8 +647,7 @@ def _heuristic_analysis(
             }
 
     # Add notable non-configured competitors discovered in ranked lines.
-    tracked_lower = {b.lower() for b in tracked_clean}
-    for notable in _extract_notable_brands_from_ranked_lines(ranked_lines, tracked_lower):
+    for notable in _extract_notable_brands_from_ranked_lines(ranked_lines, tracked_clean):
         key = notable["brand"].lower()
         if key in mentions:
             continue

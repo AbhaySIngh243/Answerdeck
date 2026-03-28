@@ -26,6 +26,67 @@ from models import Mention, Project, Prompt, Response, VisibilityMetric, db
 
 reports_bp = Blueprint("reports", __name__)
 
+GENERIC_CHANNEL_TOKENS = frozenset(
+    {
+        "online",
+        "store",
+        "stores",
+        "shop",
+        "shops",
+        "retailer",
+        "retailers",
+        "marketplace",
+        "marketplaces",
+        "seller",
+        "sellers",
+        "dealer",
+        "dealers",
+        "website",
+        "websites",
+    }
+)
+
+RETAILER_LITERALS = frozenset(
+    {
+        "amazon",
+        "flipkart",
+        "walmart",
+        "target",
+        "ebay",
+        "best buy",
+        "costco",
+        "aliexpress",
+    }
+)
+
+RETAIL_CONTEXT_HINTS = (
+    "where to buy",
+    "buy ",
+    "buying",
+    "available on",
+    "available at",
+    "shop",
+    "store",
+    "retailer",
+    "marketplace",
+    "purchase",
+    "price on",
+)
+
+
+def _looks_like_channel_noise(brand: str, context: str = "") -> bool:
+    label = (brand or "").strip().lower()
+    if not label:
+        return True
+    tokens = [token for token in re.findall(r"[a-z0-9]+", label) if token]
+    if tokens and len(tokens) <= 4 and all(token in GENERIC_CHANNEL_TOKENS for token in tokens):
+        return True
+    if label in RETAILER_LITERALS:
+        context_lower = (context or "").lower()
+        if any(hint in context_lower for hint in RETAIL_CONTEXT_HINTS):
+            return True
+    return False
+
 
 def _get_project_for_user(project_id: int):
     """Return project if it belongs to the current user, else raise NotFoundError."""
@@ -215,6 +276,8 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
                 continue
             if is_spurious_brand_mention(mention.brand or ""):
                 continue
+            if _looks_like_channel_noise(mention.brand or "", mention.context or ""):
+                continue
             competitor_scores[mention.brand]["mentions"] += 1
             if mention.rank is not None:
                 competitor_scores[mention.brand]["ranks"].append(mention.rank)
@@ -342,6 +405,39 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             "is_target": True
         })
 
+    # If citations ended up empty (intermittent provider output), fall back to live web search.
+    if not ui_sources and is_perplexity_search_enabled():
+        fallback = search_web(query=prompt.prompt_text, max_results=5, max_tokens_per_page=280)
+        if fallback.get("ok"):
+            fallback_by_domain: dict[str, dict[str, Any]] = defaultdict(
+                lambda: {"mentions": 0, "links": []}
+            )
+            for item in fallback.get("results", []):
+                url = str(item.get("url") or "").strip()
+                if not url:
+                    continue
+                domain = _domain_from_url(url) or "web"
+                bucket = fallback_by_domain[domain]
+                bucket["mentions"] += 1
+                if len(bucket["links"]) < 20:
+                    bucket["links"].append(
+                        {
+                            "url": url,
+                            "title": (item.get("title") or "").strip() or url,
+                        }
+                    )
+
+            provider = str(fallback.get("provider") or "search").replace("-", " ").title()
+            for domain, row in sorted(fallback_by_domain.items(), key=lambda kv: kv[1]["mentions"], reverse=True):
+                ui_sources.append(
+                    {
+                        "domain": f"{domain} (Live {provider} Source)",
+                        "mentions": row["mentions"],
+                        "links": row["links"],
+                        "is_target": False,
+                    }
+                )
+
     return {
         "prompt_id": prompt.id,
         "prompt_text": prompt.prompt_text,
@@ -433,6 +529,8 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
         for mention in mentions:
             raw = (mention.brand or "").strip()
             if not raw or is_spurious_brand_mention(raw):
+                continue
+            if _looks_like_channel_noise(raw, mention.context or ""):
                 continue
             key = raw.lower()
             g = grouped[key]
@@ -602,6 +700,8 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
                     {"brand": m.brand, "rank": m.rank}
                     for m in mentions
                     if not m.is_focus
+                    and not is_spurious_brand_mention(m.brand or "")
+                    and not _looks_like_channel_noise(m.brand or "", m.context or "")
                 ][:5],
                 "response_id": response.id,
             }
