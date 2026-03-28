@@ -14,6 +14,7 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import { clerkAppearance } from '../../lib/clerkAppearance';
 import BrandLogo from '../BrandLogo';
+import { warmUpBackend } from '../../lib/api';
 
 function clerkPrimaryEmail(u) {
   if (!u) return '';
@@ -40,6 +41,11 @@ const DashboardLayout = () => {
   const email = useMemo(() => clerkPrimaryEmail(user), [user]);
   const displayName = useMemo(() => clerkDisplayName(user), [user]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [backendReady, setBackendReady] = useState(false);
+
+  useEffect(() => {
+    warmUpBackend().then((ok) => setBackendReady(ok));
+  }, []);
   /** Desktop (lg+): full main nav vs hidden rail — more room for project views. */
   const [mainNavExpanded, setMainNavExpanded] = useState(() => {
     if (typeof window === 'undefined') return true;
@@ -243,6 +249,15 @@ const DashboardLayout = () => {
           </div>
         </header>
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain">
+          {!backendReady && (
+            <div className="mx-4 mt-4 flex items-center gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-800 sm:mx-6 lg:mx-10">
+              <svg className="h-4 w-4 shrink-0 animate-spin text-amber-600" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+                <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
+              </svg>
+              Waking up the server — first load may take up to a minute...
+            </div>
+          )}
           <div className="mx-auto w-full max-w-[min(100%,1920px)] px-4 py-6 sm:px-6 md:py-8 lg:px-10 lg:py-10">
             <Outlet />
           </div>

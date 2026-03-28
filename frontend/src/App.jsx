@@ -18,9 +18,13 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
-      retry: false
-    }
-  }
+      retry: (failureCount, error) => {
+        if (error?.status === 401 || error?.status === 403 || error?.status === 404) return false;
+        return failureCount < 3;
+      },
+      retryDelay: (attempt) => Math.min(3000 * Math.pow(2, attempt), 15000),
+    },
+  },
 });
 
 function hideFloatingClerkPath(pathname) {

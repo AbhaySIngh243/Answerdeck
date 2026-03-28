@@ -46,11 +46,11 @@ const ProjectsView = () => {
     }
   });
 
-  const { data: projects = [], isLoading, error } = useQuery({
+  const { data: projects = [], isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ['projects'],
     queryFn: api.getProjects,
     enabled: !authLoading && Boolean(isSignedIn),
-    initialData: cacheLoaded,
+    placeholderData: cacheLoaded.length > 0 ? cacheLoaded : undefined,
     staleTime: 30_000,
   });
 
@@ -64,6 +64,8 @@ const ProjectsView = () => {
 
   const createProjectMutation = useMutation({
     mutationFn: api.createProject,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(3000 * Math.pow(2, attempt), 10000),
     onSuccess: (payload) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       setShowCreateModal(false);
@@ -116,26 +118,39 @@ const ProjectsView = () => {
     );
   }
 
-  if (error) {
-    const hint = String(error?.message || '').includes('CORS')
-      ? 'Check `CORS_ORIGINS` on the backend matches your frontend URL.'
-      : String(error?.message || '').includes('VITE_API_BASE_URL')
-        ? 'Check `VITE_API_BASE_URL` in your frontend env.'
-        : String(error?.message || '').includes('timeout')
-          ? 'Check backend uptime and network. Render free tier can cold-start.'
-          : '';
+  const isTimeout = String(error?.message || '').toLowerCase().includes('timed out');
+  const hasProjects = projects.length > 0;
 
-    return (
-      <div className="space-y-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-        <div className="font-semibold">Could not load projects.</div>
-        <div className="text-red-700">{error.message}</div>
-        {hint ? <div className="text-xs text-red-600">{hint}</div> : null}
-      </div>
-    );
-  }
+  const errorBanner = error && !hasProjects ? (
+    <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+      <div className="font-semibold">{isTimeout ? 'Server is waking up...' : 'Could not load projects.'}</div>
+      <div className="text-amber-700 text-xs">{isTimeout ? 'Free-tier servers can take up to a minute on first visit. Retrying automatically...' : error.message}</div>
+      <button
+        type="button"
+        onClick={() => refetch()}
+        className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-50"
+      >
+        {isFetching ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+        Retry now
+      </button>
+    </div>
+  ) : error && hasProjects ? (
+    <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+      <span>{isTimeout ? 'Server is waking up — showing cached projects.' : 'Refresh failed — showing cached projects.'}</span>
+      <button
+        type="button"
+        onClick={() => refetch()}
+        className="ml-auto inline-flex items-center gap-1 rounded border border-amber-300 bg-white px-2 py-1 text-[10px] font-semibold text-amber-800 hover:bg-amber-50"
+      >
+        {isFetching ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+        Retry
+      </button>
+    </div>
+  ) : null;
 
   return (
-    <div className="max-w-7xl mx-auto space-y-10">
+    <div className="max-w-7xl mx-auto space-y-6">
+      {errorBanner}
       <div className="flex flex-col justify-between gap-4 border-b border-[#e2e8f0] pb-5 md:flex-row md:items-end">
         <div>
           <p className="text-[11px] font-semibold tracking-wide text-brand-primary">Workspace</p>
@@ -263,7 +278,9 @@ const ProjectsView = () => {
             <form onSubmit={handleCreateProject} className="space-y-4">
               {createProjectMutation.isError && (
                 <div className="rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs text-red-700">
-                  {createProjectMutation.error?.message}
+                  {String(createProjectMutation.error?.message || '').toLowerCase().includes('timed out')
+                    ? 'Server is still starting up. Please wait a moment and try again.'
+                    : createProjectMutation.error?.message}
                 </div>
               )}
               <div className="grid grid-cols-2 gap-4">
@@ -345,7 +362,7 @@ const ProjectsView = () => {
                   disabled={createDisabled}
                   className="flex items-center justify-center gap-2 rounded-lg bg-brand-primary px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-[#3b82f6] disabled:opacity-50"
                 >
-                  {createProjectMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Next: Choose prompts</span>}
+                  {createProjectMutation.isPending ? <><Loader2 className="w-4 h-4 animate-spin" /><span>Creating...</span></> : <span>Next: Choose prompts</span>}
                 </button>
               </div>
             </form>

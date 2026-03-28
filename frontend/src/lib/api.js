@@ -112,7 +112,8 @@ async function request(path, options = {}) {
 
   const url = `${API_BASE_URL}${path}`;
   const timeoutMs = Number(options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
-  const retries = Number(options.retries ?? (method === 'GET' ? 2 : 0));
+  const defaultRetries = method === 'GET' ? 2 : 1;
+  const retries = Number(options.retries ?? defaultRetries);
 
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -124,7 +125,6 @@ async function request(path, options = {}) {
       const isJson = contentType.includes('application/json');
       const payload = isJson ? await response.json() : await response.text();
 
-      // Token can expire during long sessions. Refresh once and retry this request.
       if (response.status === 401 && !forcedRefreshUsed && !options.headers?.Authorization) {
         const refreshedToken = await getAuthToken(true);
         if (refreshedToken) {
@@ -149,12 +149,13 @@ async function request(path, options = {}) {
 
       lastErr = isAbort ? new Error(timeoutHintMessage(timeoutMs)) : err;
 
-      // Retry only safe reads and only for network-like failures or 5xx.
       const status = err?.status;
-      const shouldRetry = method === 'GET' && (isNetwork || (typeof status === 'number' && status >= 500));
+      const shouldRetry =
+        isNetwork || (typeof status === 'number' && status >= 500);
       if (!shouldRetry || attempt === retries) break;
 
-      await sleep(250 * Math.pow(2, attempt));
+      const backoff = Math.min(2000 * Math.pow(2, attempt), 10000);
+      await sleep(backoff);
     } finally {
       clearTimeout(timeout);
     }
@@ -169,6 +170,33 @@ async function request(path, options = {}) {
   throw new Error(
     `Request failed (${method} ${url}). If this persists, confirm the API is running and VITE_API_BASE_URL matches it.`,
   );
+}
+
+let _warmUpPromise = null;
+
+/**
+ * Ping /health repeatedly until the backend responds.
+ * Call once on app mount so cold-start delay is absorbed in the background.
+ * Returns a promise that resolves when the backend is reachable.
+ */
+export function warmUpBackend() {
+  if (_warmUpPromise) return _warmUpPromise;
+  _warmUpPromise = (async () => {
+    const maxAttempts = 5;
+    for (let i = 0; i < maxAttempts; i += 1) {
+      try {
+        const controller = new AbortController();
+        const tm = setTimeout(() => controller.abort(), 90000);
+        await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
+        clearTimeout(tm);
+        return true;
+      } catch {
+        if (i < maxAttempts - 1) await sleep(3000 * (i + 1));
+      }
+    }
+    return false;
+  })();
+  return _warmUpPromise;
 }
 
 export const api = {
