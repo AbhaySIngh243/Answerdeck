@@ -39,7 +39,27 @@ export default function ProjectPromptSetupView() {
     enabled: Boolean(id),
   });
 
-  const suggestedPrompts = useMemo(() => buildSuggestedPrompts(project), [project]);
+  const {
+    data: suggestedPayload,
+    isLoading: suggestedLoading,
+    error: suggestedError,
+  } = useQuery({
+    queryKey: ['project-suggested-prompts', id, project?.website_url, project?.name, project?.category, project?.region],
+    queryFn: () => api.getSuggestedPrompts(id, 10),
+    enabled: Boolean(id) && Boolean(project),
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+
+  const suggestedPrompts = useMemo(() => {
+    const remote = Array.isArray(suggestedPayload?.prompts)
+      ? suggestedPayload.prompts
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      : [];
+    if (remote.length > 0) return remote;
+    return buildSuggestedPrompts(project);
+  }, [project, suggestedPayload?.prompts]);
   const [selectedPromptIndexes, setSelectedPromptIndexes] = useState(() => new Set([0, 1, 2]));
   const [customPromptsInput, setCustomPromptsInput] = useState('');
 
@@ -121,7 +141,21 @@ export default function ProjectPromptSetupView() {
 
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-sm font-semibold text-slate-800">Suggested prompts</h2>
-        <p className="mt-1 text-xs text-slate-500">These are generated from your brand name, industry, and region.</p>
+        <p className="mt-1 text-xs text-slate-500">
+          Website-aware prompts generated from your site content and external search signals.
+          {suggestedPayload?.source ? ` Source: ${suggestedPayload.source}.` : ''}
+        </p>
+        {suggestedLoading ? (
+          <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-brand-primary" />
+            Scanning website and refining suggestions...
+          </p>
+        ) : null}
+        {suggestedError ? (
+          <p className="mt-2 text-[11px] text-amber-700">
+            Could not load website-based suggestions, showing fallback prompts.
+          </p>
+        ) : null}
 
         <div className="mt-4 space-y-2">
           {suggestedPrompts.map((prompt, index) => {

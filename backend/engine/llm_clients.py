@@ -1,12 +1,16 @@
 """Client wrappers for all configured LLM engines."""
 
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+from urllib.parse import urlparse
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from engine.perplexity_search import get_search_provider_name, is_perplexity_search_enabled, search_web
 
 load_dotenv(override=True)
 
@@ -42,6 +46,9 @@ GEMINI_REQUIRE_WEB_SEARCH = os.getenv("GEMINI_REQUIRE_WEB_SEARCH", "false").lowe
 DEEPSEEK_REQUIRE_WEB_SEARCH = os.getenv("DEEPSEEK_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
 RANKLORE_EXTERNAL_PARITY_MODE = os.getenv("RANKLORE_EXTERNAL_PARITY_MODE", "true").lower() in {"1", "true", "yes"}
 RANKLORE_LLM_TEMPERATURE = float(os.getenv("RANKLORE_LLM_TEMPERATURE", "0.0"))
+RANKLORE_SEARCH_AUGMENT_ENABLED = os.getenv("RANKLORE_SEARCH_AUGMENT_ENABLED", "true").lower() in {"1", "true", "yes"}
+RANKLORE_SEARCH_AUGMENT_MAX_RESULTS = max(1, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_MAX_RESULTS", "5")), 8))
+RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS = max(80, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS", "200")), 320))
 
 def _build_client(api_key: str, base_url: str | None = None) -> OpenAI | None:
     if not api_key:
@@ -158,6 +165,56 @@ def _infer_web_search_country(prompt: str) -> str | None:
     return None
 
 
+def _clip_prompt_text(value: str, limit: int) -> str:
+    clean = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _domain_label(url: str) -> str:
+    try:
+        host = (urlparse(url).hostname or "").strip().lower()
+        return host.replace("www.", "") if host else url
+    except Exception:
+        return url
+
+
+def _build_search_grounding_block(query: str) -> str:
+    if not RANKLORE_SEARCH_AUGMENT_ENABLED:
+        return ""
+    if not is_perplexity_search_enabled():
+        return ""
+
+    result = search_web(query=query, max_results=RANKLORE_SEARCH_AUGMENT_MAX_RESULTS, max_tokens_per_page=320)
+    if not result.get("ok"):
+        return ""
+
+    rows = result.get("results", []) or []
+    if not rows:
+        return ""
+
+    provider = result.get("provider") or get_search_provider_name()
+    lines = []
+    for idx, item in enumerate(rows[:RANKLORE_SEARCH_AUGMENT_MAX_RESULTS], start=1):
+        title = _clip_prompt_text(item.get("title", ""), 110)
+        snippet = _clip_prompt_text(item.get("snippet", ""), RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS)
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        lines.append(f"{idx}. {title} [{_domain_label(url)}]\n   {snippet}\n   URL: {url}")
+
+    if not lines:
+        return ""
+
+    return (
+        "Web Grounding Context (recent external search signals)\n"
+        f"Provider: {provider}\n"
+        + "\n".join(lines)
+        + "\nUse these as supporting evidence, keep ranking logic explicit, and include direct URLs under a final 'Sources:' section."
+    )
+
+
 def _extract_perplexity_citation_urls(response: Any) -> list[str]:
     urls: list[str] = []
     seen: set[str] = set()
@@ -172,7 +229,7 @@ def _extract_perplexity_citation_urls(response: Any) -> list[str]:
     return urls
 
 
-def chat(engine: str, prompt: str) -> str:
+def chat(engine: str, prompt: str, temperature: float | None = None) -> str:
     engine = engine.lower()
     cfg = ENGINE_CONFIG.get(engine)
     if not cfg:
@@ -180,6 +237,10 @@ def chat(engine: str, prompt: str) -> str:
     client = cfg.get("client")
     if client is None:
         return f"[{cfg.get('display_name', engine)} not configured]"
+    try:
+        effective_temperature = RANKLORE_LLM_TEMPERATURE if temperature is None else float(temperature)
+    except Exception:
+        effective_temperature = RANKLORE_LLM_TEMPERATURE
 
     try:
         if engine == "perplexity":
@@ -188,7 +249,7 @@ def chat(engine: str, prompt: str) -> str:
             response = client.chat.completions.create(
                 model=cfg["model"],
                 messages=[{"role": "user", "content": prompt}],
-                temperature=RANKLORE_LLM_TEMPERATURE,
+                temperature=effective_temperature,
                 extra_body={"return_citations": True},
             )
             text = (response.choices[0].message.content or "").strip()
@@ -236,7 +297,7 @@ def chat(engine: str, prompt: str) -> str:
             response = client.messages.create(
                 model=cfg["model"],
                 max_tokens=1200,
-                temperature=RANKLORE_LLM_TEMPERATURE,
+                temperature=effective_temperature,
                 messages=[{"role": "user", "content": prompt}],
             )
             text_parts = [block.text for block in response.content if getattr(block, "type", "") == "text"]
@@ -245,7 +306,7 @@ def chat(engine: str, prompt: str) -> str:
         response = client.chat.completions.create(
             model=cfg["model"],
             messages=[{"role": "user", "content": prompt}],
-            temperature=RANKLORE_LLM_TEMPERATURE,
+            temperature=effective_temperature,
         )
         return (response.choices[0].message.content or "").strip()
     except Exception as exc:
@@ -264,6 +325,15 @@ def query_engines(query: str, selected_models: list[str] | None = None) -> dict[
             "Always include a final section exactly named 'Sources:' and list direct URLs (one URL per bullet)."
         )
         full_prompt = f"{system_prompt}\n\nQuestion: {query}"
+
+    grounding_block = _build_search_grounding_block(query)
+    if grounding_block:
+        full_prompt = (
+            f"{full_prompt}\n\n"
+            "IMPORTANT: Blend model knowledge with the grounded web context below.\n"
+            "If sources conflict, prefer recency and explicit citations.\n\n"
+            f"{grounding_block}"
+        )
 
     enabled_engines = list(get_enabled_engines(selected_models).keys())
     if not enabled_engines:

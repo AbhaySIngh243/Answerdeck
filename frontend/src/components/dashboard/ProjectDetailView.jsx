@@ -542,6 +542,10 @@ const ProjectDetailView = () => {
   const runPromptMutation = useMutation({
     mutationFn: api.runPromptAnalysis,
     onSuccess: (payload, promptId) => {
+      if (!payload?.job_id) {
+        refreshAll();
+        return;
+      }
       setRunningPrompts((prev) => ({ ...prev, [promptId]: true }));
       pollJobStatus(payload.job_id, promptId);
     },
@@ -550,7 +554,12 @@ const ProjectDetailView = () => {
   const runAllMutation = useMutation({
     mutationFn: api.runAllPromptAnalysis,
     onSuccess: (payload) => {
-      payload.results.forEach((item) => {
+      const jobs = Array.isArray(payload?.results) ? payload.results : [];
+      if (jobs.length === 0) {
+        refreshAll();
+        return;
+      }
+      jobs.forEach((item) => {
         setRunningPrompts((prev) => ({ ...prev, [item.prompt_id]: true }));
         pollJobStatus(item.job_id, item.prompt_id);
       });

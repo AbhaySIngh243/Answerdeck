@@ -207,6 +207,12 @@ def async_run_analysis(job_id: str, prompt_id: int, project_id: int, user_id: st
 
             db.session.commit()
 
+            engine_analyses = {
+                engine: data
+                for engine, data in analyses.items()
+                if engine != "research_data"
+            }
+
             payload = {
                 "prompt_id": prompt.id,
                 "query": prompt.prompt_text,
@@ -220,10 +226,10 @@ def async_run_analysis(job_id: str, prompt_id: int, project_id: int, user_id: st
                         "sentiment": data.get("focus_brand_sentiment", "not_mentioned"),
                         "context": data.get("focus_brand_context", ""),
                     }
-                    for engine, data in analyses.items()
+                    for engine, data in engine_analyses.items()
                 ],
                 "competitors": competitors,
-                "sentiment": _build_sentiment_summary(analyses),
+                "sentiment": _build_sentiment_summary(engine_analyses),
                 "insights": insights,
                 "raw_responses": [
                     {
@@ -328,6 +334,7 @@ def run_all_prompts(project_id):
 
     app_obj = current_app._get_current_object()
     jobs: list[dict] = []
+    queued_items: list[tuple[str, int]] = []
 
     created_at = _now_iso()
     for prompt in prompts[:available_slots]:
@@ -342,10 +349,15 @@ def run_all_prompts(project_id):
                 created_at=created_at,
             )
         )
-        executor.submit(async_run_analysis, job_id, prompt.id, project.id, g.user.id, app_obj)
         jobs.append({"prompt_id": prompt.id, "job_id": job_id})
+        queued_items.append((job_id, prompt.id))
 
     db.session.commit()
+
+    # Submit only after jobs are committed so worker threads always see persisted rows.
+    for job_id, prompt_id in queued_items:
+        executor.submit(async_run_analysis, job_id, prompt_id, project.id, g.user.id, app_obj)
+
     queued = len(jobs)
     extra = max(0, len(prompts) - queued)
     msg = f"Queued {queued} prompt(s)" + (f" (skipped {extra} due to capacity limits)" if extra else "")
@@ -480,8 +492,6 @@ def run_test_prompt(project_id):
 def _build_sentiment_summary(analyses: dict[str, dict]) -> dict[str, Any]:
     mentions = []
     for engine, analysis in analyses.items():
-        if engine == "research_data":
-            continue
         if analysis.get("focus_brand_mentioned"):
             mentions.append(
                 {

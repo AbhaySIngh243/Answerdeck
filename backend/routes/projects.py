@@ -12,6 +12,7 @@ from schemas import ProjectCreateSchema, ProjectUpdateSchema
 from pydantic import ValidationError as PydanticValidationError
 from exceptions import NotFoundError, ValidationError
 from auth import require_auth
+from engine.prompt_suggestions import generate_project_prompt_suggestions
 
 projects_bp = Blueprint("projects", __name__)
 
@@ -192,3 +193,29 @@ def invite_collaborator(project_id):
 
     invite_link = f"{request.host_url.rstrip('/')}/dashboard/project/{project_id}"
     return jsonify({"message": "Collaborator invited", "email": email, "invite_link": invite_link, "collaborators": collaborators})
+
+
+@projects_bp.route("/<int:project_id>/suggested-prompts", methods=["GET"])
+@require_auth
+def get_project_suggested_prompts(project_id):
+    project = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
+    if not project:
+        raise NotFoundError("Project not found")
+
+    try:
+        max_prompts = int(request.args.get("max_prompts", 10))
+    except Exception:
+        max_prompts = 10
+    max_prompts = max(3, min(max_prompts, 20))
+
+    payload = generate_project_prompt_suggestions(
+        {
+            "name": project.name,
+            "category": project.category,
+            "region": project.region,
+            "website_url": project.website_url,
+            "competitors": project.get_competitors_list(),
+        },
+        max_prompts=max_prompts,
+    )
+    return jsonify(payload)

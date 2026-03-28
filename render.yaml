@@ -13,5 +13,9 @@ services:
         sync: false
       - key: FLASK_DEBUG
         value: "false"
-      - key: PORT
-        generateValue: "10000"
+      - key: RANKLORE_SEARCH_PROVIDER
+        value: "serper"
+      - key: SERPER_API_KEY
+        sync: false
+      - key: RANKLORE_SEARCH_AUGMENT_ENABLED
+        value: "true"

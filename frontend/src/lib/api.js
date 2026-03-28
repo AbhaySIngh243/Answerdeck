@@ -228,6 +228,8 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
     }),
+  getSuggestedPrompts: (projectId, maxPrompts = 10) =>
+    request(`/projects/${projectId}/suggested-prompts?max_prompts=${encodeURIComponent(maxPrompts)}`),
 
   getPrompts: (projectId) => request(`/prompts/project/${projectId}`),
   createPrompt: (projectId, payload) =>

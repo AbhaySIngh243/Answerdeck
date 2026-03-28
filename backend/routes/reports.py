@@ -17,6 +17,7 @@ from engine.analyzer import (
     generate_global_audit,
     generate_project_summary,
     generate_recommendations,
+    generate_strategic_action_plan,
     is_spurious_brand_mention,
 )
 from engine.perplexity_search import is_perplexity_search_enabled, search_web
@@ -711,45 +712,34 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
                             })
                     except: pass
 
+        if search_intel["retrieval_points"]:
+            deduped_points = []
+            seen_points = set()
+            for point in search_intel["retrieval_points"]:
+                key = (
+                    str(point.get("url") or "").strip(),
+                    str(point.get("query") or "").strip().lower(),
+                    str(point.get("title") or "").strip().lower(),
+                )
+                if key in seen_points:
+                    continue
+                seen_points.add(key)
+                deduped_points.append(point)
+            search_intel["retrieval_points"] = deduped_points[:15]
+
         search_intel["domains"] = [
             {"domain": domain, "count": count}
             for domain, count in sorted(domain_counts.items(), key=lambda item: item[1], reverse=True)[:10]
         ]
         search_intel["queries"] = query_rows
 
-    action_plan = []
-    if missing_prompts:
-        action_plan.append(
-            {
-                "title": "Create direct answer pages for missing prompts",
-                "detail": f"Your brand is absent in {len(missing_prompts)} prompt(s). Publish pages that directly answer those exact queries with comparison tables and FAQs.",
-                "priority": "high",
-            }
-        )
-    if upload_targets:
-        top_target_names = ", ".join([item["source"] for item in upload_targets[:5]])
-        action_plan.append(
-            {
-                "title": "Prioritize high-influence sources",
-                "detail": f"LLMs are repeatedly citing: {top_target_names}. Focus review submissions, PR mentions, and expert contributions on these domains first.",
-                "priority": "high",
-            }
-        )
-    if search_intel["domains"]:
-        top_domains = ", ".join([item["domain"] for item in search_intel["domains"][:5]])
-        action_plan.append(
-            {
-                "title": "Perplexity search domain targeting",
-                "detail": f"Perplexity search for your prompts returns these domains most often: {top_domains}. Prioritize publication and backlinks on these sites.",
-                "priority": "high",
-            }
-        )
-    action_plan.append(
-        {
-            "title": "Build model-specific optimization cadence",
-            "detail": "Track which LLM has the lowest mention rate and run weekly prompt-focused content updates until its mention rate crosses 70%.",
-            "priority": "medium",
-        }
+    action_plan = generate_strategic_action_plan(
+        focus_brand=project.name,
+        project_name=project.name,
+        missing_prompts=missing_prompts,
+        llm_rows=llm_rows,
+        upload_targets=upload_targets,
+        search_intel=search_intel,
     )
 
     return {

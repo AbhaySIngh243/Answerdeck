@@ -116,6 +116,129 @@ def _clean_json(raw: str) -> Any:
     return json.loads(raw)
 
 
+def _clip_text(value: Any, limit: int = 320) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _normalize_priority(value: Any, fallback: str = "medium") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"high", "medium", "low"}:
+        return candidate
+    return fallback
+
+
+def _rebalance_priority_spread(items: list[dict]) -> list[dict]:
+    if len(items) < 2:
+        return items
+    values = {str(item.get("priority", "")).lower() for item in items}
+    if len(values) > 1:
+        return items
+    if len(items) == 2:
+        items[0]["priority"] = "high"
+        items[1]["priority"] = "medium"
+        return items
+    for idx, item in enumerate(items):
+        if idx == 0:
+            item["priority"] = "high"
+        elif idx == len(items) - 1:
+            item["priority"] = "low"
+        else:
+            item["priority"] = "medium"
+    return items
+
+
+def _sanitize_audit_items(
+    raw_items: Any,
+    focus_brand: str,
+    query: str,
+    default_priority: str = "medium",
+) -> list[dict]:
+    if not isinstance(raw_items, list):
+        return []
+
+    cleaned: list[dict] = []
+    seen: set[str] = set()
+    focus_brand_text = (focus_brand or "").strip()
+    query_text = (query or "").strip()
+
+    for row in raw_items:
+        if not isinstance(row, dict):
+            continue
+
+        title = _clip_text(row.get("title"), 110)
+        root_cause = _clip_text(row.get("root_cause") or row.get("detail"), 520)
+        solution = _clip_text(row.get("solution"), 620)
+        avoid = _clip_text(row.get("avoid"), 260)
+        evidence = _clip_text(row.get("evidence"), 260)
+
+        if not title or not root_cause or not solution:
+            continue
+
+        key = f"{_canonical_brand(title)}|{_canonical_brand(root_cause[:180])}"
+        if not key or key in seen:
+            continue
+        seen.add(key)
+
+        if focus_brand_text and focus_brand_text.lower() not in solution.lower():
+            solution = f"{solution.rstrip('.')} Ensure {focus_brand_text} is named explicitly."
+        if query_text and query_text.lower() not in (root_cause + " " + solution).lower():
+            solution = f'{solution.rstrip(".")} Align to the exact prompt intent "{query_text}".'
+
+        item = {
+            "title": title,
+            "root_cause": root_cause,
+            "solution": solution,
+            "avoid": avoid,
+            "priority": _normalize_priority(row.get("priority"), default_priority),
+        }
+        if evidence:
+            item["evidence"] = evidence
+        cleaned.append(item)
+
+    cleaned = _rebalance_priority_spread(cleaned)
+    return cleaned[:5]
+
+
+def _sanitize_action_items(raw_items: Any, focus_brand: str, default_priority: str = "medium") -> list[dict]:
+    if not isinstance(raw_items, list):
+        return []
+
+    cleaned: list[dict] = []
+    seen: set[str] = set()
+    focus = (focus_brand or "").strip()
+
+    for row in raw_items:
+        if not isinstance(row, dict):
+            continue
+        title = _clip_text(row.get("title"), 110)
+        detail = _clip_text(row.get("detail") or row.get("solution"), 620)
+        if not title or not detail:
+            continue
+        key = f"{_canonical_brand(title)}|{_canonical_brand(detail[:180])}"
+        if not key or key in seen:
+            continue
+        seen.add(key)
+
+        if focus and focus.lower() not in detail.lower():
+            detail = f"{detail.rstrip('.')} Apply this directly to {focus}."
+
+        item = {
+            "title": title,
+            "detail": detail,
+            "priority": _normalize_priority(row.get("priority"), default_priority),
+        }
+        link = str(row.get("link") or row.get("url") or "").strip()
+        if link:
+            item["link"] = link
+        cleaned.append(item)
+
+    cleaned = _rebalance_priority_spread(cleaned)
+    return cleaned[:6]
+
+
 def _extract_sources(response_text: str) -> list[str]:
     sources: set[str] = set()
 
@@ -679,55 +802,278 @@ def generate_recommendations(
     }
 
 
+def _build_detailed_audit_fallback(focus_brand: str, query: str, visibility_context: list[dict]) -> list[dict]:
+    total_engines = len(visibility_context)
+    mentioned_rows = [row for row in visibility_context if row.get("mentioned")]
+    mention_rate = (len(mentioned_rows) / total_engines) if total_engines else 0.0
+    ranks = [row.get("rank") for row in mentioned_rows if isinstance(row.get("rank"), int)]
+    avg_rank = (sum(ranks) / len(ranks)) if ranks else None
+
+    missing_engines = [row["engine"] for row in visibility_context if not row.get("mentioned")]
+    weak_rank_engines = [row["engine"] for row in visibility_context if isinstance(row.get("rank"), int) and row["rank"] > 5]
+    negative_engines = [row["engine"] for row in visibility_context if row.get("sentiment") == "negative"]
+
+    fallback_items: list[dict[str, Any]] = []
+    if missing_engines:
+        fallback_items.append(
+            {
+                "title": f"Coverage gaps for '{query}' across key models",
+                "root_cause": f"{focus_brand} is not mentioned in {len(missing_engines)} engine(s): {', '.join(missing_engines[:4])}.",
+                "solution": f"Publish a dedicated answer page for \"{query}\" and mirror the same framing in FAQ, comparison, and review snippets on third-party sites.",
+                "avoid": "Avoid generic category pages that do not answer the exact prompt intent.",
+                "priority": "high",
+            }
+        )
+
+    if weak_rank_engines:
+        fallback_items.append(
+            {
+                "title": "Mentioned but buried below decision cutoff",
+                "root_cause": f"{focus_brand} appears at low rank positions in: {', '.join(weak_rank_engines[:4])}.",
+                "solution": f"Expand intent-specific proof blocks (pricing, alternatives, and tradeoffs) for \"{query}\" and add schema-backed summaries to improve top-list ranking.",
+                "avoid": "Avoid broad copy that lacks explicit comparisons and evidence.",
+                "priority": "high" if (avg_rank is not None and avg_rank > 6) else "medium",
+            }
+        )
+
+    if negative_engines:
+        fallback_items.append(
+            {
+                "title": "Negative sentiment drag in model summaries",
+                "root_cause": f"Negative context appears in {len(negative_engines)} engine(s): {', '.join(negative_engines[:4])}.",
+                "solution": f"Create rebuttal content for \"{query}\" with concrete metrics, verified outcomes, and up-to-date product evidence tied to {focus_brand}.",
+                "avoid": "Avoid leaving stale or unverified claims unaddressed.",
+                "priority": "medium",
+            }
+        )
+
+    if mention_rate >= 0.8 and avg_rank is not None and avg_rank <= 3.0:
+        fallback_items.append(
+            {
+                "title": "Defend strong positioning before competitors catch up",
+                "root_cause": f"{focus_brand} is visible for \"{query}\", but consistency depends on a small set of current pages.",
+                "solution": f"Refresh top-performing pages monthly and syndicate condensed comparison snippets to new citation surfaces to preserve share-of-voice.",
+                "avoid": "Avoid long refresh gaps on currently winning intent pages.",
+                "priority": "low",
+            }
+        )
+
+    if not fallback_items:
+        fallback_items.append(
+            {
+                "title": f"Intent mapping for '{query}' needs sharper execution",
+                "root_cause": f"Current responses do not consistently map {focus_brand} to this exact decision intent.",
+                "solution": f"Create a query-specific landing page with direct answer blocks, competitive comparison tables, and distribution on high-citation domains.",
+                "avoid": "Avoid relying only on homepage-level messaging.",
+                "priority": "medium",
+            }
+        )
+
+    default_priority = "high" if mention_rate < 0.4 else ("medium" if mention_rate < 0.75 else "low")
+    return _sanitize_audit_items(fallback_items, focus_brand, query, default_priority=default_priority)
+
+
 def generate_detailed_audit(
     focus_brand: str,
     query: str,
     analyses: dict[str, Any],
 ) -> list[dict]:
-    """Generate a rich, LLM-driven audit with Root Cause, Solutions, and Strategic Avoidance."""
-    visibility_context = []
+    """Generate prompt-specific audit points with anti-template safeguards."""
+    visibility_context: list[dict[str, Any]] = []
     for engine, data in analyses.items():
         if engine == "research_data":
             continue
-        visibility_context.append({
-            "engine": engine,
-            "mentioned": data.get("focus_brand_mentioned", False),
-            "rank": data.get("focus_brand_rank"),
-            "sentiment": data.get("focus_brand_sentiment", "not_mentioned"),
-            "context": data.get("focus_brand_context", "")
-        })
+        if not isinstance(data, dict):
+            continue
+        visibility_context.append(
+            {
+                "engine": engine,
+                "mentioned": bool(data.get("focus_brand_mentioned", False)),
+                "rank": data.get("focus_brand_rank"),
+                "sentiment": data.get("focus_brand_sentiment", "not_mentioned"),
+                "context": _clip_text(data.get("focus_brand_context", ""), 260),
+            }
+        )
 
-    prompt = f"""You are a Strategic AI Visibility Auditor for the brand "{focus_brand}".
-Analyze why the brand is or isn't appearing for the query "{query}" across multiple LLMs.
+    total_engines = len(visibility_context)
+    mention_count = sum(1 for row in visibility_context if row.get("mentioned"))
+    ranks = [row.get("rank") for row in visibility_context if isinstance(row.get("rank"), int)]
+    avg_rank = round(sum(ranks) / len(ranks), 2) if ranks else None
+    negative_count = sum(1 for row in visibility_context if row.get("sentiment") == "negative")
+    default_priority = "high" if mention_count == 0 else ("medium" if (avg_rank is None or avg_rank > 4) else "low")
 
-VISIBILITY DATA:
+    research_points = analyses.get("research_data", {}).get("sources", [])
+    brief = {
+        "query": query,
+        "focus_brand": focus_brand,
+        "engines_analyzed": total_engines,
+        "engines_with_mentions": mention_count,
+        "average_rank_when_mentioned": avg_rank,
+        "negative_mentions": negative_count,
+        "research_points": research_points[:6] if isinstance(research_points, list) else [],
+    }
+
+    prompt = f"""You are a Strategic AI Visibility Auditor.
+Brand: "{focus_brand}"
+Prompt intent: "{query}"
+
+EVIDENCE SNAPSHOT:
+{json.dumps(brief)}
+
+ENGINE CONTEXT:
 {json.dumps(visibility_context)}
 
 Return ONLY valid JSON as a list of 3-5 objects.
-Each object MUST have:
-1. "title": A crisp, punchy heading for the audit point.
-2. "root_cause": Detailed reasoning of the technical or content gap for the focus brand.
-3. "solution": Exact tactical steps to fix this (where to post, what to write) specifically so the brand {focus_brand} can rank better for this query.
-4. "avoid": What the user should stop doing or avoid.
-5. "priority": "high" | "medium" | "low"
+Required fields per object:
+- "title"
+- "root_cause"
+- "solution"
+- "avoid"
+- "priority" ("high" | "medium" | "low")
+- "evidence" (one sentence that references at least one engine name or retrieval domain from the input)
 
-CRITICAL: Be extremely tactical and crisp. No generic marketing fluff. Focus on how {focus_brand} can capture the intent of "{query}" in AI search engines."""
+Strict rules:
+1. Every point must be specific to this prompt intent, not generic advice.
+2. Do not repeat root-cause wording across items.
+3. Solutions must name a concrete content format and a concrete distribution target.
+4. Use a balanced priority mix based on severity; do not assign the same priority to every item.
+5. Keep language tactical, concise, and implementable this week."""
 
-    raw = chat("chatgpt", prompt)
+    raw = chat("chatgpt", prompt, temperature=0.35)
     try:
         parsed = _clean_json(raw)
-        if isinstance(parsed, list) and parsed:
-            return parsed
+        cleaned = _sanitize_audit_items(parsed, focus_brand, query, default_priority=default_priority)
+        if cleaned:
+            return cleaned
     except Exception:
         pass
 
-    return [{
-        "title": "Visibility Gap: Missing Intent Coverage",
-        "root_cause": "The brand is not directly associated with this specific query intent in current scraped datasets.",
-        "solution": f"Create a dedicated FAQ and comparison guide for '{query}' on high-authority domains.",
-        "avoid": "Avoid relying solely on homepage keywords; focus on long-tail prompt intent.",
-        "priority": "high"
-    }]
+    return _build_detailed_audit_fallback(focus_brand, query, visibility_context)
+
+
+def _build_action_plan_fallback(
+    focus_brand: str,
+    missing_prompts: list[str],
+    llm_rows: list[dict],
+    upload_targets: list[dict],
+    search_intel: dict[str, Any] | None = None,
+) -> list[dict]:
+    actions: list[dict[str, Any]] = []
+
+    if missing_prompts:
+        examples = ", ".join(f'"{item}"' for item in missing_prompts[:3])
+        actions.append(
+            {
+                "title": "Publish direct-answer pages for uncovered intents",
+                "detail": f"{focus_brand} is absent for {len(missing_prompts)} prompts. Start with {examples} and ship dedicated pages with FAQs, comparisons, and schema.",
+                "priority": "high",
+            }
+        )
+
+    lagging = None
+    if llm_rows:
+        lagging = min(llm_rows, key=lambda row: float(row.get("mention_rate") or 0.0))
+    if lagging:
+        lagging_rate = float(lagging.get("mention_rate") or 0.0)
+        actions.append(
+            {
+                "title": f"Recover visibility in {lagging.get('llm', 'lowest-performing model')}",
+                "detail": f"{focus_brand} mention rate is {lagging_rate:.1f}% on {lagging.get('llm', 'this model')}. Run weekly prompt-to-page updates until this model crosses 70% mention rate.",
+                "priority": "high" if lagging_rate < 40 else "medium",
+            }
+        )
+
+    top_sources = [item.get("source") for item in upload_targets if item.get("source")]
+    if top_sources:
+        actions.append(
+            {
+                "title": "Prioritize citation-heavy domains first",
+                "detail": f"LLMs keep citing: {', '.join(top_sources[:5])}. Prioritize review coverage, expert mentions, and comparison placements on these domains.",
+                "priority": "medium",
+            }
+        )
+
+    retrieval_points = []
+    if isinstance(search_intel, dict):
+        retrieval_points = search_intel.get("retrieval_points", []) or []
+    if retrieval_points:
+        top_point = retrieval_points[0]
+        top_domain = top_point.get("domain") or "target domain"
+        top_query = top_point.get("query") or "priority prompt"
+        top_url = top_point.get("url") or ""
+        detail = f"Use the cited page structure from {top_domain} for \"{top_query}\" to build a stronger {focus_brand} answer asset."
+        if top_url:
+            detail = f"{detail} {top_url}"
+        actions.append(
+            {
+                "title": "Clone winning retrieval structures",
+                "detail": detail,
+                "priority": "medium",
+            }
+        )
+
+    if not actions:
+        actions.append(
+            {
+                "title": "Establish a weekly prompt-coverage cadence",
+                "detail": f"Review top prompts each week, refresh stale pages, and track mention-rate lift for {focus_brand} by model.",
+                "priority": "medium",
+            }
+        )
+
+    return _sanitize_action_items(actions, focus_brand, default_priority="medium")
+
+
+def generate_strategic_action_plan(
+    focus_brand: str,
+    project_name: str,
+    missing_prompts: list[str],
+    llm_rows: list[dict],
+    upload_targets: list[dict],
+    search_intel: dict[str, Any] | None = None,
+) -> list[dict]:
+    """Generate non-repetitive opportunities based on real project evidence."""
+    context = {
+        "project_name": project_name,
+        "focus_brand": focus_brand,
+        "missing_prompts": missing_prompts[:8],
+        "llm_summary": llm_rows[:6],
+        "upload_targets": upload_targets[:10],
+        "search_intel": {
+            "enabled": bool((search_intel or {}).get("enabled")) if isinstance(search_intel, dict) else False,
+            "domains": ((search_intel or {}).get("domains", []) if isinstance(search_intel, dict) else [])[:8],
+            "retrieval_points": ((search_intel or {}).get("retrieval_points", []) if isinstance(search_intel, dict) else [])[:8],
+        },
+    }
+
+    prompt = f"""You are a senior AI visibility strategist.
+Create a project opportunity action plan for brand "{focus_brand}" (project: "{project_name}").
+
+Use ONLY this evidence:
+{json.dumps(context)}
+
+Return ONLY valid JSON as a list of 3-6 objects.
+Each object must include:
+- "title"
+- "detail"
+- "priority" ("high" | "medium" | "low")
+
+Rules:
+1. Every action must reference at least one concrete signal from the evidence (a prompt, model, retrieval domain, or citation source).
+2. Avoid generic advice and repeated wording.
+3. Priorities must reflect severity and should not all be identical.
+4. Keep each detail under 70 words and include an implementation direction, not just a diagnosis."""
+
+    raw = chat("chatgpt", prompt, temperature=0.4)
+    try:
+        parsed = _clean_json(raw)
+        cleaned = _sanitize_action_items(parsed, focus_brand, default_priority="medium")
+        if cleaned:
+            return cleaned
+    except Exception:
+        pass
+
+    return _build_action_plan_fallback(focus_brand, missing_prompts, llm_rows, upload_targets, search_intel)
 
 
 def generate_project_summary(
@@ -831,7 +1177,7 @@ CRITICAL VALIDATION RULES:
 6. competitive_threats MUST clearly tie to retrieval/citation behavior and intent coverage gaps for "{focus_brand}" (based on overall_health).
 """
 
-    raw = chat("chatgpt", prompt)
+    raw = chat("chatgpt", prompt, temperature=0.25)
     try:
         parsed = _clean_json(raw)
         if isinstance(parsed, dict) and parsed.get("overall_health"):
@@ -977,45 +1323,109 @@ def generate_global_audit(
     if not all_prompts_data:
         return []
 
-    # Flatten all existing audit points to provide context
     flattened_context = []
-    for p in all_prompts_data:
-        p_text = p.get("prompt_text", "Unknown")
-        for audit in p.get("audit", []):
-            flattened_context.append({
-                "prompt": p_text,
-                "audit_title": audit.get("title"),
-                "priority": audit.get("priority")
-            })
+    high_priority_count = 0
+    recurring_titles: dict[str, int] = defaultdict(int)
+
+    for prompt_row in all_prompts_data:
+        prompt_text = prompt_row.get("prompt_text", "Unknown")
+        for audit in prompt_row.get("audit", []):
+            title = str(audit.get("title") or "").strip()
+            priority = _normalize_priority(audit.get("priority"), "medium")
+            if priority == "high":
+                high_priority_count += 1
+            if title:
+                recurring_titles[title] += 1
+            flattened_context.append(
+                {
+                    "prompt": prompt_text,
+                    "title": title,
+                    "priority": priority,
+                    "root_cause": _clip_text(audit.get("root_cause") or audit.get("detail"), 240),
+                }
+            )
+
+    recurring = [
+        {"title": title, "count": count}
+        for title, count in sorted(recurring_titles.items(), key=lambda item: item[1], reverse=True)[:8]
+    ]
+    default_priority = "high" if high_priority_count >= 4 else ("medium" if high_priority_count else "low")
 
     prompt = f"""You are a Lead Brand Intelligence Auditor.
-Synthesize the visibility issues across the entire project for "{focus_brand}".
+Synthesize project-wide visibility patterns for "{focus_brand}".
 
-INDIVIDUAL PROMPT ISSUES:
-{json.dumps(flattened_context[:30])}
+INPUT (prompt-level audit evidence):
+{json.dumps(flattened_context[:40])}
 
-Return ONLY valid JSON as a list of 5-7 HIGH-LEVEL STRATEGIC AUDIT POINTS.
-Each object MUST have:
-1. "title": Strategic category (e.g., "Cross-Platform Sentiment Drift").
-2. "root_cause": Systematic reason why {focus_brand} fails across these prompts.
-3. "solution": A project-wide tactical fix, specifically detailing what content {focus_brand} needs to create or optimize to rank higher overall.
-4. "avoid": Systemic mistakes to stop.
-5. "priority": "high" | "medium" | "low"
+RECURRING THEMES:
+{json.dumps(recurring)}
 
-Focus on patterns rather than individual prompt fixes, and ensure solutions are actionable strategies to displace competitors in LLM responses."""
+Return ONLY valid JSON as a list of 4-6 objects.
+Each object must include:
+- "title"
+- "root_cause"
+- "solution"
+- "avoid"
+- "priority" ("high" | "medium" | "low")
+- "evidence" (reference at least one recurring prompt pattern from input)
 
-    raw = chat("chatgpt", prompt)
+Rules:
+1. Focus on repeated patterns, not isolated one-off issues.
+2. Do not reuse the same wording across multiple items.
+3. Solutions must include concrete portfolio-level moves (content architecture, distribution channels, and measurement).
+4. Do not assign the same priority to every item."""
+
+    raw = chat("chatgpt", prompt, temperature=0.35)
     try:
         parsed = _clean_json(raw)
-        if isinstance(parsed, list) and parsed:
-            return parsed
+        cleaned = _sanitize_audit_items(
+            parsed,
+            focus_brand,
+            "project-wide prompt portfolio",
+            default_priority=default_priority,
+        )
+        if cleaned:
+            return cleaned
     except Exception:
         pass
 
-    return [{
-        "title": "Global Intent Misalignment",
-        "root_cause": "Brand authority is fragmented across niche intents.",
-        "solution": "Implement a centralized knowledge hub covering all 10+ core intents identified.",
-        "avoid": "Avoid isolated landing pages; use a linked topic cluster strategy.",
-        "priority": "high"
-    }]
+    fallback = []
+    if high_priority_count:
+        fallback.append(
+            {
+                "title": "High-severity issues recurring across prompts",
+                "root_cause": f"{high_priority_count} high-priority gaps repeat across the tracked prompt set, indicating systemic coverage weaknesses.",
+                "solution": "Build a shared intent-cluster roadmap: map each prompt to a canonical page, add supporting FAQs, and track mention-rate and average-rank improvements weekly.",
+                "avoid": "Avoid fixing prompts in isolation without a shared topic architecture.",
+                "priority": "high",
+            }
+        )
+
+    if recurring:
+        top_theme = recurring[0]["title"]
+        fallback.append(
+            {
+                "title": f"Recurring failure pattern: {top_theme}",
+                "root_cause": f'The theme "{top_theme}" appears repeatedly, signaling repeated structural blind spots in how content is framed for retrieval.',
+                "solution": "Create a reusable content template for this theme (entity-first intro, comparison table, proof block, FAQ) and roll it out to all affected prompt pages.",
+                "avoid": "Avoid inconsistent templates that force each page to reinvent structure.",
+                "priority": "medium",
+            }
+        )
+
+    fallback.append(
+        {
+            "title": "Portfolio-level retrieval governance is missing",
+            "root_cause": f"{focus_brand} lacks a coordinated refresh and distribution cadence across prompts and citation channels.",
+            "solution": "Run a biweekly governance cycle: refresh top-decay pages, expand citation-domain coverage, and prune outdated claims that reduce trust in LLM summaries.",
+            "avoid": "Avoid ad hoc updates with no measurable KPI targets.",
+            "priority": "medium",
+        }
+    )
+
+    return _sanitize_audit_items(
+        fallback,
+        focus_brand,
+        "project-wide prompt portfolio",
+        default_priority=default_priority,
+    )
