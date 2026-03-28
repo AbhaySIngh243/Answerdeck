@@ -1,11 +1,26 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, FolderKanban, Globe, Loader2, Plus, Trash2 } from 'lucide-react';
 
 import { api } from '../../lib/api';
+import { useAuth } from '../../contexts/AuthContext';
+import { getDomainFromWebsiteUrl, normalizeWebsiteUrl } from '../../lib/url';
 
 const MAX_PROJECTS_PER_ACCOUNT = 3;
+const PROJECTS_CACHE_KEY = 'answerdeck.projects.cache.v1';
+const REGION_OPTIONS = [
+  'Global',
+  'India',
+  'United States',
+  'United Kingdom',
+  'Canada',
+  'Australia',
+  'Singapore',
+  'Europe',
+  'Middle East',
+  'South East Asia',
+];
 
 const initialForm = {
   name: '',
@@ -16,21 +31,46 @@ const initialForm = {
 };
 
 const ProjectsView = () => {
+  const navigate = useNavigate();
+  const { loading: authLoading, isSignedIn } = useAuth();
   const queryClient = useQueryClient();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [form, setForm] = useState(initialForm);
+  const [cacheLoaded] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(PROJECTS_CACHE_KEY);
+      const parsed = JSON.parse(raw || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
 
   const { data: projects = [], isLoading, error } = useQuery({
     queryKey: ['projects'],
     queryFn: api.getProjects,
+    enabled: !authLoading && Boolean(isSignedIn),
+    initialData: cacheLoaded,
+    staleTime: 30_000,
   });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify(projects || []));
+    } catch {
+      // ignore cache write failures
+    }
+  }, [projects]);
 
   const createProjectMutation = useMutation({
     mutationFn: api.createProject,
-    onSuccess: () => {
+    onSuccess: (payload) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       setShowCreateModal(false);
       setForm(initialForm);
+      if (payload?.id) {
+        navigate(`/dashboard/project/${payload.id}/prompts/setup`);
+      }
     },
   });
 
@@ -55,7 +95,7 @@ const ProjectsView = () => {
       category: form.category,
       competitors,
       region: form.region,
-      website_url: form.website_url,
+      website_url: normalizeWebsiteUrl(form.website_url),
     });
   };
 
@@ -63,10 +103,15 @@ const ProjectsView = () => {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  if (isLoading) {
+  const createDisabled = createProjectMutation.isPending || !form.name.trim();
+  const shouldShowInitialLoading = isLoading && projects.length === 0;
+  const regionSelectValue = form.region || 'Global';
+
+  if (shouldShowInitialLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-brand-primary" />
+      <div className="flex h-64 flex-col items-center justify-center gap-2 text-slate-500">
+        <Loader2 className="h-8 w-8 animate-spin text-brand-primary" />
+        <p className="text-sm">Loading your projects...</p>
       </div>
     );
   }
@@ -93,7 +138,7 @@ const ProjectsView = () => {
     <div className="max-w-7xl mx-auto space-y-10">
       <div className="flex flex-col justify-between gap-4 border-b border-[#e2e8f0] pb-5 md:flex-row md:items-end">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-brand-primary">Workspace</p>
+          <p className="text-[11px] font-semibold tracking-wide text-brand-primary">Workspace</p>
           <h1 className="mt-1 text-xl font-bold tracking-tight text-[#0f172a]">My Projects</h1>
           <p className="mt-1 text-sm text-[#64748b]">Monitor, analyze, and improve your brand visibility across AI answers.</p>
           <p className="mt-0.5 text-xs text-[#94a3b8]">
@@ -149,20 +194,38 @@ const ProjectsView = () => {
                 </div>
 
                 <Link to={`/dashboard/project/${project.id}`} className="flex-1">
-                  <h3 className="mb-0.5 truncate text-base font-bold leading-snug text-[#0f172a] transition-colors group-hover:text-brand-primary">
-                    {project.name}
-                  </h3>
-                  <div className="mb-3.5 inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-[#64748b]">
+                  <div className="mb-0.5 flex items-center gap-2">
+                    {(() => {
+                      const domain = getDomainFromWebsiteUrl(project.website_url);
+                      return domain ? (
+                        <img
+                          src={`https://www.google.com/s2/favicons?domain=${domain}&sz=64`}
+                          alt=""
+                          loading="lazy"
+                          decoding="async"
+                          referrerPolicy="no-referrer"
+                          className="h-4 w-4 shrink-0 rounded-sm"
+                          onError={(event) => {
+                            event.currentTarget.style.display = 'none';
+                          }}
+                        />
+                      ) : null;
+                    })()}
+                    <h3 className="truncate text-base font-bold leading-snug text-[#0f172a] transition-colors group-hover:text-brand-primary">
+                      {project.name}
+                    </h3>
+                  </div>
+                  <div className="mb-3.5 inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-[#64748b]">
                     {project.category || 'Portfolio'}
                   </div>
 
                   <div className="mb-4 grid grid-cols-2 gap-3">
                     <div className="space-y-0.5">
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">Region</span>
+                      <span className="text-[10px] font-semibold tracking-wide text-[#94a3b8]">Region</span>
                       <p className="truncate text-sm font-semibold text-slate-700">{project.region || 'Global'}</p>
                     </div>
                     <div className="space-y-0.5">
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">Competitors</span>
+                      <span className="text-[10px] font-semibold tracking-wide text-[#94a3b8]">Competitors</span>
                       <p className="text-sm font-semibold text-slate-700">{competitors.length}</p>
                     </div>
                   </div>
@@ -205,7 +268,7 @@ const ProjectsView = () => {
               )}
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
-                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">
+                  <label className="mb-1.5 block text-[10px] font-semibold tracking-wide text-[#94a3b8]">
                     Brand name *
                   </label>
                   <input
@@ -220,7 +283,7 @@ const ProjectsView = () => {
                 </div>
 
                 <div className="col-span-1">
-                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">Industry</label>
+                  <label className="mb-1.5 block text-[10px] font-semibold tracking-wide text-[#94a3b8]">Industry</label>
                   <input
                     type="text"
                     value={form.category}
@@ -231,29 +294,33 @@ const ProjectsView = () => {
                 </div>
 
                 <div className="col-span-1">
-                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">Region</label>
-                  <input
-                    type="text"
-                    value={form.region}
+                  <label className="mb-1.5 block text-[10px] font-semibold tracking-wide text-[#94a3b8]">Region</label>
+                  <select
+                    value={regionSelectValue}
                     onChange={(event) => updateField('region', event.target.value)}
                     className="w-full rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-3.5 py-2.5 text-sm font-medium text-[#0f172a] outline-none transition-all placeholder:text-slate-400 focus:border-brand-primary focus:bg-white focus:ring-2 focus:ring-brand-primary/15"
-                    placeholder="e.g. Global"
-                  />
+                  >
+                    {REGION_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="col-span-2">
-                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">Website URL</label>
+                  <label className="mb-1.5 block text-[10px] font-semibold tracking-wide text-[#94a3b8]">Website URL</label>
                   <input
-                    type="url"
+                    type="text"
                     value={form.website_url}
                     onChange={(event) => updateField('website_url', event.target.value)}
                     className="w-full rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-3.5 py-2.5 text-sm font-medium text-[#0f172a] outline-none transition-all placeholder:text-slate-400 focus:border-brand-primary focus:bg-white focus:ring-2 focus:ring-brand-primary/15"
-                    placeholder="https://example.com"
+                    placeholder="example.com or https://example.com"
                   />
                 </div>
 
                 <div className="col-span-2">
-                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">Competitors</label>
+                  <label className="mb-1.5 block text-[10px] font-semibold tracking-wide text-[#94a3b8]">Competitors</label>
                   <input
                     type="text"
                     value={form.competitors}
@@ -275,10 +342,10 @@ const ProjectsView = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={createProjectMutation.isPending || !form.name.trim()}
+                  disabled={createDisabled}
                   className="flex items-center justify-center gap-2 rounded-lg bg-brand-primary px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-[#3b82f6] disabled:opacity-50"
                 >
-                  {createProjectMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Deploy Project</span>}
+                  {createProjectMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Next: Choose prompts</span>}
                 </button>
               </div>
             </form>

@@ -15,6 +15,16 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
+OPENAI_ENABLE_WEB_SEARCH = os.getenv("OPENAI_ENABLE_WEB_SEARCH", "true").lower() in {"1", "true", "yes"}
+OPENAI_WEB_SEARCH_MODEL = os.getenv("OPENAI_WEB_SEARCH_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+OPENAI_REQUIRE_WEB_SEARCH = os.getenv("OPENAI_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
+PERPLEXITY_ENABLE_WEB_SEARCH = os.getenv("PERPLEXITY_ENABLE_WEB_SEARCH", "true").lower() in {"1", "true", "yes"}
+PERPLEXITY_REQUIRE_WEB_SEARCH = os.getenv("PERPLEXITY_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
+CLAUDE_REQUIRE_WEB_SEARCH = os.getenv("CLAUDE_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
+GEMINI_REQUIRE_WEB_SEARCH = os.getenv("GEMINI_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
+DEEPSEEK_REQUIRE_WEB_SEARCH = os.getenv("DEEPSEEK_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
+RANKLORE_EXTERNAL_PARITY_MODE = os.getenv("RANKLORE_EXTERNAL_PARITY_MODE", "true").lower() in {"1", "true", "yes"}
+RANKLORE_LLM_TEMPERATURE = float(os.getenv("RANKLORE_LLM_TEMPERATURE", "0.0"))
 
 def _build_client(api_key: str, base_url: str | None = None) -> OpenAI | None:
     if not api_key:
@@ -84,6 +94,67 @@ def get_enabled_engines(selected_models: list[str] | None = None) -> dict[str, d
     return {engine: ENGINE_CONFIG[engine] for engine in selected if ENGINE_CONFIG[engine].get("client") is not None}
 
 
+def _extract_openai_response_citation_urls(response: Any) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    try:
+        output_items = getattr(response, "output", []) or []
+        for output_item in output_items:
+            content_items = getattr(output_item, "content", []) or []
+            for content in content_items:
+                annotations = getattr(content, "annotations", []) or []
+                for ann in annotations:
+                    ann_type = getattr(ann, "type", "")
+                    if ann_type != "url_citation":
+                        continue
+                    url = getattr(ann, "url", "") or ""
+                    if not url:
+                        continue
+                    if url not in seen:
+                        seen.add(url)
+                        urls.append(url)
+    except Exception:
+        return []
+    return urls
+
+
+def _format_sources_tail(urls: list[str]) -> str:
+    clean = [u.strip() for u in urls if u and u.strip()]
+    if not clean:
+        return ""
+    lines = "\n".join(f"- {url}" for url in clean[:12])
+    return f"\n\nSources:\n{lines}"
+
+
+def _infer_web_search_country(prompt: str) -> str | None:
+    text = (prompt or "").lower()
+    if " in india" in text or "india " in text or text.endswith("india"):
+        return "IN"
+    if " in united states" in text or " in usa" in text or " in us " in text:
+        return "US"
+    if " in united kingdom" in text or " in uk" in text:
+        return "GB"
+    if " in canada" in text:
+        return "CA"
+    if " in australia" in text:
+        return "AU"
+    return None
+
+
+def _extract_perplexity_citation_urls(response: Any) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    candidates = getattr(response, "citations", None)
+    if not candidates and isinstance(response, dict):
+        candidates = response.get("citations")
+    for item in candidates or []:
+        value = str(item or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            urls.append(value)
+    return urls
+
+
 def chat(engine: str, prompt: str) -> str:
     engine = engine.lower()
     cfg = ENGINE_CONFIG.get(engine)
@@ -94,11 +165,61 @@ def chat(engine: str, prompt: str) -> str:
         return f"[{cfg.get('display_name', engine)} not configured]"
 
     try:
+        if engine == "perplexity":
+            if not PERPLEXITY_ENABLE_WEB_SEARCH and PERPLEXITY_REQUIRE_WEB_SEARCH:
+                return "[Perplexity web-search required but disabled via PERPLEXITY_ENABLE_WEB_SEARCH]"
+            response = client.chat.completions.create(
+                model=cfg["model"],
+                messages=[{"role": "user", "content": prompt}],
+                temperature=RANKLORE_LLM_TEMPERATURE,
+                extra_body={"return_citations": True},
+            )
+            text = (response.choices[0].message.content or "").strip()
+            citations = _extract_perplexity_citation_urls(response)
+            if PERPLEXITY_REQUIRE_WEB_SEARCH and not citations:
+                return "[Perplexity web-search required but no citations were returned]"
+            return f"{text}{_format_sources_tail(citations)}"
+
+        if engine == "claude" and CLAUDE_REQUIRE_WEB_SEARCH:
+            return "[Claude web-search required but not supported by current API integration]"
+
+        if engine == "gemini" and GEMINI_REQUIRE_WEB_SEARCH:
+            return "[Gemini web-search required but not supported by current API integration]"
+
+        if engine == "deepseek" and DEEPSEEK_REQUIRE_WEB_SEARCH:
+            return "[DeepSeek web-search required but not supported by current API integration]"
+
+        if engine == "chatgpt" and OPENAI_ENABLE_WEB_SEARCH:
+            # Align API behavior more closely with ChatGPT app results by enabling web grounding.
+            try:
+                country = _infer_web_search_country(prompt)
+                tool_cfg: dict[str, Any] = {"type": "web_search_preview"}
+                if country:
+                    tool_cfg["user_location"] = {
+                        "type": "approximate",
+                        "country": country,
+                    }
+                response = client.responses.create(
+                    model=OPENAI_WEB_SEARCH_MODEL,
+                    input=prompt,
+                    tools=[tool_cfg],
+                    tool_choice="auto",
+                )
+                text = (getattr(response, "output_text", "") or "").strip()
+                if text:
+                    citations = _extract_openai_response_citation_urls(response)
+                    return f"{text}{_format_sources_tail(citations)}"
+            except Exception as exc:
+                if OPENAI_REQUIRE_WEB_SEARCH:
+                    return f"[ChatGPT web-search required but unavailable: {exc}]"
+                # Fallback to plain chat completion if web tool/model is unavailable.
+                pass
+
         if cfg.get("provider") == "anthropic":
             response = client.messages.create(
                 model=cfg["model"],
                 max_tokens=1200,
-                temperature=0.2,
+                temperature=RANKLORE_LLM_TEMPERATURE,
                 messages=[{"role": "user", "content": prompt}],
             )
             text_parts = [block.text for block in response.content if getattr(block, "type", "") == "text"]
@@ -107,7 +228,7 @@ def chat(engine: str, prompt: str) -> str:
         response = client.chat.completions.create(
             model=cfg["model"],
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
+            temperature=RANKLORE_LLM_TEMPERATURE,
         )
         return (response.choices[0].message.content or "").strip()
     except Exception as exc:
@@ -115,12 +236,17 @@ def chat(engine: str, prompt: str) -> str:
 
 
 def query_engines(query: str, selected_models: list[str] | None = None) -> dict[str, str]:
-    system_prompt = (
-        "Answer the question as a recommendation assistant.\n"
-        "Provide a ranked list of brands/products where possible.\n"
-        "Include short reasoning and any sources/websites/publications used."
-    )
-    full_prompt = f"{system_prompt}\n\nQuestion: {query}"
+    if RANKLORE_EXTERNAL_PARITY_MODE:
+        full_prompt = query
+    else:
+        system_prompt = (
+            "Answer the question as a neutral recommendation assistant.\n"
+            "Provide a ranked list of brands/products where possible.\n"
+            "Include short reasoning and any sources/websites/publications used.\n"
+            "If the question is region-specific (for example includes 'in India'), ground recommendations in that region.\n"
+            "Always include a final section exactly named 'Sources:' and list direct URLs (one URL per bullet)."
+        )
+        full_prompt = f"{system_prompt}\n\nQuestion: {query}"
 
     enabled_engines = list(get_enabled_engines(selected_models).keys())
     if not enabled_engines:

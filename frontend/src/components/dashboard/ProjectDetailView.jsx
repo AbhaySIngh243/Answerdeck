@@ -390,6 +390,21 @@ const ProjectDetailView = () => {
 
   /** Always use `/competitors` rows: same shape as the grid (brand, market_share, visibility…). Prompt detail `competitors` is brand_ranking ({ name, mentions }) and breaks this UI. */
   const competitorDisplayRows = useMemo(() => competitorIntel?.rows || [], [competitorIntel?.rows]);
+  const promptAuditRows = useMemo(
+    () => (Array.isArray(promptDetailData?.audit) ? promptDetailData.audit : []),
+    [promptDetailData?.audit]
+  );
+  const promptAuditCoverage = useMemo(() => {
+    const sentiment = promptDetailData?.sentiment || {};
+    const positive = Number(sentiment.positive) || 0;
+    const neutral = Number(sentiment.neutral) || 0;
+    const negative = Number(sentiment.negative) || 0;
+    const notMentioned = Number(sentiment.not_mentioned) || 0;
+    const total = positive + neutral + negative + notMentioned;
+    const mentioned = positive + neutral + negative;
+    const mentionRate = total > 0 ? Math.round((mentioned / total) * 100) : 0;
+    return { total, mentioned, notMentioned, mentionRate };
+  }, [promptDetailData?.sentiment]);
 
   const { data: intelSummary, isLoading: intelSummaryLoading } = useQuery({
     queryKey: ['intel-summary', id],
@@ -1234,10 +1249,26 @@ const ProjectDetailView = () => {
                   </div>
                 ))
               : competitorDisplayRows.slice(0, 20).map((item) => (
-                  <div key={item.brand} className={`bg-white p-4 ${item.is_focus ? 'ring-1 ring-inset ring-brand-primary/20 bg-blue-50/30' : ''}`}>
+                  <div
+                    key={item.brand}
+                    className={`bg-white p-4 ${
+                      item.is_focus
+                        ? 'ring-1 ring-inset ring-brand-primary/20 bg-blue-50/30'
+                        : item.is_target_competitor
+                          ? 'ring-1 ring-inset ring-amber-300/40 bg-amber-50/30'
+                          : ''
+                    }`}
+                  >
                     <div className="flex items-center justify-between mb-2.5">
                       <span className={`text-sm font-semibold ${item.is_focus ? 'text-brand-primary' : 'text-slate-800'}`}>{item.brand}</span>
-                      {item.is_focus && <span className="rounded bg-brand-primary px-1.5 py-0.5 text-[10px] font-medium text-white">Target</span>}
+                      <div className="flex items-center gap-1.5">
+                        {item.is_focus ? (
+                          <span className="rounded bg-brand-primary px-1.5 py-0.5 text-[10px] font-medium text-white">Focus brand</span>
+                        ) : null}
+                        {item.is_target_competitor ? (
+                          <span className="rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-medium text-white">Target competitor</span>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       {[
@@ -1452,24 +1483,91 @@ const ProjectDetailView = () => {
         {globalAuditLoading || promptDetailLoading ? <div className="py-16 flex justify-center"><Loader2 className="w-5 h-5 animate-spin text-slate-300" /></div> : (
           <div className="p-5 space-y-4">
             {selectedPromptId ? (
-              <div className="rounded-lg bg-red-50 border border-red-100 p-4">
-                <p className={`${label} text-red-500 mb-2`}>Critical Gaps</p>
-                {(promptDetailData?.audit?.missing || []).length > 0 ? (
-                  <ul className="space-y-1.5">
-                    {(promptDetailData.audit.missing).map((brand, i) => (
-                      <li key={i} className="flex items-center gap-2 text-sm text-red-600">
-                        <span className="h-1.5 w-1.5 rounded-full bg-red-400" /> Not mentioned: {brand}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="text-sm text-emerald-600 flex items-center gap-2">
-                     <CheckCircle2 className="w-4 h-4" /> Brand retrieved for this prompt.
+              <>
+                <div
+                  className={`rounded-lg border p-4 ${
+                    promptAuditCoverage.notMentioned > 0
+                      ? 'border-amber-200 bg-amber-50'
+                      : 'border-emerald-200 bg-emerald-50'
+                  }`}
+                >
+                  <p
+                    className={`mb-1.5 text-[11px] font-semibold tracking-wide ${
+                      promptAuditCoverage.notMentioned > 0 ? 'text-amber-700' : 'text-emerald-700'
+                    }`}
+                  >
+                    Prompt coverage
                   </p>
+                  <p
+                    className={`flex items-center gap-2 text-sm ${
+                      promptAuditCoverage.notMentioned > 0 ? 'text-amber-700' : 'text-emerald-700'
+                    }`}
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    Brand mentioned in {promptAuditCoverage.mentioned}/{promptAuditCoverage.total || '-'} engines ({promptAuditCoverage.mentionRate}%).
+                  </p>
+                  {promptAuditCoverage.notMentioned > 0 ? (
+                    <p className="mt-1 text-xs text-amber-700/90">
+                      Missing in {promptAuditCoverage.notMentioned} engine{promptAuditCoverage.notMentioned > 1 ? 's' : ''}.
+                    </p>
+                  ) : null}
+                </div>
+                {promptAuditRows.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                    No detailed prompt audit points yet. Run this prompt again to generate a deeper audit.
+                  </div>
+                ) : (
+                  promptAuditRows.map((item, idx) => {
+                    const priority = String(item?.priority || 'medium').toLowerCase();
+                    const rootCause = item?.root_cause || item?.detail || 'No root cause provided.';
+                    const solution = item?.solution || 'No solution provided.';
+                    return (
+                      <div key={`prompt-audit-${idx}`} className="rounded-lg border border-slate-100 p-5 hover:border-slate-200 transition-colors">
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-slate-100 text-[10px] font-semibold text-slate-500">{idx + 1}</span>
+                            <h4 className="text-sm font-semibold text-slate-800">{item?.title || 'Audit finding'}</h4>
+                          </div>
+                          <span
+                            className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold ${
+                              priority === 'high'
+                                ? 'bg-red-50 text-red-500'
+                                : priority === 'low'
+                                  ? 'bg-emerald-50 text-emerald-600'
+                                  : 'bg-blue-50 text-brand-primary'
+                            }`}
+                          >
+                            {priority}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <div>
+                            <p className={`${label} mb-1`}>Root cause</p>
+                            <p className="text-xs text-slate-600 leading-relaxed">{rootCause}</p>
+                          </div>
+                          <div>
+                            <p className={`${label} text-brand-primary mb-1`}>Solution</p>
+                            <p className="text-xs font-medium text-slate-700 leading-relaxed">{solution}</p>
+                          </div>
+                        </div>
+                        {item?.avoid ? (
+                          <div className="mt-3 flex items-start gap-2 rounded-md border border-red-100 bg-red-50/60 px-3 py-2">
+                            <span className="mt-px shrink-0 text-[10px] font-semibold text-red-500">Avoid:</span>
+                            <p className="text-xs leading-relaxed text-red-500/80">{item.avoid}</p>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })
                 )}
-              </div>
+              </>
             ) : (
-              (globalAudit || []).map((item, idx) => (
+              (globalAudit || []).length === 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                  No project-level audit available yet. Run prompt analyses first.
+                </div>
+              ) : (
+                (globalAudit || []).map((item, idx) => (
                 <div key={idx} className="rounded-lg border border-slate-100 p-5 hover:border-slate-200 transition-colors">
                   <div className="flex items-start justify-between gap-3 mb-3">
                     <div className="flex items-center gap-2.5">
@@ -1519,6 +1617,7 @@ const ProjectDetailView = () => {
                   </button>
                 </div>
               ))
+              )
             )}
           </div>
         )}

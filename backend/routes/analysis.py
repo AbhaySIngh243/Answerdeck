@@ -10,9 +10,12 @@ from flask import Blueprint, current_app, jsonify, request, g
 
 from engine.analyzer import (
     analyze_single_response,
+    build_focus_brand_aliases,
     build_competitor_comparison,
     calculate_visibility_score,
     generate_positioning_insights,
+    is_focus_brand_match,
+    is_spurious_brand_mention,
     research_prompt_sources,
 )
 from engine.llm_clients import get_available_engine_catalog, query_engines
@@ -122,6 +125,7 @@ def async_run_analysis(job_id: str, prompt_id: int, project_id: int, user_id: st
                 return
 
             focus_brand = project.name
+            focus_brand_aliases = build_focus_brand_aliases(project.name, project.website_url)
             competitor_brands = project.get_competitors_list()
             analyses: dict[str, dict] = {}
             all_focus_mentions: list[dict] = []
@@ -132,6 +136,7 @@ def async_run_analysis(job_id: str, prompt_id: int, project_id: int, user_id: st
                     focus_brand=focus_brand,
                     query=prompt.prompt_text,
                     competitor_brands=competitor_brands,
+                    focus_brand_aliases=focus_brand_aliases,
                 )
                 analyses[engine_name] = analysis
 
@@ -147,9 +152,9 @@ def async_run_analysis(job_id: str, prompt_id: int, project_id: int, user_id: st
 
                 for detail in analysis.get("all_brand_details", []):
                     brand = detail.get("brand", "").strip()
-                    if not brand:
+                    if not brand or is_spurious_brand_mention(brand):
                         continue
-                    is_focus = brand.lower() == focus_brand.lower()
+                    is_focus = is_focus_brand_match(brand, focus_brand_aliases)
                     mention = Mention(
                         response_id=new_response.id,
                         brand=brand,
@@ -444,12 +449,14 @@ def run_test_prompt(project_id):
         return jsonify({"error": "No engines available for test prompt"}), 400
 
     analyses = {}
+    focus_brand_aliases = build_focus_brand_aliases(project.name, project.website_url)
     for engine_name, response_text in responses.items():
         analyses[engine_name] = analyze_single_response(
             response_text=response_text,
             focus_brand=project.name,
             query=query,
             competitor_brands=project.get_competitors_list(),
+            focus_brand_aliases=focus_brand_aliases,
         )
 
     return jsonify(

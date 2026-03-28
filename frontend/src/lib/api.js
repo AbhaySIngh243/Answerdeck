@@ -61,10 +61,26 @@ function buildHelpfulError({ url, response, payload, isJson }) {
     );
   }
 
-  const backendMessage =
+  let backendMessage =
     isJson && payload && typeof payload === 'object'
       ? payload.error || payload.message || payload.detail
       : null;
+  if (
+    isJson &&
+    payload &&
+    typeof payload === 'object' &&
+    Array.isArray(payload.details) &&
+    payload.details.length > 0
+  ) {
+    const d = payload.details[0];
+    const loc = Array.isArray(d?.loc) ? d.loc.filter((x) => x !== 'body').join('.') : '';
+    const msg = typeof d?.msg === 'string' ? d.msg : '';
+    const line = [loc, msg].filter(Boolean).join(': ');
+    if (line) {
+      backendMessage =
+        !backendMessage || backendMessage === 'Invalid input' ? line : `${backendMessage} (${line})`;
+    }
+  }
 
   const prefix = status ? `API ${status}${statusText ? ` ${statusText}` : ''}` : 'API error';
   const suffix = requestId ? ` (request_id: ${requestId})` : '';
@@ -87,6 +103,7 @@ async function getAuthHeader() {
 async function request(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const headers = { ...options.headers };
+  let forcedRefreshUsed = false;
 
   if (!headers.Authorization) {
     const authHeader = await getAuthHeader();
@@ -106,6 +123,16 @@ async function request(path, options = {}) {
       const contentType = response.headers.get('content-type') || '';
       const isJson = contentType.includes('application/json');
       const payload = isJson ? await response.json() : await response.text();
+
+      // Token can expire during long sessions. Refresh once and retry this request.
+      if (response.status === 401 && !forcedRefreshUsed && !options.headers?.Authorization) {
+        const refreshedToken = await getAuthToken(true);
+        if (refreshedToken) {
+          headers.Authorization = `Bearer ${refreshedToken}`;
+          forcedRefreshUsed = true;
+          continue;
+        }
+      }
 
       if (!response.ok) {
         throw buildHelpfulError({ url, response, payload, isJson });
@@ -133,7 +160,15 @@ async function request(path, options = {}) {
     }
   }
 
-  throw lastErr || new Error('Request failed');
+  if (lastErr instanceof Error) {
+    throw lastErr;
+  }
+  if (lastErr != null && lastErr !== '') {
+    throw new Error(String(lastErr));
+  }
+  throw new Error(
+    `Request failed (${method} ${url}). If this persists, confirm the API is running and VITE_API_BASE_URL matches it.`,
+  );
 }
 
 export const api = {

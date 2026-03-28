@@ -9,8 +9,8 @@ export function AuthProvider({ children }) {
   const { user } = useUser();
 
   useEffect(() => {
-    setAuthTokenGetter(async () => {
-      const first = await getToken();
+    setAuthTokenGetter(async (forceRefresh = false) => {
+      const first = await getToken({ skipCache: forceRefresh });
       if (first) return first;
       // After navigation or cold start, Clerk sometimes needs a non-cached read.
       return await getToken({ skipCache: true });

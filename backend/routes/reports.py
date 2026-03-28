@@ -17,6 +17,7 @@ from engine.analyzer import (
     generate_global_audit,
     generate_project_summary,
     generate_recommendations,
+    is_spurious_brand_mention,
 )
 from engine.perplexity_search import is_perplexity_search_enabled, search_web
 from exceptions import NotFoundError
@@ -211,6 +212,8 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         for mention in mentions:
             if mention.is_focus:
                 continue
+            if is_spurious_brand_mention(mention.brand or ""):
+                continue
             competitor_scores[mention.brand]["mentions"] += 1
             if mention.rank is not None:
                 competitor_scores[mention.brand]["ranks"].append(mention.rank)
@@ -404,6 +407,7 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
 
     focus_brand = (project.name or "").strip()
     configured = [str(c).strip() for c in project.get_competitors_list() if c and str(c).strip()]
+    configured_lower = {c.lower() for c in configured}
     focus_lower = focus_brand.lower() if focus_brand else ""
 
     prompts = Prompt.query.filter_by(project_id=project_id).all()
@@ -427,7 +431,7 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
         mentions = Mention.query.filter(Mention.response_id.in_(considered_response_ids)).all()
         for mention in mentions:
             raw = (mention.brand or "").strip()
-            if not raw:
+            if not raw or is_spurious_brand_mention(raw):
                 continue
             key = raw.lower()
             g = grouped[key]
@@ -492,10 +496,18 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
                 "mentions": row["mentions"],
                 "avg_rank": round(sum(row["ranks"]) / len(row["ranks"]), 2) if row["ranks"] else None,
                 "is_focus": is_focus,
+                "is_target_competitor": key_lower in configured_lower and key_lower != focus_lower,
             }
         )
 
-    rows.sort(key=lambda item: (not item["is_focus"], -item["visibility_score"], item["brand"].lower()))
+    rows.sort(
+        key=lambda item: (
+            not item["is_focus"],
+            not item["is_target_competitor"],
+            -item["visibility_score"],
+            item["brand"].lower(),
+        )
+    )
     return rows
 
 
@@ -1099,6 +1111,7 @@ def competitor_table(project_id):
                 "mentions": item["mentions"],
                 "sentiment_proxy": max(0, min(100, round(100 - ((item["avg_rank"] or 10) * 8), 1))),
                 "is_focus": item["is_focus"],
+                "is_target_competitor": item.get("is_target_competitor", False),
             }
         )
 

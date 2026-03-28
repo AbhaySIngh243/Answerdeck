@@ -7,8 +7,17 @@ class APIError(Exception):
         self.payload = payload
 
     def to_dict(self):
-        rv = dict(self.payload or ())
-        rv['error'] = self.message
+        payload = self.payload
+        if not payload:
+            rv = {}
+        elif isinstance(payload, dict):
+            rv = dict(payload)
+        elif isinstance(payload, list):
+            # Pydantic ValidationError.errors() is a list, not a mapping.
+            rv = {"details": payload}
+        else:
+            rv = {"detail": str(payload)}
+        rv["error"] = self.message
         return rv
 
 class NotFoundError(APIError):

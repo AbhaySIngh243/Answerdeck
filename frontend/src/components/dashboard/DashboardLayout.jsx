@@ -134,7 +134,7 @@ const DashboardLayout = () => {
       </div>
 
       <nav className="flex-1 space-y-1 overflow-y-auto overscroll-y-contain p-4 sm:p-5">
-        <p className="mb-2 ml-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-[#64748b]">Main</p>
+        <p className="mb-2 ml-1 text-[10px] font-semibold tracking-wide text-[#64748b]">Main</p>
         <NavLink to="/dashboard" end className={navClass} onClick={() => setSidebarOpen(false)}>
           <FolderKanban className="h-5 w-5 flex-shrink-0" />
           <span>Projects</span>
@@ -144,7 +144,7 @@ const DashboardLayout = () => {
           <span>Reports</span>
         </NavLink>
         <div className="mt-6 border-t border-[#e2e8f0] pt-6">
-          <p className="mb-2 ml-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-[#64748b]">Account</p>
+          <p className="mb-2 ml-1 text-[10px] font-semibold tracking-wide text-[#64748b]">Account</p>
           <NavLink to="/dashboard/settings" className={navClass} onClick={() => setSidebarOpen(false)}>
             <Settings className="h-5 w-5 flex-shrink-0" />
             <span>Settings</span>
@@ -220,7 +220,7 @@ const DashboardLayout = () => {
             >
               <ChevronRight className="h-5 w-5" aria-hidden />
             </button>
-            <h2 className="truncate text-xs font-semibold uppercase tracking-[0.2em] text-[#64748b]">Dashboard</h2>
+            <h2 className="truncate text-xs font-semibold tracking-wide text-[#64748b]">Dashboard</h2>
           </div>
           <div className="flex min-w-0 shrink-0 items-center gap-2 sm:gap-3">
             <div className="flex min-w-0 max-w-[min(42vw,11rem)] flex-col items-end text-right sm:max-w-[13rem] lg:max-w-[16rem]">

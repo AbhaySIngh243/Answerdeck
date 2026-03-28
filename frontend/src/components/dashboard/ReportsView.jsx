@@ -43,7 +43,7 @@ const ReportsView = () => {
       ) : (
         <div className="overflow-hidden rounded-2xl border border-[#e2e8f0] bg-white shadow-sm">
           <div className="overflow-x-auto">
-          <div className="grid min-w-[640px] grid-cols-12 gap-4 border-b border-[#e2e8f0] bg-slate-50 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-[#64748b] sm:px-6">
+          <div className="grid min-w-[640px] grid-cols-12 gap-4 border-b border-[#e2e8f0] bg-slate-50 px-4 py-3 text-xs font-semibold tracking-wide text-[#64748b] sm:px-6">
             <div className="col-span-4">Project</div>
             <div className="col-span-2">Region</div>
             <div className="col-span-2">Prompts</div>

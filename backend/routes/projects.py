@@ -6,6 +6,7 @@ CRUD for brand projects.
 from flask import Blueprint, request, jsonify, g
 from datetime import datetime
 import json
+from urllib.parse import urlparse
 from models import db, Project
 from schemas import ProjectCreateSchema, ProjectUpdateSchema
 from pydantic import ValidationError as PydanticValidationError
@@ -41,6 +42,21 @@ def _parse_list(value):
         except Exception:
             return json.dumps([value])
     return json.dumps([])
+
+
+def _normalize_website_url(value):
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    with_protocol = raw if "://" in raw else f"https://{raw}"
+    try:
+        parsed = urlparse(with_protocol)
+        if not parsed.netloc:
+            return raw
+        normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path or ''}"
+        return normalized.rstrip("/")
+    except Exception:
+        return raw
 
 
 @projects_bp.route("/", methods=["GET"])
@@ -104,7 +120,7 @@ def create_project():
         category=validated.category,
         competitors=competitors,
         region=validated.region,
-        website_url=validated.website_url,
+        website_url=_normalize_website_url(validated.website_url),
         collaborators=_parse_list(validated.collaborators),
         created_at=datetime.now().isoformat()
     )
@@ -136,7 +152,7 @@ def update_project(project_id):
     if validated.region is not None:
         p.region = validated.region
     if validated.website_url is not None:
-        p.website_url = validated.website_url
+        p.website_url = _normalize_website_url(validated.website_url)
     if validated.collaborators is not None:
         p.collaborators = _parse_list(validated.collaborators)
 

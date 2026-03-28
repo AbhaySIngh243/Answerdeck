@@ -5,6 +5,7 @@ import os
 import re
 from collections import defaultdict
 from typing import Any
+from urllib.parse import urlparse
 
 from engine.llm_clients import chat
 
@@ -175,13 +176,15 @@ def _extract_notable_brands_from_ranked_lines(ranked_lines: list[str], tracked_l
         if not segment:
             continue
 
-        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9 '&+./]{1,40}$", segment):
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9 '&+./]{1,48}$", segment):
             continue
         words = segment.split()
-        if len(words) > 3:
+        if len(words) > 4:
             continue
 
         normalized = segment.lower().strip()
+        if is_spurious_brand_mention(segment):
+            continue
         if normalized in tracked_lower or normalized in seen:
             continue
 
@@ -194,8 +197,10 @@ def _extract_notable_brands_from_ranked_lines(ranked_lines: list[str], tracked_l
         if not re.search(r"[A-Za-z]", normalized):
             continue
 
-        # Brands almost always contain at least one capitalized word.
-        if not re.search(r"[A-Z]", segment):
+        # Reject obvious non-brand leftovers from ranking lines.
+        if re.search(r"\b(https?://|www\.|\.com|\.in|\.org|\.net)\b", normalized):
+            continue
+        if len(_canonical_brand(normalized)) < 3:
             continue
 
         seen.add(normalized)
@@ -208,6 +213,103 @@ def _extract_notable_brands_from_ranked_lines(ranked_lines: list[str], tracked_l
             }
         )
 
+    return out
+
+
+def _canonical_brand(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+# URL / protocol fragments that must never appear as competitor rows.
+_SPURIOUS_BRAND_LITERALS = frozenset(
+    {
+        "http",
+        "https",
+        "ftp",
+        "ftps",
+        "www",
+        "html",
+        "url",
+        "uri",
+        "src",
+        "href",
+    }
+)
+
+
+def is_spurious_brand_mention(brand: str) -> bool:
+    """Reject protocol tokens, bare schemes, and URL-looking strings mistaken for brands."""
+    raw = (brand or "").strip()
+    if not raw:
+        return True
+    k = raw.lower().strip()
+    if k in _SPURIOUS_BRAND_LITERALS:
+        return True
+    # Single-token noise from broken markdown / citations
+    if re.fullmatch(r"https?", k, flags=re.I):
+        return True
+    if re.match(r"^https?://", raw, flags=re.I):
+        return True
+    if re.match(r"^www\.[a-z0-9.-]+", k):
+        return True
+    letters_only = re.sub(r"[^a-z]", "", k)
+    if letters_only in {"http", "https", "www", "html", "url"}:
+        return True
+    return False
+
+
+def _brand_matches_alias(brand: str, aliases: list[str]) -> bool:
+    brand_canonical = _canonical_brand(brand)
+    if not brand_canonical:
+        return False
+    for alias in aliases:
+        alias_canonical = _canonical_brand(alias)
+        if not alias_canonical:
+            continue
+        if brand_canonical == alias_canonical:
+            return True
+        # Handle slight variations like "answerdeck ai" vs "answerdeck".
+        if len(alias_canonical) >= 5 and (
+            brand_canonical.startswith(alias_canonical) or alias_canonical.startswith(brand_canonical)
+        ):
+            return True
+    return False
+
+
+def is_focus_brand_match(brand: str, aliases: list[str]) -> bool:
+    return _brand_matches_alias(brand, aliases)
+
+
+def build_focus_brand_aliases(focus_brand: str, website_url: str = "") -> list[str]:
+    aliases: list[str] = []
+    for value in (focus_brand,):
+        raw = (value or "").strip()
+        if raw:
+            aliases.append(raw)
+
+    url = (website_url or "").strip()
+    if url:
+        normalized = url if "://" in url else f"https://{url}"
+        try:
+            host = (urlparse(normalized).hostname or "").lower()
+            host = host.replace("www.", "")
+            if host:
+                aliases.append(host)
+                root = host.split(".")[0]
+                if root:
+                    aliases.append(root)
+        except Exception:
+            pass
+
+    # Keep original ordering but remove duplicates.
+    seen = set()
+    out: list[str] = []
+    for item in aliases:
+        key = _canonical_brand(item)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
     return out
 
 
@@ -226,8 +328,10 @@ def _heuristic_analysis(
     response_text: str,
     focus_brand: str,
     competitor_brands: list[str],
+    focus_brand_aliases: list[str] | None = None,
 ) -> dict[str, Any]:
-    tracked = [focus_brand] + [brand for brand in competitor_brands if brand]
+    aliases = focus_brand_aliases or [focus_brand]
+    tracked = aliases + [brand for brand in competitor_brands if brand]
     tracked_clean = []
     seen = set()
     for brand in tracked:
@@ -279,6 +383,8 @@ def _heuristic_analysis(
 
     details = []
     for item in mentions.values():
+        if is_spurious_brand_mention(item.get("brand", "")):
+            continue
         details.append(
             {
                 "brand": item["brand"],
@@ -289,7 +395,7 @@ def _heuristic_analysis(
         )
 
     details.sort(key=lambda item: (item["rank"] is None, item["rank"] if item["rank"] is not None else 999))
-    focus = next((d for d in details if d["brand"].lower() == focus_brand.lower()), None)
+    focus = next((d for d in details if _brand_matches_alias(d["brand"], aliases)), None)
 
     return {
         "brands_mentioned": [d["brand"] for d in details],
@@ -307,13 +413,14 @@ def analyze_single_response(
     focus_brand: str,
     query: str,
     competitor_brands: list[str] | None = None,
+    focus_brand_aliases: list[str] | None = None,
 ) -> dict[str, Any]:
     if not response_text or response_text.startswith("["):
         return _empty_analysis()
 
     competitors = competitor_brands or []
 
-    heuristic = _heuristic_analysis(response_text, focus_brand, competitors)
+    heuristic = _heuristic_analysis(response_text, focus_brand, competitors, focus_brand_aliases=focus_brand_aliases)
 
     # Fast path: heuristic already extracted ranked brand details.
     if heuristic.get("all_brand_details"):
@@ -352,6 +459,13 @@ Return only valid JSON:
         if isinstance(parsed, dict) and parsed.get("all_brand_details") is not None:
             if not parsed.get("sources"):
                 parsed["sources"] = _extract_sources(response_text)
+            details = [
+                d
+                for d in (parsed.get("all_brand_details") or [])
+                if isinstance(d, dict) and not is_spurious_brand_mention(str(d.get("brand", "")))
+            ]
+            parsed["all_brand_details"] = details
+            parsed["brands_mentioned"] = [d.get("brand") for d in details if d.get("brand")]
             return parsed
     except Exception:
         pass
@@ -390,7 +504,7 @@ def build_competitor_comparison(analyses: dict[str, Any], focus_brand: str) -> l
     for analysis in analyses.values():
         for detail in analysis.get("all_brand_details", []):
             brand_name = detail.get("brand", "").strip()
-            if not brand_name:
+            if not brand_name or is_spurious_brand_mention(brand_name):
                 continue
             key = brand_name.lower()
             if key not in brand_data:
