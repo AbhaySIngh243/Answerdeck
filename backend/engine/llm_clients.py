@@ -10,6 +10,23 @@ from openai import OpenAI
 
 load_dotenv(override=True)
 
+
+def _eager_load_openai_sdk() -> None:
+    """Load OpenAI SDK resource modules on the main thread before any worker threads run.
+
+    query_engines() uses ThreadPoolExecutor; lazy imports of ``openai.resources.chat`` (and
+    ``responses`` for web search) from multiple workers can deadlock on Python's import lock.
+    """
+    try:
+        import openai.resources.chat  # noqa: F401
+        import openai.resources.chat.completions  # noqa: F401
+        import openai.resources.responses  # noqa: F401
+    except Exception:
+        pass
+
+
+_eager_load_openai_sdk()
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")

@@ -16,9 +16,9 @@ function apiBaseLooksLocal() {
   }
 }
 
-/** Slightly longer default on local so reports/dashboard GETs are less brittle while the backend is busy. */
+/** Local: 60s. Production default 60s too (hosted APIs often cold-start; override with VITE_API_TIMEOUT_MS). */
 const DEFAULT_REQUEST_TIMEOUT_MS = Number(
-  import.meta.env.VITE_API_TIMEOUT_MS || (apiBaseLooksLocal() ? 60000 : 30000),
+  import.meta.env.VITE_API_TIMEOUT_MS || 60000,
 );
 
 function timeoutHintMessage(timeoutMs) {
