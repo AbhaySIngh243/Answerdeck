@@ -16,9 +16,13 @@ from engine.analyzer import (
     generate_positioning_insights,
     is_focus_brand_match,
     is_spurious_brand_mention,
-    research_prompt_sources,
 )
-from engine.llm_clients import get_available_engine_catalog, get_search_layer_status, query_engines
+from engine.llm_clients import (
+    get_available_engine_catalog,
+    get_search_layer_status,
+    query_engines,
+    set_search_layer_provider,
+)
 from exceptions import NotFoundError
 from extensions import executor
 from models import AnalysisJob, Mention, Project, Prompt, Response, VisibilityMetric, db
@@ -31,6 +35,7 @@ MAX_CONCURRENT_JOBS_GLOBAL = int(os.getenv("MAX_CONCURRENT_JOBS_GLOBAL", "8"))
 MAX_QUEUED_JOBS_GLOBAL = int(os.getenv("MAX_QUEUED_JOBS_GLOBAL", "24"))
 PENDING_JOB_TIMEOUT_MINUTES = int(os.getenv("PENDING_JOB_TIMEOUT_MINUTES", "15"))
 RUNNING_JOB_TIMEOUT_MINUTES = int(os.getenv("RUNNING_JOB_TIMEOUT_MINUTES", "25"))
+VALID_SEARCH_PROVIDER_OVERRIDES = {"auto", "serper", "perplexity", "none"}
 
 
 def _now_iso() -> str:
@@ -48,6 +53,17 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
         return dt
     except Exception:
         return None
+
+
+def _normalize_search_provider_override(value: Any) -> str | None:
+    candidate = str(value or "").strip().lower()
+    if not candidate:
+        return None
+    if candidate not in VALID_SEARCH_PROVIDER_OVERRIDES:
+        raise ValueError("search_provider must be one of: auto, serper, perplexity, none")
+    if candidate == "auto":
+        return None
+    return candidate
 
 
 def _reap_stale_jobs() -> int:
@@ -90,7 +106,14 @@ def _active_job_counts(user_id: str) -> tuple[int, int, int, int]:
     return user_running, user_pending, global_running, global_pending
 
 
-def async_run_analysis(job_id: str, prompt_id: int, project_id: int, user_id: str, app_obj) -> None:
+def async_run_analysis(
+    job_id: str,
+    prompt_id: int,
+    project_id: int,
+    user_id: str,
+    app_obj,
+    search_provider_override: str | None = None,
+) -> None:
     """Background task that queries engines and persists results."""
     started_at = _now_iso()
 
@@ -115,7 +138,15 @@ def async_run_analysis(job_id: str, prompt_id: int, project_id: int, user_id: st
                 return
 
             selected_models = prompt.get_models()
-            raw_responses = query_engines(prompt.prompt_text, selected_models=selected_models)
+            result = query_engines(
+                prompt.prompt_text,
+                selected_models=selected_models,
+                search_provider_override=search_provider_override,
+            )
+            raw_responses = result.get("responses", {}) if isinstance(result, dict) else result
+            search_context = result.get("search_context", {}) if isinstance(result, dict) else {}
+            grounding_urls = search_context.get("urls", []) or []
+
             if not raw_responses:
                 if job:
                     job.status = "failed"
@@ -140,11 +171,17 @@ def async_run_analysis(job_id: str, prompt_id: int, project_id: int, user_id: st
                 )
                 analyses[engine_name] = analysis
 
+                # Merge search grounding URLs into extracted sources so citations are never empty.
+                engine_sources = list(analysis.get("sources", []))
+                for url in grounding_urls:
+                    if url not in engine_sources:
+                        engine_sources.append(url)
+
                 new_response = Response(
                     prompt_id=prompt.id,
                     engine=engine_name,
                     response_text=response_text,
-                    sources=json.dumps(analysis.get("sources", [])),
+                    sources=json.dumps(engine_sources),
                     timestamp=_now_iso(),
                 )
                 db.session.add(new_response)
@@ -184,19 +221,13 @@ def async_run_analysis(job_id: str, prompt_id: int, project_id: int, user_id: st
 
             competitors = build_competitor_comparison(analyses, focus_brand)
 
-            # Perform deep research via Perplexity to find where LLMs scrape data
-            research_data = research_prompt_sources(prompt.prompt_text)
+            # Use search grounding data as research context (no separate SERP response).
+            research_data = {
+                "sources": search_context.get("sources", []),
+                "summary": f"Search grounding via {search_context.get('provider', 'none')}",
+                "provider": search_context.get("provider", "none"),
+            }
             analyses["research_data"] = research_data
-
-            # Save research as a special response for persistence
-            research_response = Response(
-                prompt_id=prompt.id,
-                engine="perplexity_research",
-                response_text=json.dumps(research_data),
-                sources=json.dumps([s.get("url") for s in research_data.get("sources", []) if s.get("url")]),
-                timestamp=_now_iso(),
-            )
-            db.session.add(research_response)
 
             insights = generate_positioning_insights(
                 focus_brand=focus_brand,
@@ -275,6 +306,12 @@ def run_analysis(prompt_id):
     if not project:
         raise NotFoundError("Project not found")
 
+    data = request.get_json(silent=True) or {}
+    try:
+        search_provider_override = _normalize_search_provider_override(data.get("search_provider"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     _reap_stale_jobs()
     user_running, user_pending, global_running, global_pending = _active_job_counts(g.user.id)
     if user_running + user_pending >= MAX_CONCURRENT_JOBS_PER_USER:
@@ -301,9 +338,23 @@ def run_analysis(prompt_id):
     db.session.commit()
 
     app_obj = current_app._get_current_object()
-    executor.submit(async_run_analysis, job_id, prompt.id, project.id, g.user.id, app_obj)
+    executor.submit(
+        async_run_analysis,
+        job_id,
+        prompt.id,
+        project.id,
+        g.user.id,
+        app_obj,
+        search_provider_override,
+    )
 
-    return jsonify({"job_id": job_id, "message": "Analysis job queued"}), 202
+    return jsonify(
+        {
+            "job_id": job_id,
+            "message": "Analysis job queued",
+            "search_provider": search_provider_override or "auto",
+        }
+    ), 202
 
 
 @analysis_bp.route("/run-all/<int:project_id>", methods=["POST"])
@@ -312,6 +363,12 @@ def run_all_prompts(project_id):
     project = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
     if not project:
         raise NotFoundError("Project not found")
+
+    data = request.get_json(silent=True) or {}
+    try:
+        search_provider_override = _normalize_search_provider_override(data.get("search_provider"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     prompts = Prompt.query.filter_by(project_id=project_id, user_id=g.user.id).all()
     if not prompts:
@@ -356,12 +413,27 @@ def run_all_prompts(project_id):
 
     # Submit only after jobs are committed so worker threads always see persisted rows.
     for job_id, prompt_id in queued_items:
-        executor.submit(async_run_analysis, job_id, prompt_id, project.id, g.user.id, app_obj)
+        executor.submit(
+            async_run_analysis,
+            job_id,
+            prompt_id,
+            project.id,
+            g.user.id,
+            app_obj,
+            search_provider_override,
+        )
 
     queued = len(jobs)
     extra = max(0, len(prompts) - queued)
     msg = f"Queued {queued} prompt(s)" + (f" (skipped {extra} due to capacity limits)" if extra else "")
-    return jsonify({"message": msg, "results": jobs, "skipped": extra}), 202
+    return jsonify(
+        {
+            "message": msg,
+            "results": jobs,
+            "skipped": extra,
+            "search_provider": search_provider_override or "auto",
+        }
+    ), 202
 
 
 @analysis_bp.route("/status/<job_id>", methods=["GET"])
@@ -394,10 +466,19 @@ def get_results(prompt_id):
     if not prompt:
         raise NotFoundError("Prompt not found")
 
+    selected_models = prompt.get_models() if hasattr(prompt, "get_models") else []
+    selected_lower = {m.strip().lower() for m in selected_models if m and m.strip()}
+
     responses = Response.query.filter_by(prompt_id=prompt.id).order_by(Response.timestamp.desc()).all()
     payload: list[dict] = []
 
     for response in responses:
+        engine_lower = (response.engine or "").strip().lower()
+        if engine_lower.endswith("_research"):
+            continue
+        if selected_lower and engine_lower not in selected_lower:
+            continue
+
         mentions = Mention.query.filter_by(response_id=response.id).all()
         payload.append(
             {
@@ -454,10 +535,19 @@ def run_test_prompt(project_id):
     data = request.get_json(force=True) or {}
     query = (data.get("query") or "").strip()
     selected_models = data.get("selected_models") or []
+    try:
+        search_provider_override = _normalize_search_provider_override(data.get("search_provider"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     if not query:
         return jsonify({"error": "query is required"}), 400
 
-    responses = query_engines(query, selected_models=selected_models)
+    result = query_engines(
+        query,
+        selected_models=selected_models,
+        search_provider_override=search_provider_override,
+    )
+    responses = result.get("responses", {}) if isinstance(result, dict) else result
     if not responses:
         return jsonify({"error": "No engines available for test prompt"}), 400
 
@@ -476,6 +566,7 @@ def run_test_prompt(project_id):
         {
             "project_id": project.id,
             "query": query,
+            "search_provider": search_provider_override or "auto",
             "results": [
                 {
                     "engine": engine,
@@ -488,6 +579,23 @@ def run_test_prompt(project_id):
             "timestamp": _now_iso(),
         }
     )
+
+
+@analysis_bp.route("/search-layer", methods=["GET"])
+@require_auth
+def get_search_layer():
+    return jsonify(get_search_layer_status())
+
+
+@analysis_bp.route("/search-layer", methods=["POST"])
+@require_auth
+def set_search_layer():
+    data = request.get_json(silent=True) or {}
+    provider = str(data.get("provider") or "auto").strip().lower()
+    if provider not in VALID_SEARCH_PROVIDER_OVERRIDES:
+        return jsonify({"error": "provider must be one of: auto, serper, perplexity, none"}), 400
+    status = set_search_layer_provider(provider)
+    return jsonify(status)
 
 
 def _build_sentiment_summary(analyses: dict[str, dict]) -> dict[str, Any]:

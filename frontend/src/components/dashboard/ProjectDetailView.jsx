@@ -69,6 +69,12 @@ const DRAFT_TARGET_LABELS = {
 };
 
 const EXEC_CONTENT_TYPES = ['Article', 'Blog', 'Reddit Post'];
+const SEARCH_PROVIDER_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'perplexity', label: 'Perplexity' },
+  { value: 'serper', label: 'Google (Serper)' },
+  { value: 'none', label: 'Off' },
+];
 
 /** Split action-plan detail text into { prose, urls[] } so we can render them separately. */
 function splitProseAndUrls(text) {
@@ -299,6 +305,8 @@ const ProjectDetailView = () => {
   const [inviteEmail, setInviteEmail] = useState('');
   const [testQuery, setTestQuery] = useState('');
   const [testModels, setTestModels] = useState([]);
+  const [selectedSearchProvider, setSelectedSearchProvider] = useState('auto');
+  const [lastUsedSearchProvider, setLastUsedSearchProvider] = useState('');
   const [activeSection, setActiveSection] = useState('dashboard');
 
   const { data: projectData, isLoading, error } = useQuery({
@@ -317,6 +325,7 @@ const ProjectDetailView = () => {
         dashboard,
         enabledEngines: engines.enabled_engines || [],
         availableEngines: engines.available_engines || [],
+        searchLayer: engines.search_layer || {},
       };
     },
   });
@@ -505,6 +514,16 @@ const ProjectDetailView = () => {
 
   const testPromptMutation = useMutation({
     mutationFn: (payload) => api.runTestPrompt(id, payload),
+    onSuccess: (payload) => {
+      setLastUsedSearchProvider(String(payload?.search_provider || selectedSearchProvider || 'auto'));
+    },
+  });
+
+  const setSearchLayerMutation = useMutation({
+    mutationFn: (provider) => api.setSearchLayer(provider),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project-data', id] });
+    },
   });
 
   const inviteMutation = useMutation({
@@ -526,12 +545,13 @@ const ProjectDetailView = () => {
     mutationFn: async (payload) => {
       const created = await api.createPrompt(id, payload);
       const promptId = created.id;
-      const run = await api.runPromptAnalysis(promptId);
+      const run = await api.runPromptAnalysis(promptId, { searchProvider: selectedSearchProvider });
       return { promptId, jobId: run.job_id };
     },
     onSuccess: ({ promptId, jobId }) => {
       setSelectedPromptId(promptId);
       setRunningPrompts((prev) => ({ ...prev, [promptId]: true }));
+      setLastUsedSearchProvider(selectedSearchProvider);
       setNewPromptText(''); setNewPromptCountry(''); setNewPromptTags(''); setNewPromptModels([]);
       pollJobStatus(jobId, promptId);
     },
@@ -540,25 +560,27 @@ const ProjectDetailView = () => {
   const deletePromptMutation = useMutation({ mutationFn: api.deletePrompt, onSuccess: refreshAll });
 
   const runPromptMutation = useMutation({
-    mutationFn: api.runPromptAnalysis,
+    mutationFn: (promptId) => api.runPromptAnalysis(promptId, { searchProvider: selectedSearchProvider }),
     onSuccess: (payload, promptId) => {
       if (!payload?.job_id) {
         refreshAll();
         return;
       }
       setRunningPrompts((prev) => ({ ...prev, [promptId]: true }));
+      setLastUsedSearchProvider(selectedSearchProvider);
       pollJobStatus(payload.job_id, promptId);
     },
   });
 
   const runAllMutation = useMutation({
-    mutationFn: api.runAllPromptAnalysis,
+    mutationFn: (projectId) => api.runAllPromptAnalysis(projectId, { searchProvider: selectedSearchProvider }),
     onSuccess: (payload) => {
       const jobs = Array.isArray(payload?.results) ? payload.results : [];
       if (jobs.length === 0) {
         refreshAll();
         return;
       }
+      setLastUsedSearchProvider(selectedSearchProvider);
       jobs.forEach((item) => {
         setRunningPrompts((prev) => ({ ...prev, [item.prompt_id]: true }));
         pollJobStatus(item.job_id, item.prompt_id);
@@ -600,7 +622,7 @@ const ProjectDetailView = () => {
     return <div className={`rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400`}>{error?.message || 'Failed to load project'}</div>;
   }
 
-  const { project, prompts, dashboard, enabledEngines, availableEngines } = projectData;
+  const { project, prompts, dashboard, enabledEngines, availableEngines, searchLayer = {} } = projectData;
   const atPromptLimit = (prompts?.length ?? 0) >= MAX_PROMPTS_PER_PROJECT;
 
   const runExecuteFromTarget = (target) => {
@@ -1116,6 +1138,33 @@ const ProjectDetailView = () => {
         </div>
 
         <div className="p-5 bg-slate-50/60">
+          <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+            <span className={`${label} mb-0`}>Search layer</span>
+            <select
+              value={selectedSearchProvider}
+              onChange={(e) => {
+                const provider = e.target.value;
+                setSelectedSearchProvider(provider);
+                setSearchLayerMutation.mutate(provider);
+              }}
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:border-brand-primary focus:outline-none"
+            >
+              {SEARCH_PROVIDER_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <span className="text-[11px] text-slate-500">
+              Active backend provider: <span className="font-semibold text-slate-700">{searchLayer.provider || 'none'}</span>
+            </span>
+            {lastUsedSearchProvider ? (
+              <span className="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-primary">
+                Last run used: {lastUsedSearchProvider}
+              </span>
+            ) : null}
+          </div>
+
           {analyzePromptMutation.isError && (
             <div className="mb-3 rounded-lg bg-red-50 border border-red-100 px-3 py-2 text-sm text-red-600">
               {analyzePromptMutation.error?.message}
@@ -2008,8 +2057,37 @@ const ProjectDetailView = () => {
       {activeSection === 'test' && (
       <section id="test" className={`${surf} border ${brd} rounded-xl p-6`}>
         <h3 className={`text-lg font-bold ${fg} mb-4`}>Test Prompt</h3>
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2">
+          <span className={`${label} mb-0`}>Search layer</span>
+          <select
+            value={selectedSearchProvider}
+            onChange={(e) => {
+              const provider = e.target.value;
+              setSelectedSearchProvider(provider);
+              setSearchLayerMutation.mutate(provider);
+            }}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:border-brand-primary focus:outline-none"
+          >
+            {SEARCH_PROVIDER_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <span className="text-[11px] text-slate-500">
+            Backend active: <span className="font-semibold text-slate-700">{searchLayer.provider || 'none'}</span>
+          </span>
+        </div>
         <form
-          onSubmit={(event) => { event.preventDefault(); if (!testQuery.trim()) return; testPromptMutation.mutate({ query: testQuery.trim(), selected_models: testModels }); }}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!testQuery.trim()) return;
+            testPromptMutation.mutate({
+              query: testQuery.trim(),
+              selected_models: testModels,
+              search_provider: selectedSearchProvider,
+            });
+          }}
           className="space-y-3"
         >
           <textarea value={testQuery} onChange={(event) => setTestQuery(event.target.value)} rows={3} placeholder="Type an ad-hoc prompt to test models instantly" className={`w-full bg-slate-50 border ${brd} rounded-lg px-4 py-2 ${fg} placeholder:text-slate-400 focus:border-brand-primary outline-none transition-colors`} />
@@ -2027,6 +2105,9 @@ const ProjectDetailView = () => {
 
         {testPromptMutation.data && (
           <div className="mt-6 space-y-4">
+            <p className="text-xs text-slate-500">
+              Result source layer: <span className="font-semibold text-slate-700">{testPromptMutation.data.search_provider || selectedSearchProvider}</span>
+            </p>
             {(testPromptMutation.data.results || []).map((result) => (
               <div key={result.engine} className={`border ${brd} rounded-lg p-4`}>
                 <p className={`text-xs font-semibold uppercase ${mt}`}>{result.engine}</p>

@@ -10,7 +10,14 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from engine.perplexity_search import get_search_provider_name, is_perplexity_search_enabled, search_web
+from engine.perplexity_search import (
+    get_search_provider_name,
+    get_runtime_search_provider,
+    is_perplexity_search_enabled,
+    is_search_provider_available,
+    set_runtime_search_provider,
+    search_web,
+)
 
 load_dotenv(override=True)
 
@@ -47,8 +54,9 @@ DEEPSEEK_REQUIRE_WEB_SEARCH = os.getenv("DEEPSEEK_REQUIRE_WEB_SEARCH", "false").
 RANKLORE_EXTERNAL_PARITY_MODE = os.getenv("RANKLORE_EXTERNAL_PARITY_MODE", "true").lower() in {"1", "true", "yes"}
 RANKLORE_LLM_TEMPERATURE = float(os.getenv("RANKLORE_LLM_TEMPERATURE", "0.0"))
 RANKLORE_SEARCH_AUGMENT_ENABLED = os.getenv("RANKLORE_SEARCH_AUGMENT_ENABLED", "true").lower() in {"1", "true", "yes"}
-RANKLORE_SEARCH_AUGMENT_MAX_RESULTS = max(1, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_MAX_RESULTS", "5")), 8))
-RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS = max(80, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS", "200")), 320))
+RANKLORE_SEARCH_AUGMENT_MAX_RESULTS = max(1, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_MAX_RESULTS", "8")), 10))
+RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS = max(80, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS", "280")), 400))
+RANKLORE_SEARCH_PROVIDER_STRICT = os.getenv("RANKLORE_SEARCH_PROVIDER_STRICT", "true").lower() in {"1", "true", "yes"}
 URL_PATTERN = re.compile(r"https?://[^\s<>\"')\]]+")
 
 def _build_client(api_key: str, base_url: str | None = None) -> OpenAI | None:
@@ -257,15 +265,17 @@ def _domain_label(url: str) -> str:
         return url
 
 
-def _build_search_grounding_context(query: str) -> dict[str, Any]:
+def _build_search_grounding_context(query: str, search_provider_override: str | None = None) -> dict[str, Any]:
+    effective_provider = get_search_provider_name(provider_override=search_provider_override)
     context: dict[str, Any] = {
         "enabled": RANKLORE_SEARCH_AUGMENT_ENABLED,
-        "provider": get_search_provider_name(),
-        "available": is_perplexity_search_enabled(),
+        "provider": effective_provider,
+        "available": effective_provider != "none",
         "ok": False,
         "error": "",
         "block": "",
         "urls": [],
+        "search_results": [],
     }
     if not context["enabled"]:
         context["error"] = "search augmentation disabled"
@@ -274,7 +284,12 @@ def _build_search_grounding_context(query: str) -> dict[str, Any]:
         context["error"] = "no web search provider configured"
         return context
 
-    result = search_web(query=query, max_results=RANKLORE_SEARCH_AUGMENT_MAX_RESULTS, max_tokens_per_page=320)
+    result = search_web(
+        query=query,
+        max_results=RANKLORE_SEARCH_AUGMENT_MAX_RESULTS,
+        max_tokens_per_page=320,
+        provider_override=search_provider_override,
+    )
     context["provider"] = result.get("provider") or context["provider"]
     if not result.get("ok"):
         context["error"] = str(result.get("error") or "search failed")
@@ -287,26 +302,61 @@ def _build_search_grounding_context(query: str) -> dict[str, Any]:
 
     lines = []
     urls: list[str] = []
+    search_results: list[dict[str, str]] = []
     for idx, item in enumerate(rows[:RANKLORE_SEARCH_AUGMENT_MAX_RESULTS], start=1):
-        title = _clip_prompt_text(item.get("title", ""), 110)
+        title = _clip_prompt_text(item.get("title", ""), 120)
         snippet = _clip_prompt_text(item.get("snippet", ""), RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS)
         url = _normalize_url(item.get("url") or "")
         if not url:
             continue
         urls.append(url)
-        lines.append(f"{idx}. {title} [{_domain_label(url)}]\n   {snippet}\n   URL: {url}")
+        domain = _domain_label(url)
+        lines.append(f"{idx}. {title} [{domain}]\n   {snippet}\n   URL: {url}")
+        search_results.append({
+            "domain": domain,
+            "title": title or domain,
+            "url": url,
+            "reason": snippet,
+        })
 
     if not lines:
         context["error"] = "search results had no usable URLs"
         return context
 
+    # Build an enriched context block with knowledge graph and answer box when available.
+    extra_context_parts: list[str] = []
+    kg = result.get("knowledge_graph") or {}
+    if isinstance(kg, dict) and kg.get("title"):
+        kg_text = f"Knowledge Panel: {kg['title']}"
+        if kg.get("description"):
+            kg_text += f" — {_clip_prompt_text(kg['description'], 200)}"
+        attrs = kg.get("attributes", {})
+        if isinstance(attrs, dict):
+            for k, v in list(attrs.items())[:6]:
+                kg_text += f"\n  {k}: {v}"
+        extra_context_parts.append(kg_text)
+
+    ab = result.get("answer_box") or {}
+    if isinstance(ab, dict) and (ab.get("answer") or ab.get("snippet")):
+        ab_text = "Featured Answer: " + _clip_prompt_text(ab.get("answer") or ab.get("snippet", ""), 300)
+        if ab.get("title"):
+            ab_text = f"Featured Answer ({ab['title']}): " + _clip_prompt_text(ab.get("answer") or ab.get("snippet", ""), 280)
+        extra_context_parts.append(ab_text)
+
+    extra_block = "\n".join(extra_context_parts)
+
     context["ok"] = True
     context["urls"] = urls
+    context["search_results"] = search_results
     context["block"] = (
-        "Web Grounding Context (recent external search signals)\n"
+        "=== LIVE WEB SEARCH RESULTS ===\n"
         f"Provider: {context['provider']}\n"
+        + (f"{extra_block}\n\n" if extra_block else "")
+        + "Top search results:\n"
         + "\n".join(lines)
-        + "\nUse these as supporting evidence, keep ranking logic explicit, and include direct URLs under a final 'Sources:' section."
+        + "\n\nYou MUST treat these search results as your primary factual source. "
+        "Reference specific brands, products, and details found in these results. "
+        "Include the URLs from above under a 'Sources:' section at the end."
     )
     return context
 
@@ -419,7 +469,16 @@ def chat(engine: str, prompt: str, temperature: float | None = None) -> str:
         return f"[{cfg.get('display_name', engine)} error: {exc}]"
 
 
-def query_engines(query: str, selected_models: list[str] | None = None) -> dict[str, str]:
+def query_engines(
+    query: str,
+    selected_models: list[str] | None = None,
+    search_provider_override: str | None = None,
+) -> dict[str, Any]:
+    """Query all enabled LLM engines with an optional search grounding pre-layer.
+
+    Returns ``{"responses": {engine: text}, "search_context": {...}}`` so
+    callers can access the search grounding data that was injected into prompts.
+    """
     if RANKLORE_EXTERNAL_PARITY_MODE:
         full_prompt = query
     else:
@@ -432,20 +491,30 @@ def query_engines(query: str, selected_models: list[str] | None = None) -> dict[
         )
         full_prompt = f"{system_prompt}\n\nQuestion: {query}"
 
-    grounding = _build_search_grounding_context(query)
+    grounding = _build_search_grounding_context(query, search_provider_override=search_provider_override)
     grounding_block = grounding.get("block", "")
     grounding_urls = grounding.get("urls", []) or []
     if grounding_block:
         full_prompt = (
             f"{full_prompt}\n\n"
-            "IMPORTANT: Blend model knowledge with the grounded web context below.\n"
-            "If sources conflict, prefer recency and explicit citations.\n\n"
+            "CRITICAL INSTRUCTION: The following are real-time web search results. "
+            "You MUST incorporate the specific brands, products, and facts from these "
+            "results into your answer. Do NOT ignore them. When web results and your "
+            "knowledge conflict, prefer the web results as they reflect current market data.\n\n"
             f"{grounding_block}"
         )
 
+    search_context: dict[str, Any] = {
+        "ok": grounding.get("ok", False),
+        "urls": grounding_urls,
+        "provider": grounding.get("provider", "none"),
+        "provider_override": (search_provider_override or "").strip().lower() or "auto",
+        "sources": grounding.get("search_results", []),
+    }
+
     enabled_engines = list(get_enabled_engines(selected_models).keys())
     if not enabled_engines:
-        return {}
+        return {"responses": {}, "search_context": search_context}
 
     max_workers = max(1, int(os.getenv("RANKLORE_ENGINE_CONCURRENCY", str(len(enabled_engines)))))
     max_workers = min(max_workers, len(enabled_engines))
@@ -460,7 +529,6 @@ def query_engines(query: str, selected_models: list[str] | None = None) -> dict[
             engine_name = future_to_engine[future]
             try:
                 text = future.result()
-                # Keep citations reliable: when model output has no URLs, attach grounding URLs.
                 if text and not text.startswith("[") and grounding_urls:
                     if not _extract_urls_from_text(text):
                         text = f"{text}{_format_sources_tail(grounding_urls)}"
@@ -468,12 +536,12 @@ def query_engines(query: str, selected_models: list[str] | None = None) -> dict[
             except Exception as exc:
                 results[engine_name] = f"[{engine_name} error: {exc}]"
 
-    # Preserve deterministic display order.
     ordered_results: dict[str, str] = {}
     for engine_name in enabled_engines:
         if engine_name in results:
             ordered_results[engine_name] = results[engine_name]
-    return ordered_results
+
+    return {"responses": ordered_results, "search_context": search_context}
 
 
 def get_api_status() -> dict[str, bool]:
@@ -501,7 +569,11 @@ def get_search_layer_status() -> dict[str, Any]:
     return {
         "search_augment_enabled": RANKLORE_SEARCH_AUGMENT_ENABLED,
         "provider": provider,
+        "runtime_provider_override": get_runtime_search_provider(),
         "provider_available": provider_available,
+        "provider_strict": RANKLORE_SEARCH_PROVIDER_STRICT,
+        "serper_available": is_search_provider_available("serper"),
+        "perplexity_search_available": is_search_provider_available("perplexity"),
         "openai_web_search_enabled": OPENAI_ENABLE_WEB_SEARCH and bool(OPENAI_API_KEY),
         "status": (
             "ready"
@@ -509,3 +581,9 @@ def get_search_layer_status() -> dict[str, Any]:
             else ("disabled" if not RANKLORE_SEARCH_AUGMENT_ENABLED else "missing_provider")
         ),
     }
+
+
+def set_search_layer_provider(provider: str | None) -> dict[str, Any]:
+    """Update in-process provider override and return fresh status."""
+    set_runtime_search_provider(provider)
+    return get_search_layer_status()

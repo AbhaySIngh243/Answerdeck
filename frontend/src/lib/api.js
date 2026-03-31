@@ -249,19 +249,38 @@ export const api = {
       method: 'DELETE',
     }),
 
-  runPromptAnalysis: (promptId) =>
+  runPromptAnalysis: (promptId, options = {}) =>
     request(`/analysis/run/${promptId}`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        options?.searchProvider
+          ? { search_provider: options.searchProvider }
+          : {},
+      ),
       timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     }),
-  runAllPromptAnalysis: (projectId) =>
+  runAllPromptAnalysis: (projectId, options = {}) =>
     request(`/analysis/run-all/${projectId}`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        options?.searchProvider
+          ? { search_provider: options.searchProvider }
+          : {},
+      ),
       timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     }),
   getJobStatus: (jobId) => request(`/analysis/status/${jobId}`),
   getPromptResults: (promptId) => request(`/analysis/results/${promptId}`),
   getEngines: () => request('/analysis/engines'),
+  getSearchLayer: () => request('/analysis/search-layer'),
+  setSearchLayer: (provider) =>
+    request('/analysis/search-layer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    }),
   runTestPrompt: (projectId, payload) =>
     request(`/analysis/test/${projectId}`, {
       method: 'POST',

@@ -19,6 +19,7 @@ from engine.analyzer import (
     generate_recommendations,
     generate_strategic_action_plan,
     is_spurious_brand_mention,
+    _looks_like_spec_phrase,
 )
 from engine.perplexity_search import is_perplexity_search_enabled, search_web
 from exceptions import NotFoundError
@@ -73,6 +74,8 @@ RETAIL_CONTEXT_HINTS = (
     "price on",
 )
 
+NON_ANALYSIS_ENGINES = frozenset({"perplexity_research"})
+
 
 def _looks_like_channel_noise(brand: str, context: str = "") -> bool:
     label = (brand or "").strip().lower()
@@ -86,6 +89,17 @@ def _looks_like_channel_noise(brand: str, context: str = "") -> bool:
         if any(hint in context_lower for hint in RETAIL_CONTEXT_HINTS):
             return True
     return False
+
+
+def _is_analysis_engine(engine: str) -> bool:
+    name = (engine or "").strip().lower()
+    if not name:
+        return False
+    if name in NON_ANALYSIS_ENGINES:
+        return False
+    if name.endswith("_research"):
+        return False
+    return True
 
 
 def _get_project_for_user(project_id: int):
@@ -120,12 +134,32 @@ def _domain_from_url(url: str) -> str:
 
 
 def _latest_responses_by_prompt(prompt_id: int) -> list[Response]:
+    prompt = Prompt.query.get(prompt_id)
+    selected_models_lower: set[str] = set()
+    if prompt and hasattr(prompt, "get_models"):
+        selected_models_lower = {m.strip().lower() for m in prompt.get_models() if m and m.strip()}
+
     responses = Response.query.filter_by(prompt_id=prompt_id).order_by(Response.timestamp.desc()).all()
     by_engine: dict[str, Response] = {}
     for response in responses:
+        if not _is_analysis_engine(response.engine):
+            continue
+        if selected_models_lower and response.engine.strip().lower() not in selected_models_lower:
+            continue
         if response.engine not in by_engine:
             by_engine[response.engine] = response
     return list(by_engine.values())
+
+
+def _latest_research_response(prompt_id: int) -> Response | None:
+    return (
+        Response.query.filter(
+            Response.prompt_id == prompt_id,
+            Response.engine.like("%_research"),
+        )
+        .order_by(Response.timestamp.desc())
+        .first()
+    )
 
 
 def _compute_overall_health(prompt_rankings: list[dict]) -> str:
@@ -233,8 +267,16 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             "recommended_actions": [],
         }
 
+    # Respect the prompt's selected_models so we only show engines that were actually run.
+    selected_models = prompt.get_models() if hasattr(prompt, "get_models") else []
+    selected_models_lower = {m.strip().lower() for m in selected_models if m and m.strip()}
+
     latest_by_engine: dict[str, Response] = {}
     for response in sorted(responses, key=lambda item: item.timestamp, reverse=True):
+        if not _is_analysis_engine(response.engine):
+            continue
+        if selected_models_lower and response.engine.strip().lower() not in selected_models_lower:
+            continue
         if response.engine not in latest_by_engine:
             latest_by_engine[response.engine] = response
 
@@ -252,6 +294,10 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             mentions_by_response[mention.response_id].append(mention)
 
     for response in responses:
+        if not _is_analysis_engine(response.engine):
+            continue
+        if selected_models_lower and response.engine.strip().lower() not in selected_models_lower:
+            continue
         mentions = mentions_by_response.get(response.id, [])
         focus = next((m for m in mentions if m.is_focus), None)
         trend.append(
@@ -278,6 +324,8 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
                 continue
             if _looks_like_channel_noise(mention.brand or "", mention.context or ""):
                 continue
+            if _looks_like_spec_phrase(mention.brand or ""):
+                continue
             competitor_scores[mention.brand]["mentions"] += 1
             if mention.rank is not None:
                 competitor_scores[mention.brand]["ranks"].append(mention.rank)
@@ -298,7 +346,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     audit = []
     
     # Fetch persisted research data
-    research_resp = Response.query.filter_by(prompt_id=prompt_id, engine="perplexity_research").order_by(Response.timestamp.desc()).first()
+    research_resp = _latest_research_response(prompt_id)
     research_data = {}
     if research_resp:
         try:
@@ -329,8 +377,8 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     audit = generate_detailed_audit(focus_brand, prompt.prompt_text, analyses)
 
     recommended_actions = []
-    
-    # Add research-driven recommendations
+
+    # Add research-driven recommendations (from legacy research Responses).
     for src in research_sources[:6]:
         recommended_actions.append({
             "title": f"Act on {src.get('domain', 'authoritative source')}",
@@ -338,7 +386,17 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             "link": src.get("url", "")
         })
 
-    # Fallback/standard actions if research is sparse
+    # When no research Response exists (new analyses use the search pre-layer),
+    # derive recommendations from the top cited domains in LLM responses.
+    if not recommended_actions:
+        for domain, count in sorted(source_count.items(), key=lambda item: item[1], reverse=True)[:6]:
+            links = sorted(source_links.get(domain, set()))
+            recommended_actions.append({
+                "title": f"Act on {domain}",
+                "detail": f"LLMs cited {domain} {count} time(s) for this query. Ensure {focus_brand} is mentioned or featured on this source.",
+                "link": links[0] if links else f"https://{domain}",
+            })
+
     if len(recommended_actions) < 2:
         recommended_actions.append({
             "title": "Publish a dedicated answer page",
@@ -442,11 +500,11 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         "prompt_id": prompt.id,
         "prompt_text": prompt.prompt_text,
         "project_id": prompt.project_id,
-        "brand_ranking": brand_ranking,
+        "brand_ranking": brand_ranking[:10],
         "trend": trend,
         "sentiment": sentiment,
-        "sources": ui_sources,
-        "competitors": brand_ranking[:12],
+        "sources": ui_sources[:15],
+        "competitors": brand_ranking[:10],
         "audit": audit,
         "recommended_actions": recommended_actions,
     }
@@ -459,9 +517,20 @@ def _build_prompt_rankings(project_id: int) -> list[dict]:
     if not prompt_ids:
         return []
 
+    # Pre-compute per-prompt selected_models for engine filtering.
+    prompt_selected: dict[int, set[str]] = {}
+    for p in prompts:
+        models = p.get_models() if hasattr(p, "get_models") else []
+        prompt_selected[p.id] = {m.strip().lower() for m in models if m and m.strip()}
+
     response_rows = Response.query.filter(Response.prompt_id.in_(prompt_ids)).order_by(Response.timestamp.desc()).all()
     latest_response_by_prompt_engine: dict[tuple[int, str], Response] = {}
     for r in response_rows:
+        if not _is_analysis_engine(r.engine):
+            continue
+        selected = prompt_selected.get(r.prompt_id, set())
+        if selected and r.engine.strip().lower() not in selected:
+            continue
         key = (r.prompt_id, r.engine)
         if key not in latest_response_by_prompt_engine:
             latest_response_by_prompt_engine[key] = r
@@ -470,7 +539,6 @@ def _build_prompt_rankings(project_id: int) -> list[dict]:
     focus_mentions_by_response: dict[int, Mention] = {}
     if latest_response_ids:
         for m in Mention.query.filter(Mention.response_id.in_(latest_response_ids), Mention.is_focus.is_(True)).all():
-            # At most one focus mention is expected; last write wins safely.
             focus_mentions_by_response[m.response_id] = m
 
     for prompt in prompts:
@@ -532,6 +600,8 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
                 continue
             if _looks_like_channel_noise(raw, mention.context or ""):
                 continue
+            if _looks_like_spec_phrase(raw):
+                continue
             key = raw.lower()
             g = grouped[key]
             g["mentions"] += 1
@@ -567,10 +637,17 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
         add_brand(focus_brand)
     for c in configured:
         add_brand(c)
+    min_extra_mentions = 2 if total_responses >= 4 else 1
     for kl in sorted(grouped.keys()):
         if kl not in seen:
+            g = grouped[kl]
+            if g["mentions"] < min_extra_mentions:
+                continue
+            label = display_label(kl, kl)
+            if is_spurious_brand_mention(label) or _looks_like_spec_phrase(label):
+                continue
             seen.add(kl)
-            ordered.append((kl, display_label(kl, kl)))
+            ordered.append((kl, label))
 
     rows: list[dict] = []
     for key_lower, brand_label in ordered:
@@ -607,7 +684,7 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
             item["brand"].lower(),
         )
     )
-    return rows
+    return rows[:10]
 
 
 def _collect_competitor_sources(project_id: int) -> list[str]:
@@ -618,6 +695,8 @@ def _collect_competitor_sources(project_id: int) -> list[str]:
     responses = Response.query.filter(Response.prompt_id.in_(prompt_ids)).all()
     source_count: dict[str, int] = defaultdict(int)
     for response in responses:
+        if not _is_analysis_engine(response.engine):
+            continue
         for source in _parse_sources(response.sources):
             source_count[source] += 1
 
@@ -702,6 +781,7 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
                     if not m.is_focus
                     and not is_spurious_brand_mention(m.brand or "")
                     and not _looks_like_channel_noise(m.brand or "", m.context or "")
+                    and not _looks_like_spec_phrase(m.brand or "")
                 ][:5],
                 "response_id": response.id,
             }
@@ -799,7 +879,7 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
             # Try to fetch from persisted research if possible
             p = Prompt.query.filter_by(project_id=project_id, prompt_text=query).first()
             if p:
-                r_resp = Response.query.filter_by(prompt_id=p.id, engine="perplexity_research").order_by(Response.timestamp.desc()).first()
+                r_resp = _latest_research_response(p.id)
                 if r_resp:
                     try:
                         r_data = json.loads(r_resp.response_text)
@@ -810,7 +890,8 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
                                 "url": src.get("url"),
                                 "query": query
                             })
-                    except: pass
+                    except Exception:
+                        pass
 
         if search_intel["retrieval_points"]:
             deduped_points = []
@@ -1154,6 +1235,8 @@ def sources_intelligence(project_id):
     mentions_by_domain: dict[str, int] = defaultdict(int)
 
     for response in responses:
+        if not _is_analysis_engine(response.engine):
+            continue
         sources = _parse_sources(response.sources)
         for source in sources:
             domain = _domain_from_url(source)
@@ -1181,7 +1264,7 @@ def sources_intelligence(project_id):
             }
         )
 
-    return jsonify({"domains": domains[:100], "count": len(domains)})
+    return jsonify({"domains": domains[:15], "count": min(len(domains), 15)})
 
 
 @reports_bp.route("/project/<int:project_id>/competitors", methods=["GET"])
@@ -1191,7 +1274,7 @@ def competitor_table(project_id):
     competitors = _build_competitor_visibility(project_id)
     total = sum(item["visibility_score"] for item in competitors) or 1
     table = []
-    for item in competitors:
+    for item in competitors[:10]:
         table.append(
             {
                 "brand": item["brand"],

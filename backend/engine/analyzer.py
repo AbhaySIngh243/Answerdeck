@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from engine.llm_clients import chat
+from engine.perplexity_search import get_search_provider_name, search_web
 
 POSITIVE_WORDS = {
     "best",
@@ -311,6 +312,14 @@ def _extract_sources(response_text: str) -> list[str]:
             continue
         sources.add(cleaned)
 
+    # Capture markdown links: [label](https://...)
+    md_url_matches = re.findall(r"\[[^\]]+\]\((https?://[^)\s]+)\)", response_text)
+    for url in md_url_matches:
+        cleaned = url.rstrip(".,;:!?)")
+        if any(blocked in cleaned.lower() for blocked in {"example.com", "localhost"}):
+            continue
+        sources.add(cleaned)
+
     # Also capture bare domains (e.g. "cnet.com", "techradar.com").
     domain_matches = re.findall(r"(?<!\S)(?:www\.)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?!\S)", response_text)
     for domain in domain_matches:
@@ -322,13 +331,23 @@ def _extract_sources(response_text: str) -> list[str]:
     # Parse explicit "Sources:" lines.
     source_line_match = re.search(r"sources?\s*[:\-]\s*(.+)", response_text, flags=re.IGNORECASE)
     if source_line_match:
-        chunks = re.split(r",|\||;", source_line_match.group(1))
+        source_block = source_line_match.group(1)
+        lines_after = response_text[source_line_match.end() :].splitlines()[:20]
+        for line in lines_after:
+            stripped = line.strip()
+            if not stripped:
+                break
+            if re.match(r"^[-*]\s+", stripped) or re.match(r"^\d+[\).:-]\s+", stripped):
+                source_block += "," + re.sub(r"^[-*\d\).:\-\s]+", "", stripped)
+            else:
+                break
+        chunks = re.split(r",|\||;|\n", source_block)
         for chunk in chunks:
             value = chunk.strip(" .[]")
             if value and len(value) < 120:
                 sources.add(value)
 
-    return sorted(sources)[:30]
+    return sorted(sources)[:15]
 
 
 def _extract_ranked_lines(response_text: str) -> list[str]:
@@ -375,6 +394,11 @@ def _normalize_detected_brand_label(value: str) -> str:
             "monitors",
             "camera",
             "cameras",
+            "projector",
+            "projectors",
+            "speaker",
+            "speakers",
+            "audio",
         }:
             return parts[0]
     return cleaned
@@ -396,6 +420,11 @@ def _is_channel_or_retail_noise(candidate: str, context: str) -> bool:
 def _iter_line_brand_candidates(line: str, include_lead_segment: bool = True) -> list[str]:
     """Collect likely brand tokens from one line/sentence."""
     clean_line = (line or "").strip()
+    if not clean_line:
+        return []
+
+    # Strip URLs so video IDs, path segments, and query params aren't mistaken for brands.
+    clean_line = re.sub(r"https?://[^\s]+", "", clean_line).strip()
     if not clean_line:
         return []
 
@@ -448,6 +477,8 @@ def _extract_notable_brands_from_ranked_lines(
             if is_spurious_brand_mention(candidate):
                 continue
             if _is_channel_or_retail_noise(candidate, line):
+                continue
+            if _looks_like_spec_phrase(candidate):
                 continue
             if _is_tracked(candidate):
                 continue
@@ -510,9 +541,120 @@ _SPURIOUS_BRAND_LITERALS = frozenset(
     }
 )
 
+NON_BRAND_SINGLE_TOKENS = frozenset(
+    {
+        "the", "this", "that", "those", "these", "there", "here", "where",
+        "when", "then", "than", "what", "which", "whom", "whose",
+        "multiple", "popularity", "availability", "specific", "native",
+        "resolution", "plus", "hd", "pro", "max", "ultra", "smart",
+        "android", "google", "india", "target", "focus", "rank", "share",
+        "visibility", "cited", "fully", "under", "both", "only", "much",
+        "very", "just", "also", "each", "even", "into", "some", "many",
+        "such", "over", "come", "long", "look", "after", "about", "still",
+        "since", "while",
+        # Hardware specs / abbreviations
+        "hdr", "ram", "rom", "os", "led", "lcd", "usb", "hdmi", "gpu",
+        "cpu", "rgb", "uhd", "fhd", "nfc", "fps", "iso", "ssd", "hdd",
+        "wifi", "lte", "amoled", "ansi",
+        # Technology standards / formats (not product brands)
+        "dolby", "dts", "dlp", "3lcd", "lcos", "bluetooth", "chromecast",
+        "miracast", "airplay", "atmos", "vision",
+        # Product categories
+        "projector", "projectors", "speaker", "speakers", "camera",
+        "cameras", "laptop", "laptops", "phone", "phones", "tablet",
+        "tablets", "monitor", "monitors", "tv", "television",
+        "theater", "theatre", "cinema", "screen", "lamp", "bulb", "lens",
+        # Generic adjectives / nouns that get capitalised at sentence starts
+        "dust", "free", "auto", "voice", "sound", "audio", "video",
+        "image", "power", "light", "dark", "bright", "brightness", "color", "size",
+        "weight", "built", "based", "type", "mode", "easy", "home", "entertainment",
+        "automatic", "digital", "manual", "portable", "wireless", "wired",
+        "mini", "compact", "slim", "full", "remote", "external", "internal",
+        "indoor", "outdoor", "instant", "quick", "fast", "slow", "short",
+        "throw", "laser", "keystone", "correction", "ratio", "aspect",
+        "certified", "genuine", "original", "advanced", "basic", "standard",
+    }
+)
+
+
+SPEC_UNIT_TOKENS = frozenset(
+    {
+        "ansi",
+        "iso",
+        "lumen",
+        "lumens",
+        "nit",
+        "nits",
+        "w",
+        "watt",
+        "watts",
+        "hz",
+        "inch",
+        "inches",
+        "cm",
+        "mm",
+        "mah",
+        "gb",
+        "tb",
+        "fps",
+        "contrast",
+        "brightness",
+        "resolution",
+    }
+)
+
+PRODUCT_CATEGORY_TOKENS = frozenset(
+    {
+        "projector", "projectors", "tv", "tvs", "television", "televisions",
+        "speaker", "speakers", "camera", "cameras", "laptop", "laptops",
+        "phone", "phones", "tablet", "tablets", "monitor", "monitors",
+        "soundbar", "soundbars", "headphone", "headphones", "earphone",
+        "earphones", "earbuds", "display", "screen", "theater", "theatre",
+        "cinema",
+    }
+)
+
+_ALL_NOISE_TOKENS = (
+    BRAND_EXCLUDE_TOKENS | CHANNEL_NOUN_TOKENS | NON_BRAND_SINGLE_TOKENS
+    | SPEC_UNIT_TOKENS | PRODUCT_CATEGORY_TOKENS
+)
+
+
+def _looks_like_spec_phrase(value: str) -> bool:
+    text = (value or "").strip().lower()
+    if not text:
+        return False
+
+    tokens = _tokenize_lower_words(text)
+    if not tokens:
+        return False
+
+    # Numeric + unit/spec patterns (e.g., "700 ISO brightness", "2600 lumens").
+    if re.search(
+        r"\b\d+(?:\.\d+)?\s*(?:ansi|iso|lumens?|nits?|w(?:atts?)?|hz|inch(?:es)?|cm|mm|mah|gb|tb|fps|k)\b",
+        text,
+    ):
+        return True
+
+    if tokens[0].isdigit() and any(token in SPEC_UNIT_TOKENS for token in tokens[1:]):
+        return True
+
+    # All tokens are generic noise/spec/category words → not a real brand.
+    if len(tokens) <= 6 and all(token.isdigit() or token in _ALL_NOISE_TOKENS for token in tokens):
+        return True
+
+    # Multi-word: contains a product category and every other word is generic
+    # (e.g. "Automatic Android Projector", "Portable Mini Projector").
+    if len(tokens) >= 2 and any(t in PRODUCT_CATEGORY_TOKENS for t in tokens):
+        non_category = [t for t in tokens if t not in PRODUCT_CATEGORY_TOKENS]
+        if all(t.isdigit() or t in _ALL_NOISE_TOKENS for t in non_category):
+            return True
+
+    return False
+
 
 def is_spurious_brand_mention(brand: str) -> bool:
-    """Reject protocol tokens, bare schemes, and URL-looking strings mistaken for brands."""
+    """Reject protocol tokens, bare schemes, URL-looking strings, random IDs, and noise words."""
     raw = (brand or "").strip()
     if not raw:
         return True
@@ -522,7 +664,6 @@ def is_spurious_brand_mention(brand: str) -> bool:
         return True
     if k in _SPURIOUS_BRAND_LITERALS:
         return True
-    # Single-token noise from broken markdown / citations
     if re.fullmatch(r"https?", k, flags=re.I):
         return True
     if re.match(r"^https?://", raw, flags=re.I):
@@ -532,6 +673,26 @@ def is_spurious_brand_mention(brand: str) -> bool:
     letters_only = re.sub(r"[^a-z]", "", k)
     if letters_only in {"http", "https", "www", "html", "url"}:
         return True
+    if len(tokens) == 1 and tokens[0] in NON_BRAND_SINGLE_TOKENS:
+        return True
+    if _looks_like_spec_phrase(raw):
+        return True
+
+    # Reject random alphanumeric IDs (YouTube video IDs, hash fragments, etc.)
+    # These are single-word tokens like "MM8DaGYIhzc" or "BdDPIANIPj8".
+    clean_word = raw.strip()
+    if " " not in clean_word and re.fullmatch(r"[A-Za-z0-9_-]{8,16}", clean_word):
+        digit_count = sum(1 for c in clean_word if c.isdigit())
+        upper_count = sum(1 for c in clean_word if c.isupper())
+        lower_count = sum(1 for c in clean_word if c.islower())
+        if digit_count >= 1 and upper_count >= 2 and lower_count >= 2:
+            return True
+
+    # Reject all-caps abbreviations that are hardware specs, not brands (HDR, RAM, OS, etc.)
+    if re.fullmatch(r"[A-Z]{2,5}", raw):
+        if k in NON_BRAND_SINGLE_TOKENS:
+            return True
+
     return False
 
 
@@ -646,17 +807,6 @@ def _heuristic_analysis(
                 "context": context,
             }
 
-    # Add notable non-configured competitors discovered in ranked lines.
-    for notable in _extract_notable_brands_from_ranked_lines(ranked_lines, tracked_clean):
-        key = notable["brand"].lower()
-        if key in mentions:
-            continue
-        mentions[key] = {
-            "brand": notable["brand"],
-            "rank": notable.get("rank"),
-            "context": notable.get("context", ""),
-        }
-
     details = []
     for item in mentions.values():
         if is_spurious_brand_mention(item.get("brand", "")):
@@ -684,6 +834,65 @@ def _heuristic_analysis(
     }
 
 
+def _llm_extract_brands(
+    response_text: str,
+    focus_brand: str,
+    query: str,
+    competitors: list[str],
+) -> dict[str, Any] | None:
+    """Ask a cheap LLM to extract real product/company brands from the AI response.
+
+    Returns a fully-formed analysis dict on success, or None if the call fails.
+    """
+    llm_prompt = f"""Extract ONLY real product/company brand names from this AI response.
+
+RULES:
+- Return ONLY actual manufacturer or product brand names (e.g. Samsung, BenQ, Epson, Egate).
+- Do NOT include technology names (Dolby, DLP, ANSI, HDR, Bluetooth).
+- Do NOT include product categories (projector, TV, speaker).
+- Do NOT include specifications (lumens, brightness, resolution, Ultra HD, 4K).
+- Do NOT include generic descriptions (easy, automatic, portable, home entertainment).
+- If a brand is listed in a numbered/ranked list, include its rank position.
+
+QUERY: "{query}"
+FOCUS BRAND: "{focus_brand}"
+KNOWN COMPETITORS: {json.dumps(competitors)}
+
+AI RESPONSE:
+{response_text[:4000]}
+
+Return ONLY valid JSON:
+{{
+  "brands_mentioned": ["BrandA", "BrandB"],
+  "focus_brand_rank": <integer position or null if not ranked>,
+  "focus_brand_mentioned": <true or false>,
+  "focus_brand_sentiment": "positive|neutral|negative|not_mentioned",
+  "focus_brand_context": "short quote where focus brand appears",
+  "all_brand_details": [
+    {{"brand": "BrandA", "rank": <integer or null>, "sentiment": "positive|neutral|negative", "context": "one-line summary"}}
+  ]
+}}"""
+
+    try:
+        raw = chat("chatgpt", llm_prompt)
+        parsed = _clean_json(raw)
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("all_brand_details"), list):
+            return None
+
+        details = [
+            d for d in parsed["all_brand_details"]
+            if isinstance(d, dict)
+            and d.get("brand", "").strip()
+            and not is_spurious_brand_mention(str(d["brand"]))
+        ]
+        parsed["all_brand_details"] = details
+        parsed["brands_mentioned"] = [d["brand"] for d in details if d.get("brand")]
+        parsed["sources"] = _extract_sources(response_text)
+        return parsed
+    except Exception:
+        return None
+
+
 def analyze_single_response(
     response_text: str,
     focus_brand: str,
@@ -696,56 +905,13 @@ def analyze_single_response(
 
     competitors = competitor_brands or []
 
+    # Primary: LLM-based extraction — reliable, understands context.
+    llm_result = _llm_extract_brands(response_text, focus_brand, query, competitors)
+    if llm_result and llm_result.get("all_brand_details"):
+        return llm_result
+
+    # Fallback: heuristic for configured brands only (no auto-discovery).
     heuristic = _heuristic_analysis(response_text, focus_brand, competitors, focus_brand_aliases=focus_brand_aliases)
-
-    # Fast path: heuristic already extracted ranked brand details.
-    if heuristic.get("all_brand_details"):
-        return heuristic
-
-    # Optional fallback to LLM parser for edge cases where heuristic extraction misses.
-    use_llm_parser = os.getenv("RANKLORE_USE_LLM_PARSER", "false").lower() in {"1", "true", "yes"}
-    if not use_llm_parser:
-        return heuristic
-
-    llm_prompt = f"""You are a brand intelligence analyst.
-
-ORIGINAL QUERY: "{query}"
-FOCUS BRAND: "{focus_brand}"
-COMPETITOR BRANDS: {json.dumps(competitors)}
-
-AI RESPONSE:
-{response_text}
-
-Return only valid JSON:
-{{
-  "brands_mentioned": ["Brand"],
-  "focus_brand_rank": <integer or null>,
-  "focus_brand_mentioned": <true/false>,
-  "focus_brand_sentiment": "positive|neutral|negative|not_mentioned",
-  "focus_brand_context": "short quote or summary",
-  "all_brand_details": [
-    {{"brand": "Brand", "rank": <integer or null>, "sentiment": "positive|neutral|negative", "context": "summary"}}
-  ],
-  "sources": ["domain.com"]
-}}"""
-
-    raw = chat("chatgpt", llm_prompt)
-    try:
-        parsed = _clean_json(raw)
-        if isinstance(parsed, dict) and parsed.get("all_brand_details") is not None:
-            if not parsed.get("sources"):
-                parsed["sources"] = _extract_sources(response_text)
-            details = [
-                d
-                for d in (parsed.get("all_brand_details") or [])
-                if isinstance(d, dict) and not is_spurious_brand_mention(str(d.get("brand", "")))
-            ]
-            parsed["all_brand_details"] = details
-            parsed["brands_mentioned"] = [d.get("brand") for d in details if d.get("brand")]
-            return parsed
-    except Exception:
-        pass
-
     return heuristic
 
 
@@ -821,7 +987,7 @@ def build_competitor_comparison(analyses: dict[str, Any], focus_brand: str) -> l
             item["avg_rank"] if item["avg_rank"] is not None else 999.0,
         )
     )
-    return result
+    return result[:10]
 
 
 def generate_positioning_insights(
@@ -879,41 +1045,51 @@ RESEARCH DATA (Specific Retrieval Points):
 
 
 def research_prompt_sources(query: str) -> dict[str, Any]:
-    """Use Perplexity (search-enabled) to find where LLMs typically source data for this query.
-    Returns a dict with high-citation domains and specific actionable URLs.
-    """
-    prompt = f"""Identify 10-15 specific 'Deep Links' (active Reddit threads, niche forum posts, specific YouTube videos, or pinpointed technical articles) that LLMs consistently use as citations or knowledge retrieval points for: "{query}"
-
-For each retrieval point, provide:
-1. domain: The site name (e.g., "Reddit", "YouTube", "Verge").
-2. title: The specific title of the thread, video, or article.
-3. url: The EXACT deep link or video URL (e.g., "https://www.youtube.com/watch?v=..." NOT "https://youtube.com").
-4. reason: Why this specific content influences LLM responses for this prompt.
-
-CRITICAL: Do NOT return top-level domains or homepages. ONLY return specific content URLs where discussions or reviews happen.
-
-Return ONLY valid JSON:
-{{
-  "sources": [
-    {{
-      "domain": "Reddit",
-      "title": "Best budget TVs in 2024 - Megathread",
-      "url": "https://reddit.com/r/4kTV/comments/...",
-      "reason": "Highest cited discussion for this intent"
-    }}
-  ],
-  "summary": "Deep-link retrieval points identified"
-}}"""
-
-    raw = chat("perplexity", prompt)
-    try:
-        return _clean_json(raw)
-    except Exception:
-        # Fallback to basic domain list if JSON fails
+    """Find likely citation targets for this query using configured web search provider."""
+    provider = get_search_provider_name()
+    search = search_web(query=query, max_results=10, max_tokens_per_page=320)
+    if not search.get("ok"):
         return {
             "sources": [],
-            "summary": "Could not retrieve deep source research via Perplexity."
+            "summary": f"Could not retrieve deep source research via {provider or 'search provider'}.",
+            "provider": provider or "none",
         }
+
+    rows = []
+    seen = set()
+    for item in (search.get("results") or [])[:15]:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        title = str(item.get("title") or "").strip()
+        snippet = str(item.get("snippet") or "").strip()
+        if not url:
+            continue
+        key = url.lower().rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        domain = ""
+        try:
+            domain = (urlparse(url).hostname or "").replace("www.", "").strip()
+        except Exception:
+            domain = ""
+        if not domain:
+            domain = "web"
+        rows.append(
+            {
+                "domain": domain,
+                "title": title or domain,
+                "url": url,
+                "reason": _clip_text(snippet or f"Frequently surfaced for query intent: {query}", 180),
+            }
+        )
+
+    return {
+        "sources": rows[:15],
+        "summary": f"Deep-link retrieval points identified using {provider or 'configured search'}",
+        "provider": provider or "none",
+    }
 
 
 def generate_recommendations(
