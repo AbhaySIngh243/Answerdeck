@@ -342,33 +342,6 @@ def _extract_sources(response_text: str) -> list[str]:
             continue
         sources.add(cleaned)
 
-    # Also capture bare domains (e.g. "cnet.com", "techradar.com").
-    domain_matches = re.findall(r"(?<!\S)(?:www\.)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?!\S)", response_text)
-    for domain in domain_matches:
-        if any(blocked in domain.lower() for blocked in {"example.com", "localhost"}):
-            continue
-        if not re.search(r"https?://.*" + re.escape(domain), response_text):
-            sources.add(domain.lower())
-
-    # Parse explicit "Sources:" lines.
-    source_line_match = re.search(r"sources?\s*[:\-]\s*(.+)", response_text, flags=re.IGNORECASE)
-    if source_line_match:
-        source_block = source_line_match.group(1)
-        lines_after = response_text[source_line_match.end() :].splitlines()[:20]
-        for line in lines_after:
-            stripped = line.strip()
-            if not stripped:
-                break
-            if re.match(r"^[-*]\s+", stripped) or re.match(r"^\d+[\).:-]\s+", stripped):
-                source_block += "," + re.sub(r"^[-*\d\).:\-\s]+", "", stripped)
-            else:
-                break
-        chunks = re.split(r",|\||;|\n", source_block)
-        for chunk in chunks:
-            value = chunk.strip(" .[]")
-            if value and len(value) < 120:
-                sources.add(value)
-
     return sorted(sources)[:15]
 
 

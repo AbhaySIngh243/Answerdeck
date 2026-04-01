@@ -11,6 +11,7 @@ from flask import Blueprint, Response as FlaskResponse, g, jsonify, request
 
 from auth import require_auth
 from engine.analyzer import (
+    calculate_visibility_score,
     generate_action_playbook,
     generate_content_piece,
     generate_detailed_audit,
@@ -121,16 +122,22 @@ def _parse_sources(raw: str) -> list[str]:
 def _domain_from_url(url: str) -> str:
     if not url:
         return ""
-    cleaned = url.strip()
-    parsed = urlparse(cleaned if cleaned.startswith("http") else f"https://{cleaned}")
+    cleaned = str(url).strip()
+    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+        return ""
+    parsed = urlparse(cleaned)
     domain = (parsed.netloc or "").replace("www.", "").lower().strip()
     if domain and re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", domain):
         return domain
-    # Fallback: treat the raw string as a label (e.g. "TechRadar", "PCMag").
-    fallback = re.sub(r"^https?://", "", cleaned).replace("www.", "").strip().rstrip("/")
-    if fallback and len(fallback) < 80:
-        return fallback.lower()
     return ""
+
+
+def _normalize_source_url(value: str) -> str:
+    cleaned = str(value or "").strip().rstrip(".,;:!?)")
+    domain = _domain_from_url(cleaned)
+    if not domain:
+        return ""
+    return cleaned
 
 
 def _latest_responses_by_prompt(prompt_id: int) -> list[Response]:
@@ -331,10 +338,14 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
                 competitor_scores[mention.brand]["ranks"].append(mention.rank)
 
         for source in _parse_sources(response.sources):
-            domain = _domain_from_url(source) or source.lower()
+            normalized_source = _normalize_source_url(source)
+            if not normalized_source:
+                continue
+            domain = _domain_from_url(normalized_source)
+            if not domain:
+                continue
             source_count[domain] += 1
-            normalized_url = source if source.startswith("http") else f"https://{domain}"
-            source_links[domain].add(normalized_url)
+            source_links[domain].add(normalized_source)
 
     brand_ranking = []
     for brand, row in competitor_scores.items():
@@ -359,7 +370,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     research_title_by_url: dict[str, str] = {}
     research_title_by_domain: dict[str, str] = {}
     for src in research_sources:
-        src_url = str(src.get("url") or "").strip()
+        src_url = _normalize_source_url(src.get("url") or "")
         src_title = str(src.get("title") or "").strip()
         src_domain = str(src.get("domain") or "").strip().lower()
         if src_url and src_title:
@@ -398,13 +409,11 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         domain = str(src.get("domain") or "").strip() or "authoritative source"
         page_title = str(src.get("title") or "").strip() or "Target Page"
         reason = str(src.get("reason") or "").strip()
-        link = str(src.get("url") or "").strip()
+        link = _normalize_source_url(src.get("url") or "")
         if not reason or len(reason.split()) < 6:
             reason = (
                 "This retrieval source is repeatedly surfaced for the prompt and is likely shaping model answers."
             )
-        if not link and domain:
-            link = f"https://{domain}"
         recommended_actions.append({
             "title": f"Act on {domain}",
             "detail": f"{reason} Solution: Ensure {focus_brand} is named with concrete proof points on '{page_title}' for the exact prompt intent '{prompt.prompt_text}'.",
@@ -448,7 +457,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
 
         # Add links from research first (these have titles)
         for r in r_items:
-            u = str(r.get("url") or "").strip()
+            u = _normalize_source_url(r.get("url") or "")
             if u and u not in seen_urls:
                 mapped_links.append({
                     "url": u,
@@ -458,16 +467,19 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
 
         # Add links found in responses
         for url in source_links.get(domain, []):
-            if url not in seen_urls:
-                normalized = str(url).strip().rstrip("/")
-                matched_title = research_title_by_url.get(str(url).strip()) or research_title_by_url.get(normalized)
+            valid_url = _normalize_source_url(url)
+            if not valid_url:
+                continue
+            if valid_url not in seen_urls:
+                normalized = valid_url.rstrip("/")
+                matched_title = research_title_by_url.get(valid_url) or research_title_by_url.get(normalized)
                 if not matched_title:
-                    matched_title = research_title_by_domain.get(_domain_from_url(str(url)))
+                    matched_title = research_title_by_domain.get(_domain_from_url(valid_url))
                 mapped_links.append({
-                    "url": url,
-                    "title": matched_title or url.replace("https://", "").replace("www.", "").split("/")[0]
+                    "url": valid_url,
+                    "title": matched_title or valid_url.replace("https://", "").replace("www.", "").split("/")[0]
                 })
-                seen_urls.add(url)
+                seen_urls.add(valid_url)
 
         ui_sources.append({
             "domain": domain + (" (Target Data Source)" if len(r_items) > 0 else ""),
@@ -480,7 +492,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     for domain_lower, items in research_by_domain.items():
         mapped_links = []
         for i in items:
-            u = i.get("url")
+            u = _normalize_source_url(i.get("url") or "")
             if u:
                 mapped_links.append({
                     "url": u,
@@ -502,7 +514,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
                 lambda: {"mentions": 0, "links": []}
             )
             for item in fallback.get("results", []):
-                url = str(item.get("url") or "").strip()
+                url = _normalize_source_url(item.get("url") or "")
                 if not url:
                     continue
                 domain = _domain_from_url(url) or "web"
@@ -692,14 +704,17 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
         negative = row["sentiments"].count("negative")
         sentiment_bonus = ((positive - negative) / len(row["sentiments"])) * 10 + 10 if row["sentiments"] else 0
 
-        score = min(100, mention_rate * 60 + rank_bonus + max(0, sentiment_bonus))
+        quality_score = min(100, mention_rate * 60 + rank_bonus + max(0, sentiment_bonus))
+        visibility_pct = round(mention_rate * 100, 1)
 
         is_focus = key_lower == focus_lower if focus_lower else bool(row["any_focus_mention"])
 
         rows.append(
             {
                 "brand": brand_label,
-                "visibility_score": round(score, 1),
+                "visibility_pct": visibility_pct,
+                "quality_score": round(quality_score, 1),
+                "visibility_score": round(quality_score, 1),  # Backward compatibility
                 "mentions": row["mentions"],
                 "avg_rank": round(sum(row["ranks"]) / len(row["ranks"]), 2) if row["ranks"] else None,
                 "is_focus": is_focus,
@@ -711,11 +726,35 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
         key=lambda item: (
             not item["is_focus"],
             not item["is_target_competitor"],
-            -item["visibility_score"],
+            -item["quality_score"],
             item["brand"].lower(),
         )
     )
     return rows[:10]
+
+
+def _compute_project_visibility_pct(project_id: int) -> float:
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    if not prompts:
+        return 0.0
+
+    latest_responses: list[Response] = []
+    for prompt in prompts:
+        latest_responses.extend(_latest_responses_by_prompt(prompt.id))
+
+    if not latest_responses:
+        return 0.0
+
+    response_ids = [r.id for r in latest_responses]
+    focus_mention_ids = {
+        mention.response_id
+        for mention in Mention.query.filter(
+            Mention.response_id.in_(response_ids),
+            Mention.is_focus.is_(True),
+        ).all()
+    }
+    mention_count = sum(1 for response in latest_responses if response.id in focus_mention_ids)
+    return round((mention_count / len(latest_responses)) * 100, 1)
 
 
 def _collect_competitor_sources(project_id: int) -> list[str]:
@@ -729,7 +768,10 @@ def _collect_competitor_sources(project_id: int) -> list[str]:
         if not _is_analysis_engine(response.engine):
             continue
         for source in _parse_sources(response.sources):
-            source_count[source] += 1
+            normalized_source = _normalize_source_url(source)
+            if not normalized_source:
+                continue
+            source_count[normalized_source] += 1
 
     return [source for source, _count in sorted(source_count.items(), key=lambda item: item[1], reverse=True)]
 
@@ -742,6 +784,7 @@ def _build_dashboard_payload(project_id: int) -> dict:
     metrics = VisibilityMetric.query.filter_by(project_id=project_id).order_by(VisibilityMetric.date.asc()).all()
     visibility_trend = [{"date": metric.date, "score": metric.score} for metric in metrics]
     current_score = visibility_trend[-1]["score"] if visibility_trend else 0
+    current_visibility_pct = _compute_project_visibility_pct(project_id)
 
     prompt_rankings = _build_prompt_rankings(project_id)
     competitors = _build_competitor_visibility(project_id)
@@ -757,8 +800,11 @@ def _build_dashboard_payload(project_id: int) -> dict:
             "website_url": project.website_url,
             "competitors": project.get_competitors_list(),
         },
-        "current_visibility_score": current_score,
-        "visibility_trend": visibility_trend,
+        "visibility_pct_current": current_visibility_pct,
+        "quality_score_current": current_score,
+        "quality_score_trend": visibility_trend,
+        "current_visibility_score": current_score,  # Backward compatibility
+        "visibility_trend": visibility_trend,  # Backward compatibility
         "prompt_rankings": prompt_rankings,
         "competitors": competitors,
         "recommendations": recommendations,
@@ -1212,7 +1258,16 @@ def prompt_analysis_table(project_id):
         engine_items = list(engines.items())
         analyzed = len(engine_items)
         mention_count = sum(1 for _, item in engine_items if item.get("mentioned"))
-        visibility = round((mention_count / analyzed) * 100, 1) if analyzed else 0.0
+        visibility_pct = round((mention_count / analyzed) * 100, 1) if analyzed else 0.0
+        focus_mentions = [
+            {
+                "is_focus": bool(item.get("mentioned")),
+                "rank": item.get("rank"),
+                "sentiment": item.get("sentiment", "not_mentioned"),
+            }
+            for _, item in engine_items
+        ]
+        quality_score = calculate_visibility_score(focus_mentions, analyzed)
         ranked = [item.get("rank") for _, item in engine_items if item.get("rank") is not None]
         avg_rank = round(sum(ranked) / len(ranked), 2) if ranked else None
         sentiments = [item.get("sentiment", "not_mentioned") for _, item in engine_items]
@@ -1228,7 +1283,9 @@ def prompt_analysis_table(project_id):
                 "country": prompt_row["country"],
                 "tags": prompt_row["tags"],
                 "models": [engine for engine, _ in engine_items],
-                "visibility": visibility,
+                "visibility_pct": visibility_pct,
+                "quality_score": quality_score,
+                "visibility": visibility_pct,  # Backward compatibility
                 "sentiment": primary_sentiment,
                 "avg_rank": avg_rank,
                 "engines_analyzed": analyzed,
@@ -1270,18 +1327,25 @@ def sources_intelligence(project_id):
             continue
         sources = _parse_sources(response.sources)
         for source in sources:
-            domain = _domain_from_url(source)
+            normalized_source = _normalize_source_url(source)
+            if not normalized_source:
+                continue
+            domain = _domain_from_url(normalized_source)
             if not domain:
-                domain = source.lower()
+                continue
             domain_count[domain] += 1
             if len(urls_by_domain[domain]) < 20:
-                normalized_url = source if source.startswith("http") else f"https://{domain}"
-                if normalized_url not in urls_by_domain[domain]:
-                    urls_by_domain[domain].append(normalized_url)
+                if normalized_source not in urls_by_domain[domain]:
+                    urls_by_domain[domain].append(normalized_source)
 
         mention_count = Mention.query.filter_by(response_id=response.id).count()
         for source in sources:
-            domain = _domain_from_url(source) or source.lower()
+            normalized_source = _normalize_source_url(source)
+            if not normalized_source:
+                continue
+            domain = _domain_from_url(normalized_source)
+            if not domain:
+                continue
             mentions_by_domain[domain] += mention_count
 
     domains = []
@@ -1303,14 +1367,16 @@ def sources_intelligence(project_id):
 def competitor_table(project_id):
     _get_project_for_user(project_id)
     competitors = _build_competitor_visibility(project_id)
-    total = sum(item["visibility_score"] for item in competitors) or 1
+    total = sum(item["visibility_pct"] for item in competitors) or 1
     table = []
     for item in competitors[:10]:
         table.append(
             {
                 "brand": item["brand"],
-                "market_share": round((item["visibility_score"] / total) * 100, 2),
-                "visibility": item["visibility_score"],
+                "market_share": round((item["visibility_pct"] / total) * 100, 2),
+                "visibility_pct": item["visibility_pct"],
+                "quality_score": item["quality_score"],
+                "visibility": item["visibility_pct"],  # Backward compatibility
                 "avg_rank": item["avg_rank"],
                 "mentions": item["mentions"],
                 "sentiment_proxy": max(0, min(100, round(100 - ((item["avg_rank"] or 10) * 8), 1))),

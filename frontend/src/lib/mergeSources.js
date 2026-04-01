@@ -1,3 +1,7 @@
+function isHttpUrl(value = '') {
+  return /^https?:\/\/[^\s]+$/i.test(String(value).trim());
+}
+
 function mergeLinks(a = [], b = []) {
   const byUrl = new Map();
   const out = [];
@@ -6,7 +10,7 @@ function mergeLinks(a = [], b = []) {
       ? { url: link.trim(), title: '' }
       : { url: String(link?.url || '').trim(), title: String(link?.title || '').trim() };
     const u = obj.url;
-    if (!u) continue;
+    if (!u || !isHttpUrl(u)) continue;
     const norm = u.replace(/\/+$/, '').toLowerCase();
     const prev = byUrl.get(norm);
     if (prev) {

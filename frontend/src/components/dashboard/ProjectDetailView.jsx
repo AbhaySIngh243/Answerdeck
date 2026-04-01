@@ -60,6 +60,10 @@ const fg = 'text-slate-900';
 const mt = 'text-slate-500';
 const label = 'text-[11px] font-semibold uppercase tracking-wider text-slate-400';
 
+function isHttpUrl(value) {
+  return /^https?:\/\/[^\s]+$/i.test(String(value || '').trim());
+}
+
 const DRAFT_TARGET_LABELS = {
   research: 'Suggested from research',
   audit: 'From audit',
@@ -390,7 +394,7 @@ const ProjectDetailView = () => {
           if (typeof l === 'string') return { url: l.trim(), title: '' };
           if (!l || typeof l !== 'object') return null;
           const url = String(l.url || '').trim();
-          if (!url) return null;
+          if (!url || !isHttpUrl(url)) return null;
           return {
             url,
             title: String(l.title || '').trim(),
@@ -817,24 +821,19 @@ const ProjectDetailView = () => {
         <div className="space-y-5">
       {/* ── Stat cards ── */}
       {(() => {
-        const vis = dashboard?.current_visibility_score || 0;
-        const trend = dashboard?.visibility_trend || [];
-        const prevVis = trend.length >= 2 ? trend[trend.length - 2]?.score : null;
-        const visDeltaRaw = prevVis != null ? vis - prevVis : null;
-        const visDelta = visDeltaRaw != null ? Math.round(visDeltaRaw * 10) / 10 : null;
+        const visibilityPct = Number(dashboard?.visibility_pct_current ?? dashboard?.current_visibility_score ?? 0);
+        const qualityScore = Number(dashboard?.quality_score_current ?? dashboard?.current_visibility_score ?? 0);
+        const qualityTrend = dashboard?.quality_score_trend || dashboard?.visibility_trend || [];
+        const prevQuality = qualityTrend.length >= 2 ? qualityTrend[qualityTrend.length - 2]?.score : null;
+        const qualityDeltaRaw = prevQuality != null ? qualityScore - prevQuality : null;
+        const qualityDelta = qualityDeltaRaw != null ? Math.round(qualityDeltaRaw * 10) / 10 : null;
         const promptCount = prompts.length;
-        const avgRank = (() => {
-          const rows = promptAnalysis?.rows || [];
-          if (!rows.length) return null;
-          const vals = rows.map(r => r.avg_rank).filter(v => v != null);
-          return vals.length ? +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1) : null;
-        })();
         const engineCount = enabledEngines.length;
         const competitorCount = (dashboard?.competitors || []).length;
 
         const cards = [
-          { label: 'Visibility', value: `${vis}%`, delta: visDelta != null ? `${visDelta >= 0 ? '+' : ''}${visDelta}%` : null, deltaUp: visDelta >= 0, sub: 'since last period' },
-          { label: 'Rankings trend', value: avgRank != null ? avgRank : '-', delta: null, sub: `across ${promptCount} prompts` },
+          { label: 'Visibility %', value: `${visibilityPct}%`, delta: null, deltaUp: true, sub: 'mention-rate across latest model runs' },
+          { label: 'Quality score', value: `${qualityScore}%`, delta: qualityDelta != null ? `${qualityDelta >= 0 ? '+' : ''}${qualityDelta}%` : null, deltaUp: qualityDelta >= 0, sub: 'rank + sentiment weighted score' },
           { label: 'AI Engines', value: engineCount, delta: null, sub: `${competitorCount} competitors tracked` },
           { label: 'Prompts', value: promptCount, delta: null, sub: promptCount > 0 ? 'active queries' : 'no queries yet' },
         ];
@@ -882,7 +881,7 @@ const ProjectDetailView = () => {
               <h3 className="text-sm font-semibold text-slate-800">Performance</h3>
               <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50/80 p-0.5">
                 {[
-                  { id: 'visibility', label: 'Visibility' },
+                  { id: 'visibility', label: 'Quality Score' },
                   { id: 'rankings', label: 'Rankings' },
                   { id: 'engines', label: 'Engines' },
                 ].map((tab) => (
@@ -904,7 +903,7 @@ const ProjectDetailView = () => {
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
                   {dashChartMode === 'visibility' ? (
-                    <AreaChart data={dashboard?.visibility_trend || []} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                    <AreaChart data={dashboard?.quality_score_trend || dashboard?.visibility_trend || []} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                       <defs>
                         <linearGradient id="visAreaFill" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="0%" stopColor={chartTheme.colors.accent} stopOpacity={0.15} />
@@ -915,10 +914,10 @@ const ProjectDetailView = () => {
                       <XAxis dataKey="date" tick={chartTheme.axisTick} axisLine={false} tickLine={false} dy={8} />
                       <YAxis domain={[0, 100]} tick={chartTheme.axisTick} axisLine={false} tickLine={false} width={36} tickFormatter={(v) => `${v}%`} />
                       <Tooltip contentStyle={chartTheme.tooltip.contentStyle} itemStyle={chartTheme.tooltip.itemStyle} labelStyle={chartTheme.tooltip.labelStyle} />
-                      <Area type="monotone" dataKey="score" stroke={chartTheme.colors.accent} strokeWidth={2.5} fill="url(#visAreaFill)" dot={false} activeDot={{ r: 4, strokeWidth: 0, fill: chartTheme.colors.accent }} name="Visibility" />
+                      <Area type="monotone" dataKey="score" stroke={chartTheme.colors.accent} strokeWidth={2.5} fill="url(#visAreaFill)" dot={false} activeDot={{ r: 4, strokeWidth: 0, fill: chartTheme.colors.accent }} name="Quality Score" />
                     </AreaChart>
                   ) : dashChartMode === 'rankings' ? (
-                    <AreaChart data={(promptAnalysis?.rows || []).slice(0, 12).map((r) => ({ name: r.prompt_text?.slice(0, 24) + (r.prompt_text?.length > 24 ? '…' : ''), rank: r.avg_rank, visibility: r.visibility }))} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                    <AreaChart data={(promptAnalysis?.rows || []).slice(0, 12).map((r) => ({ name: r.prompt_text?.slice(0, 24) + (r.prompt_text?.length > 24 ? '…' : ''), rank: r.avg_rank, visibility: r.visibility_pct ?? r.visibility }))} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                       <defs>
                         <linearGradient id="rankAreaFill" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="0%" stopColor={chartTheme.colors.success} stopOpacity={0.15} />
@@ -937,7 +936,7 @@ const ProjectDetailView = () => {
                       <XAxis type="number" tick={chartTheme.axisTick} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}%`} />
                       <YAxis dataKey="brand" type="category" tick={{ ...chartTheme.axisTick, fontSize: 11, fontWeight: 600 }} width={96} axisLine={false} tickLine={false} tickFormatter={(v) => v?.length > 14 ? v.slice(0, 13) + '…' : v} />
                       <Tooltip contentStyle={chartTheme.tooltip.contentStyle} itemStyle={chartTheme.tooltip.itemStyle} labelStyle={chartTheme.tooltip.labelStyle} />
-                      <Bar dataKey="visibility_score" fill={chartTheme.colors.accent} radius={chartTheme.barRadiusHorizontal} barSize={16} name="Visibility" />
+                      <Bar dataKey="visibility_pct" fill={chartTheme.colors.accent} radius={chartTheme.barRadiusHorizontal} barSize={16} name="Visibility %" />
                     </BarChart>
                   )}
                 </ResponsiveContainer>
@@ -959,6 +958,7 @@ const ProjectDetailView = () => {
                     <tr className="border-b border-slate-100 text-slate-400">
                       <th className="text-left py-2.5 px-5 font-medium text-[11px] uppercase tracking-wider">Prompt</th>
                       <th className="text-right py-2.5 px-4 font-medium text-[11px] uppercase tracking-wider">Visibility</th>
+                      <th className="text-right py-2.5 px-4 font-medium text-[11px] uppercase tracking-wider">Quality</th>
                       <th className="text-right py-2.5 px-4 font-medium text-[11px] uppercase tracking-wider">Avg Rank</th>
                       <th className="text-center py-2.5 px-4 font-medium text-[11px] uppercase tracking-wider">Sentiment</th>
                     </tr>
@@ -970,6 +970,7 @@ const ProjectDetailView = () => {
                             <td className="py-3 px-5"><div className="h-3 w-52 rounded bg-slate-100 animate-pulse" /></td>
                             <td className="py-3 px-4 text-right"><div className="h-5 w-14 rounded bg-slate-100 animate-pulse inline-block" /></td>
                             <td className="py-3 px-4 text-right"><div className="h-3 w-10 rounded bg-slate-100 animate-pulse inline-block" /></td>
+                            <td className="py-3 px-4 text-right"><div className="h-3 w-10 rounded bg-slate-100 animate-pulse inline-block" /></td>
                             <td className="py-3 px-4 text-center"><div className="h-5 w-16 rounded bg-slate-100 animate-pulse inline-block" /></td>
                           </tr>
                         ))
@@ -977,10 +978,11 @@ const ProjectDetailView = () => {
                           <tr key={row.prompt_id} className="hover:bg-slate-50/60 transition-colors">
                             <td className="py-3 px-5 font-medium text-slate-800 truncate max-w-[260px]">{row.prompt_text}</td>
                             <td className="py-3 px-4 text-right">
-                              <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums ${row.visibility > 70 ? 'bg-emerald-50 text-emerald-600' : row.visibility > 40 ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-500'}`}>
-                                {row.visibility}%
+                              <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums ${(row.visibility_pct ?? row.visibility) > 70 ? 'bg-emerald-50 text-emerald-600' : (row.visibility_pct ?? row.visibility) > 40 ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-500'}`}>
+                                {row.visibility_pct ?? row.visibility}%
                               </span>
                             </td>
+                            <td className="py-3 px-4 text-right text-slate-500 tabular-nums font-medium">{row.quality_score ?? '-'}</td>
                             <td className="py-3 px-4 text-right text-slate-500 tabular-nums font-medium">{row.avg_rank ?? '-'}</td>
                             <td className="py-3 px-4 text-center">
                               <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium capitalize ${
@@ -1009,7 +1011,7 @@ const ProjectDetailView = () => {
                   <p className="px-5 py-8 text-center text-sm text-slate-400">No competitor data yet. Run an analysis to populate.</p>
                 ) : (
                   (dashboard?.competitors || []).slice(0, 6).map((c, idx) => {
-                    const vis = c.visibility_score ?? 0;
+                    const vis = c.visibility_pct ?? 0;
                     return (
                       <div key={c.brand || idx} className="flex items-center gap-4 px-5 py-3 hover:bg-slate-50/60 transition-colors">
                         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[11px] font-bold text-slate-500">
@@ -1229,7 +1231,7 @@ const ProjectDetailView = () => {
           <table className="w-full text-[13px]">
             <thead>
               <tr className="border-b border-slate-100 text-slate-400">
-                {['Prompt','Visibility','Sentiment','Avg Rank','Models','Country','Tags','Actions'].map(h => (
+                {['Prompt','Visibility','Quality','Sentiment','Avg Rank','Models','Country','Tags','Actions'].map(h => (
                   <th key={h} className="text-left py-2.5 px-5 font-medium text-[11px] uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
@@ -1240,6 +1242,7 @@ const ProjectDetailView = () => {
                     <tr key={`sk-p-${idx}`}>
                       <td className="py-3 px-5"><div className="h-3 w-52 rounded bg-slate-100 animate-pulse" /></td>
                       <td className="py-3 px-5"><div className="h-5 w-14 rounded bg-slate-100 animate-pulse" /></td>
+                      <td className="py-3 px-5"><div className="h-3 w-12 rounded bg-slate-100 animate-pulse" /></td>
                       <td className="py-3 px-5"><div className="h-3 w-12 rounded bg-slate-100 animate-pulse" /></td>
                       <td className="py-3 px-5"><div className="h-3 w-10 rounded bg-slate-100 animate-pulse" /></td>
                       <td className="py-3 px-5"><div className="h-3 w-28 rounded bg-slate-100 animate-pulse" /></td>
@@ -1252,10 +1255,11 @@ const ProjectDetailView = () => {
                     <tr key={`${row.prompt_id}-${idx}`} className="hover:bg-slate-50/60 transition-colors">
                       <td className="py-3 px-5 font-medium text-slate-800 truncate max-w-[300px]">{row.prompt_text}</td>
                       <td className="py-3 px-5">
-                        <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums ${row.visibility > 70 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
-                          {row.visibility}%
+                        <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums ${(row.visibility_pct ?? row.visibility) > 70 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                          {row.visibility_pct ?? row.visibility}%
                         </span>
                       </td>
+                      <td className="py-3 px-5 tabular-nums text-slate-500 font-medium">{row.quality_score ?? '-'}</td>
                       <td className="py-3 px-5 capitalize text-xs text-slate-500 font-medium">{row.sentiment}</td>
                       <td className="py-3 px-5 tabular-nums text-slate-500 font-medium">{row.avg_rank ?? '-'}</td>
                       <td className="py-3 px-5">
@@ -1289,7 +1293,7 @@ const ProjectDetailView = () => {
                     </tr>
                   ))}
               {!promptAnalysisLoading && (promptAnalysis?.rows || []).length === 0 && (
-                <tr><td colSpan={8} className="py-10 text-center text-sm text-slate-400">No prompt analytics yet.</td></tr>
+                <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">No prompt analytics yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -1337,10 +1341,11 @@ const ProjectDetailView = () => {
                         ) : null}
                       </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-4 gap-2">
                       {[
                         { l: 'Share', v: `${item.market_share}%` },
-                        { l: 'Visibility', v: item.visibility },
+                        { l: 'Visibility', v: `${item.visibility_pct ?? item.visibility ?? 0}%` },
+                        { l: 'Quality', v: `${item.quality_score ?? '-'}%` },
                         { l: 'Rank', v: item.avg_rank ?? '-' },
                       ].map((s) => (
                         <div key={s.l}>
@@ -1467,7 +1472,7 @@ const ProjectDetailView = () => {
                       <ul className="space-y-2 p-4">
                         {shownLinks.map((link) => {
                           const url = typeof link === 'string' ? link : String(link?.url || '');
-                          if (!url) return null;
+                          if (!url || !isHttpUrl(url)) return null;
                           const title = typeof link === 'string' ? '' : String(link?.title || '');
                           const domain = url.replace(/^https?:\/\//, '').split('/')[0];
                           return (
