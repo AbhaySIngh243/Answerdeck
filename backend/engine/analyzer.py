@@ -212,6 +212,24 @@ def _rebalance_priority_spread(items: list[dict]) -> list[dict]:
     return items
 
 
+def _looks_like_low_quality_copy(text: Any, min_words: int = 6) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return True
+    lowered = s.lower()
+    if lowered in {"n/a", "na", "none", "tbd", "todo"}:
+        return True
+    if "lorem ipsum" in lowered:
+        return True
+    words = re.findall(r"[a-zA-Z0-9]+", s)
+    if len(words) < max(1, min_words):
+        return True
+    unique_ratio = len({w.lower() for w in words}) / max(len(words), 1)
+    if unique_ratio < 0.45:
+        return True
+    return False
+
+
 def _sanitize_audit_items(
     raw_items: Any,
     focus_brand: str,
@@ -237,6 +255,8 @@ def _sanitize_audit_items(
         evidence = _clip_text(row.get("evidence"), 260)
 
         if not title or not root_cause or not solution:
+            continue
+        if _looks_like_low_quality_copy(title, min_words=2) or _looks_like_low_quality_copy(root_cause) or _looks_like_low_quality_copy(solution):
             continue
 
         key = f"{_canonical_brand(title)}|{_canonical_brand(root_cause[:180])}"
@@ -278,6 +298,8 @@ def _sanitize_action_items(raw_items: Any, focus_brand: str, default_priority: s
         title = _clip_text(row.get("title"), 110)
         detail = _clip_text(row.get("detail") or row.get("solution"), 620)
         if not title or not detail:
+            continue
+        if _looks_like_low_quality_copy(title, min_words=2) or _looks_like_low_quality_copy(detail):
             continue
         key = f"{_canonical_brand(title)}|{_canonical_brand(detail[:180])}"
         if not key or key in seen:
@@ -1272,7 +1294,7 @@ Strict rules:
     try:
         parsed = _clean_json(raw)
         cleaned = _sanitize_audit_items(parsed, focus_brand, query, default_priority=default_priority)
-        if cleaned:
+        if len(cleaned) >= 3:
             return cleaned
     except Exception:
         pass
@@ -1397,7 +1419,7 @@ Rules:
     try:
         parsed = _clean_json(raw)
         cleaned = _sanitize_action_items(parsed, focus_brand, default_priority="medium")
-        if cleaned:
+        if len(cleaned) >= 3:
             return cleaned
     except Exception:
         pass

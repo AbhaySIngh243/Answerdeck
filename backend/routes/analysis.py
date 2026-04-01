@@ -229,6 +229,28 @@ def async_run_analysis(
             }
             analyses["research_data"] = research_data
 
+            # Persist research grounding as a dedicated *_research response so
+            # reporting endpoints can reliably recover structured citations later.
+            if search_context.get("ok") and research_data.get("sources"):
+                provider_name = str(search_context.get("provider") or "search").strip().lower() or "search"
+                provider_name = provider_name.replace(" ", "_")
+                research_urls = []
+                for src in research_data.get("sources", []):
+                    if not isinstance(src, dict):
+                        continue
+                    url = str(src.get("url") or "").strip()
+                    if url and url not in research_urls:
+                        research_urls.append(url)
+                db.session.add(
+                    Response(
+                        prompt_id=prompt.id,
+                        engine=f"{provider_name}_research",
+                        response_text=json.dumps(research_data),
+                        sources=json.dumps(research_urls),
+                        timestamp=_now_iso(),
+                    )
+                )
+
             insights = generate_positioning_insights(
                 focus_brand=focus_brand,
                 query=prompt.prompt_text,

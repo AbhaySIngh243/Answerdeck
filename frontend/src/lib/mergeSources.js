@@ -1,13 +1,21 @@
 function mergeLinks(a = [], b = []) {
-  const seen = new Set();
+  const byUrl = new Map();
   const out = [];
-  for (const url of [...a, ...b]) {
-    const u = typeof url === 'string' ? url.trim() : '';
+  for (const link of [...a, ...b]) {
+    const obj = typeof link === 'string'
+      ? { url: link.trim(), title: '' }
+      : { url: String(link?.url || '').trim(), title: String(link?.title || '').trim() };
+    const u = obj.url;
     if (!u) continue;
     const norm = u.replace(/\/+$/, '').toLowerCase();
-    if (seen.has(norm)) continue;
-    seen.add(norm);
-    out.push(u);
+    const prev = byUrl.get(norm);
+    if (prev) {
+      if (!prev.title && obj.title) prev.title = obj.title;
+      continue;
+    }
+    const next = { url: u, title: obj.title };
+    byUrl.set(norm, next);
+    out.push(next);
   }
   return out;
 }

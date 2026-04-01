@@ -385,13 +385,22 @@ const ProjectDetailView = () => {
     const raw = (fromPrompt ?? sourcesIntel?.domains) || [];
     const normalized = raw.slice(0, 20).map((row) => {
       const linkObjs = Array.isArray(row.links) ? row.links : [];
-      const flatLinks = linkObjs
-        .map((l) => (typeof l === 'string' ? l : l?.url))
+      const normalizedLinks = linkObjs
+        .map((l) => {
+          if (typeof l === 'string') return { url: l.trim(), title: '' };
+          if (!l || typeof l !== 'object') return null;
+          const url = String(l.url || '').trim();
+          if (!url) return null;
+          return {
+            url,
+            title: String(l.title || '').trim(),
+          };
+        })
         .filter(Boolean);
       return {
         domain: row.domain,
         source_mentions: Number(row.source_mentions ?? row.mentions) || 0,
-        links: flatLinks,
+        links: normalizedLinks,
       };
     });
     return mergeSourcesByDomainKey(normalized);
@@ -1457,9 +1466,12 @@ const ProjectDetailView = () => {
                     ) : (
                       <ul className="space-y-2 p-4">
                         {shownLinks.map((link) => {
-                          const domain = link.replace(/^https?:\/\//, '').split('/')[0];
+                          const url = typeof link === 'string' ? link : String(link?.url || '');
+                          if (!url) return null;
+                          const title = typeof link === 'string' ? '' : String(link?.title || '');
+                          const domain = url.replace(/^https?:\/\//, '').split('/')[0];
                           return (
-                            <li key={link} className="flex items-center gap-3 group/link">
+                            <li key={url} className="flex items-center gap-3 group/link">
                               <div className={`p-1 ${surf} border ${brd} rounded-md`}>
                                 <img
                                   src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`}
@@ -1471,8 +1483,8 @@ const ProjectDetailView = () => {
                                   onError={(e) => { e.target.style.display = 'none'; }}
                                 />
                               </div>
-                              <a href={link} target="_blank" rel="noreferrer" className="flex min-w-0 flex-1 items-center gap-1.5 text-xs font-semibold text-brand-primary transition-colors hover:text-[color:var(--color-accent)]">
-                                <span className="truncate">{link}</span>
+                              <a href={url} target="_blank" rel="noreferrer" className="flex min-w-0 flex-1 items-center gap-1.5 text-xs font-semibold text-brand-primary transition-colors hover:text-[color:var(--color-accent)]" title={url}>
+                                <span className="truncate">{title || url}</span>
                                 <ExternalLink className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover/link:opacity-100" />
                               </a>
                             </li>

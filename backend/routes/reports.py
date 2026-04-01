@@ -354,7 +354,22 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         except Exception:
             pass
 
-    research_sources = research_data.get("sources", [])
+    research_sources_raw = research_data.get("sources", [])
+    research_sources = [src for src in research_sources_raw if isinstance(src, dict)]
+    research_title_by_url: dict[str, str] = {}
+    research_title_by_domain: dict[str, str] = {}
+    for src in research_sources:
+        src_url = str(src.get("url") or "").strip()
+        src_title = str(src.get("title") or "").strip()
+        src_domain = str(src.get("domain") or "").strip().lower()
+        if src_url and src_title:
+            research_title_by_url[src_url] = src_title
+            research_title_by_url[src_url.rstrip("/")] = src_title
+            domain_from_url = _domain_from_url(src_url)
+            if domain_from_url and domain_from_url not in research_title_by_domain:
+                research_title_by_domain[domain_from_url] = src_title
+        if src_domain and src_title and src_domain not in research_title_by_domain:
+            research_title_by_domain[src_domain] = src_title
     
     # Process latest engine results for visibility context
     analyses = {}
@@ -379,12 +394,24 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     recommended_actions = []
 
     # Add research-driven recommendations (from legacy research Responses).
-    for src in research_sources[:6]:
+    for src in research_sources[:10]:
+        domain = str(src.get("domain") or "").strip() or "authoritative source"
+        page_title = str(src.get("title") or "").strip() or "Target Page"
+        reason = str(src.get("reason") or "").strip()
+        link = str(src.get("url") or "").strip()
+        if not reason or len(reason.split()) < 6:
+            reason = (
+                "This retrieval source is repeatedly surfaced for the prompt and is likely shaping model answers."
+            )
+        if not link and domain:
+            link = f"https://{domain}"
         recommended_actions.append({
-            "title": f"Act on {src.get('domain', 'authoritative source')}",
-            "detail": f"{src.get('reason', 'Critical retrieval point')}. Solution: Ensure {focus_brand} is mentioned or reviewed in this specific content: '{src.get('title', 'Target Page')}'",
-            "link": src.get("url", "")
+            "title": f"Act on {domain}",
+            "detail": f"{reason} Solution: Ensure {focus_brand} is named with concrete proof points on '{page_title}' for the exact prompt intent '{prompt.prompt_text}'.",
+            "link": link,
         })
+        if len(recommended_actions) >= 6:
+            break
 
     # When no research Response exists (new analyses use the search pre-layer),
     # derive recommendations from the top cited domains in LLM responses.
@@ -421,20 +448,24 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
 
         # Add links from research first (these have titles)
         for r in r_items:
-            u = r.get("url")
+            u = str(r.get("url") or "").strip()
             if u and u not in seen_urls:
                 mapped_links.append({
                     "url": u,
-                    "title": r.get("title") or u.replace("https://", "").replace("www.", "").split("/")[0]
+                    "title": (r.get("title") or "").strip() or u.replace("https://", "").replace("www.", "").split("/")[0]
                 })
                 seen_urls.add(u)
 
         # Add links found in responses
         for url in source_links.get(domain, []):
             if url not in seen_urls:
+                normalized = str(url).strip().rstrip("/")
+                matched_title = research_title_by_url.get(str(url).strip()) or research_title_by_url.get(normalized)
+                if not matched_title:
+                    matched_title = research_title_by_domain.get(_domain_from_url(str(url)))
                 mapped_links.append({
                     "url": url,
-                    "title": url.replace("https://", "").replace("www.", "").split("/")[0]
+                    "title": matched_title or url.replace("https://", "").replace("www.", "").split("/")[0]
                 })
                 seen_urls.add(url)
 
