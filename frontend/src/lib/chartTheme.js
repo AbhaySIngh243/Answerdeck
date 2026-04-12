@@ -49,4 +49,28 @@ export const chartTheme = {
     danger: '#DC2626',
     muted: '#94a3b8',
   },
+  nivo: {
+    textColor: '#475569',
+    fontSize: 11,
+    axis: {
+      domain: { line: { stroke: '#e2e8f0', strokeWidth: 1 } },
+      ticks: {
+        line: { stroke: '#e2e8f0', strokeWidth: 1 },
+        text: { fill: '#94a3b8', fontSize: 11, fontFamily: 'Inter, system-ui, sans-serif' },
+      },
+    },
+    grid: {
+      line: { stroke: '#e2e8f0', strokeWidth: 1, strokeOpacity: 0.65 },
+    },
+    tooltip: {
+      container: {
+        background: '#ffffff',
+        border: '1px solid #e2e8f0',
+        borderRadius: '8px',
+        boxShadow: '0 4px 16px rgba(15, 23, 42, 0.08)',
+        color: '#334155',
+        fontSize: 12,
+      },
+    },
+  },
 };

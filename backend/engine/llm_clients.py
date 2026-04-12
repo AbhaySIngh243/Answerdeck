@@ -2,6 +2,7 @@
 
 import os
 import re
+import ipaddress
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import urlparse
@@ -129,7 +130,24 @@ def get_enabled_engines(selected_models: list[str] | None = None) -> dict[str, d
 
 def _normalize_url(url: str) -> str:
     cleaned = str(url or "").strip().rstrip(".,;:!?)")
-    return cleaned if cleaned.startswith("http://") or cleaned.startswith("https://") else ""
+    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+        return ""
+    try:
+        parsed = urlparse(cleaned)
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            return ""
+        if host in {"localhost"} or host.endswith(".local"):
+            return ""
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                return ""
+        except ValueError:
+            pass
+        return parsed._replace(fragment="").geturl()
+    except Exception:
+        return ""
 
 
 def _extract_urls_from_text(text: str) -> list[str]:

@@ -6,6 +6,14 @@ import { ArrowRight, FolderKanban, Globe, Loader2, Plus, Trash2 } from 'lucide-r
 import { api } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { getDomainFromWebsiteUrl, normalizeWebsiteUrl } from '../../lib/url';
+import { SectionScaffold, StatePanel } from './ui/SectionScaffold';
+import { Button } from '../ui/button';
+import { Card, CardContent } from '../ui/card';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
+import { Input } from '../ui/input';
+import { Select } from '../ui/select';
+import { Badge } from '../ui/badge';
+import { Separator } from '../ui/separator';
 
 const MAX_PROJECTS_PER_ACCOUNT = 3;
 const PROJECTS_CACHE_KEY = 'answerdeck.projects.cache.v1';
@@ -150,225 +158,165 @@ const ProjectsView = () => {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      {errorBanner}
-      <div className="flex flex-col justify-between gap-4 border-b border-[#e2e8f0] pb-5 md:flex-row md:items-end">
-        <div>
-          <p className="text-[11px] font-semibold tracking-wide text-brand-primary">Workspace</p>
-          <h1 className="mt-1 text-xl font-bold tracking-tight text-[#0f172a]">My Projects</h1>
-          <p className="mt-1 text-sm text-[#64748b]">Monitor, analyze, and improve your brand visibility across AI answers.</p>
-          <p className="mt-0.5 text-xs text-[#94a3b8]">
-            {projects.length}/{MAX_PROJECTS_PER_ACCOUNT} projects
-          </p>
-        </div>
-        <button
-          onClick={() => !atProjectLimit && setShowCreateModal(true)}
-          disabled={atProjectLimit}
-          className="flex items-center justify-center gap-1.5 self-start rounded-lg bg-brand-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-[#3b82f6] disabled:cursor-not-allowed disabled:opacity-50 md:self-auto"
-        >
-          <Plus className="w-4 h-4" />
-          {atProjectLimit ? 'Project limit reached (3)' : 'Start New Project'}
-        </button>
-      </div>
+      <SectionScaffold
+        title="My Projects"
+        description="Monitor, analyze, and improve your brand visibility across AI answers."
+        actions={(
+          <>
+            <Badge variant="secondary">{projects.length}/{MAX_PROJECTS_PER_ACCOUNT} projects</Badge>
+            <Button onClick={() => !atProjectLimit && setShowCreateModal(true)} disabled={atProjectLimit}>
+              <Plus className="h-4 w-4" />
+              {atProjectLimit ? 'Project limit reached (3)' : 'Start New Project'}
+            </Button>
+          </>
+        )}
+      >
+        {errorBanner}
 
-      {projects.length === 0 ? (
-        <div className="rounded-xl border border-[#e2e8f0] bg-white p-8 text-center shadow-sm">
-          <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-slate-100">
-            <FolderKanban className="h-5 w-5 text-[#64748b]" />
+        {projects.length === 0 ? (
+          <StatePanel
+            title="No projects yet"
+            description="Create your first project to begin AI visibility monitoring."
+            action={(
+              <Button onClick={() => !atProjectLimit && setShowCreateModal(true)} disabled={atProjectLimit}>
+                <Plus className="h-4 w-4" />
+                Create Project
+              </Button>
+            )}
+          />
+        ) : (
+          <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+            {projects.map((project) => {
+              const competitors = Array.isArray(project.competitors) ? project.competitors : [];
+              return (
+                <Card key={project.id} className="group rounded-xl transition-all hover:border-brand-primary/30 hover:shadow-md">
+                  <CardContent className="flex h-full flex-col gap-4 p-5">
+                    <div className="flex items-start justify-between">
+                      <div className="rounded-lg bg-slate-100 p-2 transition-colors group-hover:bg-brand-primary/10">
+                        <FolderKanban className="h-4 w-4 text-slate-500 group-hover:text-brand-primary" />
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => deleteProjectMutation.mutate(project.id)}
+                        className="h-8 w-8 text-slate-500 hover:bg-red-50 hover:text-red-600"
+                        title="Delete project"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+
+                    <Link to={`/dashboard/project/${project.id}`} className="flex-1 space-y-3">
+                      <div>
+                        <div className="mb-1 flex items-center gap-2">
+                          {(() => {
+                            const domain = getDomainFromWebsiteUrl(project.website_url);
+                            return domain ? (
+                              <img
+                                src={`https://www.google.com/s2/favicons?domain=${domain}&sz=64`}
+                                alt=""
+                                loading="lazy"
+                                decoding="async"
+                                referrerPolicy="no-referrer"
+                                className="h-4 w-4 shrink-0 rounded-sm"
+                                onError={(event) => {
+                                  event.currentTarget.style.display = 'none';
+                                }}
+                              />
+                            ) : null;
+                          })()}
+                          <h3 className="truncate text-base font-bold text-slate-900 group-hover:text-brand-primary">{project.name}</h3>
+                        </div>
+                        <Badge variant="secondary">{project.category || 'Portfolio'}</Badge>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Region</p>
+                          <p className="truncate text-sm font-semibold text-slate-700">{project.region || 'Global'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Competitors</p>
+                          <p className="text-sm font-semibold text-slate-700">{competitors.length}</p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                        <Globe className="h-3 w-3 text-slate-400" />
+                        <span className="truncate text-[11px] font-medium text-slate-500">{project.website_url || 'No URL'}</span>
+                      </div>
+                    </Link>
+
+                    <Separator />
+                    <div className="flex items-center justify-between">
+                      <Link to={`/dashboard/project/${project.id}`} className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-primary">
+                        Analysis Center
+                        <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+                      </Link>
+                      <div className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/40" />
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
-          <h3 className="mb-1.5 text-sm font-bold text-[#0f172a]">No projects yet</h3>
-          <p className="mx-auto mb-4 max-w-sm text-xs text-[#64748b]">Create your first project to begin AI visibility monitoring.</p>
-          <button
-            onClick={() => !atProjectLimit && setShowCreateModal(true)}
-            disabled={atProjectLimit}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-[#e2e8f0] bg-white px-3 py-1.5 text-xs font-medium text-[#0f172a] transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Create Project
-          </button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {projects.map((project) => {
-            const competitors = Array.isArray(project.competitors) ? project.competitors : [];
-            return (
-              <div
-                key={project.id}
-                className="group relative flex h-full flex-col rounded-xl border border-[#e2e8f0] bg-white p-5 shadow-sm transition-all duration-200 hover:border-brand-primary/30 hover:shadow-md"
-              >
-                <div className="mb-3.5 flex items-start justify-between">
-                  <div className="rounded-lg bg-slate-100 p-2 transition-colors group-hover:bg-brand-primary/10">
-                    <FolderKanban className="h-4 w-4 text-[#64748b] transition-colors group-hover:text-brand-primary" />
-                  </div>
-                  <button
-                    onClick={() => deleteProjectMutation.mutate(project.id)}
-                    className="rounded-lg p-1.5 text-[#64748b] opacity-0 transition-all hover:bg-red-50 hover:text-red-600 group-hover:opacity-100"
-                    title="Delete project"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+        )}
+      </SectionScaffold>
 
-                <Link to={`/dashboard/project/${project.id}`} className="flex-1">
-                  <div className="mb-0.5 flex items-center gap-2">
-                    {(() => {
-                      const domain = getDomainFromWebsiteUrl(project.website_url);
-                      return domain ? (
-                        <img
-                          src={`https://www.google.com/s2/favicons?domain=${domain}&sz=64`}
-                          alt=""
-                          loading="lazy"
-                          decoding="async"
-                          referrerPolicy="no-referrer"
-                          className="h-4 w-4 shrink-0 rounded-sm"
-                          onError={(event) => {
-                            event.currentTarget.style.display = 'none';
-                          }}
-                        />
-                      ) : null;
-                    })()}
-                    <h3 className="truncate text-base font-bold leading-snug text-[#0f172a] transition-colors group-hover:text-brand-primary">
-                      {project.name}
-                    </h3>
-                  </div>
-                  <div className="mb-3.5 inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-[#64748b]">
-                    {project.category || 'Portfolio'}
-                  </div>
-
-                  <div className="mb-4 grid grid-cols-2 gap-3">
-                    <div className="space-y-0.5">
-                      <span className="text-[10px] font-semibold tracking-wide text-[#94a3b8]">Region</span>
-                      <p className="truncate text-sm font-semibold text-slate-700">{project.region || 'Global'}</p>
-                    </div>
-                    <div className="space-y-0.5">
-                      <span className="text-[10px] font-semibold tracking-wide text-[#94a3b8]">Competitors</span>
-                      <p className="text-sm font-semibold text-slate-700">{competitors.length}</p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-slate-50 px-3 py-2 transition-colors group-hover:border-brand-primary/20">
-                    <Globe className="h-3 w-3 text-[#94a3b8]" />
-                    <span className="truncate text-[11px] font-medium text-[#64748b]">{project.website_url || 'No URL'}</span>
-                  </div>
-                </Link>
-
-                <div className="mt-4 flex items-center justify-between border-t border-[#e2e8f0] pt-3.5">
-                  <Link
-                    to={`/dashboard/project/${project.id}`}
-                    className="group/btn inline-flex items-center gap-1.5 text-xs font-semibold text-brand-primary transition-colors hover:text-[#1d4ed8]"
-                  >
-                    Analysis Center
-                    <ArrowRight className="w-3.5 h-3.5 group-hover/btn:translate-x-0.5 transition-transform" />
-                  </Link>
-                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/50" />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-900/40 p-3 backdrop-blur-sm sm:p-6">
-          <div className="my-auto w-full max-w-lg rounded-xl border border-[#e2e8f0] bg-white p-5 shadow-[0_24px_60px_rgba(15,23,42,0.12)] sm:p-7 max-h-[min(90dvh,calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem))] overflow-y-auto overscroll-contain">
-            <div className="mb-5">
-              <h2 className="mb-1 text-lg font-bold leading-snug tracking-tight text-[#0f172a]">New project</h2>
-              <p className="text-sm text-[#64748b]">Define your brand and competitive landscape.</p>
-            </div>
-
-            <form onSubmit={handleCreateProject} className="space-y-4">
-              {createProjectMutation.isError && (
-                <div className="rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs text-red-700">
-                  {String(createProjectMutation.error?.message || '').toLowerCase().includes('timed out')
+      <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>New project</DialogTitle>
+            <DialogDescription>Define your brand and competitive landscape.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleCreateProject} className="space-y-4">
+            {createProjectMutation.isError ? (
+              <StatePanel
+                title="Could not create project"
+                description={
+                  String(createProjectMutation.error?.message || '').toLowerCase().includes('timed out')
                     ? 'Server is still starting up. Please wait a moment and try again.'
-                    : createProjectMutation.error?.message}
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2">
-                  <label className="mb-1.5 block text-[10px] font-semibold tracking-wide text-[#94a3b8]">
-                    Brand name *
-                  </label>
-                  <input
-                    autoFocus
-                    required
-                    type="text"
-                    value={form.name}
-                    onChange={(event) => updateField('name', event.target.value)}
-                    className="w-full rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-3.5 py-2.5 text-sm font-medium text-[#0f172a] outline-none transition-all placeholder:text-slate-400 focus:border-brand-primary focus:bg-white focus:ring-2 focus:ring-brand-primary/15"
-                    placeholder="e.g. Answrdeck"
-                  />
-                </div>
-
-                <div className="col-span-1">
-                  <label className="mb-1.5 block text-[10px] font-semibold tracking-wide text-[#94a3b8]">Industry</label>
-                  <input
-                    type="text"
-                    value={form.category}
-                    onChange={(event) => updateField('category', event.target.value)}
-                    className="w-full rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-3.5 py-2.5 text-sm font-medium text-[#0f172a] outline-none transition-all placeholder:text-slate-400 focus:border-brand-primary focus:bg-white focus:ring-2 focus:ring-brand-primary/15"
-                    placeholder="e.g. FinTech"
-                  />
-                </div>
-
-                <div className="col-span-1">
-                  <label className="mb-1.5 block text-[10px] font-semibold tracking-wide text-[#94a3b8]">Region</label>
-                  <select
-                    value={regionSelectValue}
-                    onChange={(event) => updateField('region', event.target.value)}
-                    className="w-full rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-3.5 py-2.5 text-sm font-medium text-[#0f172a] outline-none transition-all placeholder:text-slate-400 focus:border-brand-primary focus:bg-white focus:ring-2 focus:ring-brand-primary/15"
-                  >
-                    {REGION_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="col-span-2">
-                  <label className="mb-1.5 block text-[10px] font-semibold tracking-wide text-[#94a3b8]">Website URL</label>
-                  <input
-                    type="text"
-                    value={form.website_url}
-                    onChange={(event) => updateField('website_url', event.target.value)}
-                    className="w-full rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-3.5 py-2.5 text-sm font-medium text-[#0f172a] outline-none transition-all placeholder:text-slate-400 focus:border-brand-primary focus:bg-white focus:ring-2 focus:ring-brand-primary/15"
-                    placeholder="example.com or https://example.com"
-                  />
-                </div>
-
-                <div className="col-span-2">
-                  <label className="mb-1.5 block text-[10px] font-semibold tracking-wide text-[#94a3b8]">Competitors</label>
-                  <input
-                    type="text"
-                    value={form.competitors}
-                    onChange={(event) => updateField('competitors', event.target.value)}
-                    className="w-full rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-3.5 py-2.5 text-sm font-medium text-[#0f172a] outline-none transition-all placeholder:text-slate-400 focus:border-brand-primary focus:bg-white focus:ring-2 focus:ring-brand-primary/15"
-                    placeholder="Brand A, Brand B, Brand C"
-                  />
-                  <p className="mt-1.5 text-[10px] text-[#94a3b8]">Separate competitors with commas.</p>
-                </div>
+                    : createProjectMutation.error?.message
+                }
+                variant="danger"
+              />
+            ) : null}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2">
+                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Brand name *</label>
+                <Input autoFocus required value={form.name} onChange={(event) => updateField('name', event.target.value)} placeholder="e.g. Answrdeck" />
               </div>
-
-              <div className="grid grid-cols-2 gap-3 pt-3">
-                <button
-                  type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="rounded-lg border border-[#e2e8f0] px-4 py-2.5 text-xs font-semibold text-[#64748b] transition-colors hover:bg-slate-50 hover:text-[#0f172a]"
-                >
-                  Discard
-                </button>
-                <button
-                  type="submit"
-                  disabled={createDisabled}
-                  className="flex items-center justify-center gap-2 rounded-lg bg-brand-primary px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-[#3b82f6] disabled:opacity-50"
-                >
-                  {createProjectMutation.isPending ? <><Loader2 className="w-4 h-4 animate-spin" /><span>Creating...</span></> : <span>Next: Choose prompts</span>}
-                </button>
+              <div className="col-span-1">
+                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Industry</label>
+                <Input value={form.category} onChange={(event) => updateField('category', event.target.value)} placeholder="e.g. FinTech" />
               </div>
-            </form>
-          </div>
-        </div>
-      )}
+              <div className="col-span-1">
+                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Region</label>
+                <Select value={regionSelectValue} onChange={(event) => updateField('region', event.target.value)}>
+                  {REGION_OPTIONS.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </Select>
+              </div>
+              <div className="col-span-2">
+                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Website URL</label>
+                <Input value={form.website_url} onChange={(event) => updateField('website_url', event.target.value)} placeholder="example.com or https://example.com" />
+              </div>
+              <div className="col-span-2">
+                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Competitors</label>
+                <Input value={form.competitors} onChange={(event) => updateField('competitors', event.target.value)} placeholder="Brand A, Brand B, Brand C" />
+                <p className="mt-1.5 text-[10px] text-slate-400">Separate competitors with commas.</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <Button type="button" variant="secondary" onClick={() => setShowCreateModal(false)}>Discard</Button>
+              <Button type="submit" disabled={createDisabled}>
+                {createProjectMutation.isPending ? <><Loader2 className="h-4 w-4 animate-spin" /><span>Creating...</span></> : <span>Next: Choose prompts</span>}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

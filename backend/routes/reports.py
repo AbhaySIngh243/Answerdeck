@@ -1,5 +1,6 @@
 import csv
 import io
+import ipaddress
 import json
 import re
 from collections import defaultdict
@@ -76,6 +77,9 @@ RETAIL_CONTEXT_HINTS = (
 )
 
 NON_ANALYSIS_ENGINES = frozenset({"perplexity_research"})
+ALLOWED_EXECUTION_MODELS = frozenset({"chatgpt", "deepseek", "perplexity", "gemini", "claude"})
+ALLOWED_CONTENT_TYPES = frozenset({"Article", "Blog", "Reddit Post"})
+MAX_EXECUTION_DIRECTIVE_CHARS = 6000
 
 
 def _looks_like_channel_noise(brand: str, context: str = "") -> bool:
@@ -126,7 +130,18 @@ def _domain_from_url(url: str) -> str:
     if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
         return ""
     parsed = urlparse(cleaned)
-    domain = (parsed.netloc or "").replace("www.", "").lower().strip()
+    host = (parsed.hostname or "").replace("www.", "").lower().strip()
+    if not host:
+        return ""
+    if host in {"localhost"} or host.endswith(".local"):
+        return ""
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return ""
+    except ValueError:
+        pass
+    domain = host
     if domain and re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", domain):
         return domain
     return ""
@@ -134,10 +149,72 @@ def _domain_from_url(url: str) -> str:
 
 def _normalize_source_url(value: str) -> str:
     cleaned = str(value or "").strip().rstrip(".,;:!?)")
+    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+        return ""
     domain = _domain_from_url(cleaned)
     if not domain:
         return ""
-    return cleaned
+    try:
+        parsed = urlparse(cleaned)
+        return parsed._replace(fragment="").geturl()
+    except Exception:
+        return cleaned
+
+
+def _clean_research_reason(reason: str) -> str:
+    text = str(reason or "")
+    # Remove markdown links while preserving visible anchor text.
+    text = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[`*_#>\[\]{}|~]", " ", text)
+    text = re.sub(r"[✅✔️☑️•▪️◆►→]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .,:;!-")
+    return text[:260].strip()
+
+
+def _reason_is_low_quality(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if len(cleaned) < 24:
+        return True
+    words = re.findall(r"[A-Za-z][A-Za-z0-9'-]*", cleaned)
+    if len(words) < 5:
+        return True
+    letters = len(re.findall(r"[A-Za-z]", cleaned))
+    if letters == 0:
+        return True
+    symbolish = len(re.findall(r"[^A-Za-z0-9\s.,:'\"()/-]", cleaned))
+    if symbolish > max(6, letters // 2):
+        return True
+    return False
+
+
+def _build_platform_visibility_detail(
+    *,
+    domain: str,
+    focus_brand: str,
+    query: str,
+    page_title: str = "",
+    reason: str = "",
+    citation_count: int | None = None,
+) -> str:
+    reason_clean = _clean_research_reason(reason)
+    reason_fragment = ""
+    if not _reason_is_low_quality(reason_clean):
+        reason_fragment = f"Signal observed: {reason_clean}. "
+    elif citation_count is not None:
+        reason_fragment = f"Signal observed: this domain was cited {citation_count} time(s) for this query. "
+    else:
+        reason_fragment = "Signal observed: this domain repeatedly appears in retrieval for this query. "
+
+    page_hint = f"Target page/context: '{page_title}'. " if page_title else ""
+    return (
+        f"{reason_fragment}"
+        f"Why it matters: LLMs use cited domains like {domain} as evidence when recommending options. "
+        f"Execution: publish or update an intent-matched page for '{query}' on {domain}, include concrete proof points "
+        f"(pricing, specs, outcomes, comparisons), and mention {focus_brand} naturally in decision-focused sections. "
+        f"{page_hint}"
+        "Goal: increase the chance that model answers surface your brand for this exact intent."
+    )
 
 
 def _latest_responses_by_prompt(prompt_id: int) -> list[Response]:
@@ -410,13 +487,15 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         page_title = str(src.get("title") or "").strip() or "Target Page"
         reason = str(src.get("reason") or "").strip()
         link = _normalize_source_url(src.get("url") or "")
-        if not reason or len(reason.split()) < 6:
-            reason = (
-                "This retrieval source is repeatedly surfaced for the prompt and is likely shaping model answers."
-            )
         recommended_actions.append({
-            "title": f"Act on {domain}",
-            "detail": f"{reason} Solution: Ensure {focus_brand} is named with concrete proof points on '{page_title}' for the exact prompt intent '{prompt.prompt_text}'.",
+            "title": f"Increase visibility on {domain}",
+            "detail": _build_platform_visibility_detail(
+                domain=domain,
+                focus_brand=focus_brand,
+                query=prompt.prompt_text,
+                page_title=page_title,
+                reason=reason,
+            ),
             "link": link,
         })
         if len(recommended_actions) >= 6:
@@ -428,15 +507,25 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         for domain, count in sorted(source_count.items(), key=lambda item: item[1], reverse=True)[:6]:
             links = sorted(source_links.get(domain, set()))
             recommended_actions.append({
-                "title": f"Act on {domain}",
-                "detail": f"LLMs cited {domain} {count} time(s) for this query. Ensure {focus_brand} is mentioned or featured on this source.",
+                "title": f"Increase visibility on {domain}",
+                "detail": _build_platform_visibility_detail(
+                    domain=domain,
+                    focus_brand=focus_brand,
+                    query=prompt.prompt_text,
+                    citation_count=count,
+                ),
                 "link": links[0] if links else f"https://{domain}",
             })
 
     if len(recommended_actions) < 2:
         recommended_actions.append({
-            "title": "Publish a dedicated answer page",
-            "detail": f"Create a page targeting '{prompt.prompt_text}' with explicit sections: best options, pricing tiers, comparison table, and buying recommendations.",
+            "title": "Publish a dedicated visibility page",
+            "detail": (
+                f"Create an intent-specific page for '{prompt.prompt_text}' with structured sections "
+                "(best options, pricing tiers, comparison table, buying recommendations, and proof points for "
+                f"{focus_brand}). Distribute and internally link it so LLM crawlers can retrieve it as a primary "
+                "citation source for this decision intent."
+            ),
             "link": project.website_url if project and project.website_url else "",
         })
     
@@ -1109,12 +1198,16 @@ def execute_project_action(project_id):
     project = _get_project_for_user(project_id)
 
     data = request.json or {}
-    directive = data.get("directive")
-    content_type = data.get("content_type", "Article")
-    query = data.get("query", "")
-    
+    directive = str(data.get("directive") or "").strip()
+    content_type = str(data.get("content_type") or "Article").strip()
+    query = str(data.get("query") or "").strip()
+
     if not directive:
         return jsonify({"error": "Directive is required"}), 400
+    if len(directive) > MAX_EXECUTION_DIRECTIVE_CHARS:
+        return jsonify({"error": f"Directive is too long (max {MAX_EXECUTION_DIRECTIVE_CHARS} characters)"}), 400
+    if content_type not in ALLOWED_CONTENT_TYPES:
+        return jsonify({"error": "content_type must be one of: Article, Blog, Reddit Post"}), 400
 
     # Gather context for content generation
     competitors = project.get_competitors_list()
@@ -1124,7 +1217,9 @@ def execute_project_action(project_id):
         "industry": project.category
     }
 
-    engine = data.get("model", "deepseek")
+    engine = str(data.get("model") or "deepseek").strip().lower()
+    if engine not in ALLOWED_EXECUTION_MODELS:
+        return jsonify({"error": "model must be one of: chatgpt, deepseek, perplexity, gemini, claude"}), 400
     content = generate_content_piece(project.name, directive, content_type, context_data, engine=engine)
     return jsonify(content)
 

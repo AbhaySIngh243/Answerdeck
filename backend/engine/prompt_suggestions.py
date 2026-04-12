@@ -12,7 +12,6 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from engine.llm_clients import chat
-from engine.perplexity_search import search_web
 
 HTTP_TIMEOUT_SECONDS = 6
 MAX_PAGE_CHARS = 120_000
@@ -32,9 +31,11 @@ _STOPWORDS = {
     "in",
     "is",
     "it",
+    "its",
     "of",
     "on",
     "or",
+    "our",
     "that",
     "the",
     "this",
@@ -43,6 +44,118 @@ _STOPWORDS = {
     "with",
     "you",
     "your",
+}
+
+# Tokens too generic to enforce category cohesion (avoid false positives).
+_COHESION_SKIP_TOKENS = {
+    "home",
+    "page",
+    "site",
+    "web",
+    "www",
+    "app",
+    "get",
+    "new",
+    "all",
+    "any",
+    "can",
+    "now",
+    "use",
+    "out",
+    "more",
+    "here",
+    "just",
+    "like",
+    "into",
+    "over",
+    "also",
+    "only",
+    "very",
+    "when",
+    "where",
+    "who",
+    "why",
+    "way",
+    "may",
+    "not",
+    "but",
+    "has",
+    "had",
+    "was",
+    "were",
+    "been",
+    "being",
+    "such",
+    "than",
+    "then",
+    "them",
+    "these",
+    "those",
+    "some",
+    "each",
+    "both",
+    "few",
+    "other",
+    "another",
+    "between",
+    "through",
+    "during",
+    "before",
+    "after",
+    "above",
+    "below",
+    "again",
+    "once",
+    "there",
+    "well",
+    "back",
+    "even",
+    "still",
+    "own",
+    "same",
+    "most",
+    "much",
+    "many",
+    "make",
+    "made",
+    "making",
+    "need",
+    "needs",
+    "want",
+    "wants",
+    "help",
+    "helps",
+    "free",
+    "try",
+    "sign",
+    "learn",
+    "see",
+    "read",
+    "click",
+    "start",
+    "today",
+    "world",
+    "global",
+    "online",
+    "digital",
+    "solution",
+    "solutions",
+    "service",
+    "services",
+    "product",
+    "products",
+    "company",
+    "business",
+    "customer",
+    "customers",
+    "team",
+    "teams",
+    "platform",
+    "software",
+    "tool",
+    "tools",
+    "data",
+    "cloud",
 }
 
 _PRIORITY_PATH_HINTS = (
@@ -256,123 +369,339 @@ def _collect_site_snapshot(website_url: str) -> dict[str, Any]:
     }
 
 
-def _build_fallback_prompts(project: dict[str, Any], snapshot: dict[str, Any], max_prompts: int) -> list[str]:
-    brand = project.get("name") or "our brand"
-    industry = project.get("category") or "our category"
-    region = project.get("region") or "global"
-    competitors = [c for c in (project.get("competitors") or []) if isinstance(c, str) and c.strip()]
-    kws = snapshot.get("keywords", []) or []
-    top_kw = kws[0] if kws else industry
-    second_kw = kws[1] if len(kws) > 1 else "teams"
+def _normalize_words(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
 
-    prompts = [
-        f"Best {industry} software for {region}",
-        f"{brand} alternatives and competitors",
-        f"{brand} pricing vs competitors",
-        f"How does {brand} compare for {top_kw}?",
-        f"Is {brand} good for {second_kw} use cases?",
-        f"{brand} reviews and user feedback",
-        f"Top {industry} tools with {top_kw}",
-        f"{brand} integration options and setup",
+
+def _canonical_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _contains_brand(value: str, brand: str) -> bool:
+    brand_clean = _canonical_text(brand)
+    if not brand_clean:
+        return False
+    return brand_clean in _canonical_text(value)
+
+
+def _word_count(value: str) -> int:
+    return len(re.findall(r"\b[\w'-]+\b", value or ""))
+
+
+def _is_valid_prompt(value: str, brand: str) -> bool:
+    text = _normalize_words(value)
+    if not text:
+        return False
+    if _contains_brand(text, brand):
+        return False
+    count = _word_count(text)
+    if count < 5 or count > 8:
+        return False
+    if re.search(r"\b(vs|versus)\b", text, flags=re.IGNORECASE):
+        return False
+    return True
+
+
+def _short_category(category: str) -> str:
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9+\-/&]*", str(category or "").strip())
+    if not tokens:
+        return "software"
+    return " ".join(tokens[:2]).lower()
+
+
+def _build_fallback_prompts(project: dict[str, Any]) -> list[str]:
+    category = _short_category(project.get("category") or "")
+    candidates = [
+        f"Which are the best {category} options",
+        f"Recommended {category} tools for teams like us",
+        f"Best {category} options for tight budgets",
     ]
-    if competitors:
-        for competitor in competitors[:2]:
-            prompts.append(f"{brand} vs {competitor} comparison")
+    brand = project.get("name") or ""
+    return [c for c in candidates if _is_valid_prompt(c, brand)][:3]
 
+
+def _build_site_context_for_llm(snapshot: dict[str, Any]) -> str:
+    hp = snapshot.get("homepage") or {}
+    parts: list[str] = []
+    title = _clean_text(hp.get("title") or "", 140)
+    h1 = _clean_text(hp.get("h1") or "", 120)
+    meta = _clean_text(hp.get("meta_description") or "", 220)
+    excerpt = _clean_text(hp.get("text_excerpt") or "", 360)
+    keywords = snapshot.get("keywords") or []
+    kw_str = ", ".join(str(k) for k in keywords[:10] if k)
+
+    if title:
+        parts.append(f"Homepage title: {title}")
+    if h1:
+        parts.append(f"Primary heading: {h1}")
+    if meta:
+        parts.append(f"Meta description: {meta}")
+    if excerpt:
+        parts.append(f"Homepage text excerpt: {excerpt}")
+    if kw_str:
+        parts.append(f"Keywords from site headings: {kw_str}")
+
+    for page in (snapshot.get("pages") or [])[:2]:
+        bits = []
+        if page.get("title"):
+            bits.append(_clean_text(page["title"], 120))
+        if page.get("h1"):
+            bits.append(_clean_text(page["h1"], 100))
+        if bits:
+            parts.append("Inner page: " + " — ".join(bits))
+
+    if not parts:
+        return "No website text could be fetched; rely on category and region only."
+    return "\n".join(parts)
+
+
+def _cohesion_theme_tokens(project: dict[str, Any], snapshot: dict[str, Any]) -> set[str]:
+    found: set[str] = set()
+    category_raw = str(project.get("category") or "")
+    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9+\-]{2,}", category_raw.lower()):
+        if token not in _STOPWORDS and token not in _COHESION_SKIP_TOKENS:
+            found.add(token)
+    for kw in snapshot.get("keywords") or []:
+        t = str(kw).lower().strip()
+        if len(t) >= 3 and t not in _STOPWORDS and t not in _COHESION_SKIP_TOKENS:
+            found.add(t)
+    hp = snapshot.get("homepage") or {}
+    for field in ("title", "h1", "meta_description"):
+        chunk = str(hp.get(field) or "")
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9+\-]{2,}", chunk.lower()):
+            if token not in _STOPWORDS and token not in _COHESION_SKIP_TOKENS:
+                found.add(token)
+    for page in snapshot.get("pages") or []:
+        for field in ("title", "h1"):
+            chunk = str(page.get(field) or "")
+            for token in re.findall(r"[a-zA-Z][a-zA-Z0-9+\-]{2,}", chunk.lower()):
+                if token not in _STOPWORDS and token not in _COHESION_SKIP_TOKENS:
+                    found.add(token)
+    if not found:
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9+\-]{2,}", category_raw.lower()):
+            if token not in _STOPWORDS:
+                found.add(token)
+    return found
+
+
+def _prompt_word_tokens(prompt: str) -> set[str]:
+    return set(re.findall(r"[a-zA-Z][a-zA-Z0-9+\-]*", (prompt or "").lower()))
+
+
+def _prompt_coheres_with_theme(prompt: str, theme_tokens: set[str]) -> bool:
+    if not theme_tokens:
+        return True
+    return bool(_prompt_word_tokens(prompt) & theme_tokens)
+
+
+def _valid_prompt1_discovery(text: str) -> bool:
+    t = text.lower()
+    if any(x in t for x in ("best", "top", "which", "what", "options", "picks", "choices", "alternatives")):
+        return True
+    return bool(re.search(r"\b(find|discover|looking for)\b", t))
+
+
+_PROMPT2_FRAMING_RE = re.compile(
+    r"(?:"
+    r"\brecommended\b|"
+    r"\bwhich are the best\b|\bwhich is the best\b|\bwhat are the best\b|"
+    r"\btop options\b|\btop picks\b|\bbest options\b|\bbest picks\b|\bbest choices\b|"
+    r"\bbest .{1,40} for\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _valid_prompt2_framing(text: str) -> bool:
+    if _PROMPT2_FRAMING_RE.search(text or ""):
+        return True
+    t = text.lower()
+    return "best" in t and " for " in t
+
+
+_PROMPT3_CONSTRAINT_RE = re.compile(
+    r"(?:"
+    r"\bunder\b|\$\s*[\d,.]+|\b\d{3,}\b|"
+    r"\bbudgets?\b|\baffordable\b|\bcheap\b|\bpremium\b|\benterprise\b|"
+    r"\btight\b|\blow[- ]cost\b|"
+    r"\bsmall\s+(?:business|team|space|room|apartment|office|home)s?\b|"
+    r"\bwhen\s+[a-z]|"
+    r"\bfor\s+(?:home|travel|renovation|renovating|rentals|renters|students|families|apartments)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _valid_prompt3_constraint(text: str) -> bool:
+    return bool(_PROMPT3_CONSTRAINT_RE.search(text or ""))
+
+
+def _validate_prompt_triple(prompts: list[str], theme_tokens: set[str]) -> bool:
+    if len(prompts) != 3:
+        return False
+    p1, p2, p3 = prompts
+    if len({p1.lower(), p2.lower(), p3.lower()}) < 3:
+        return False
+    for p in prompts:
+        if not _prompt_coheres_with_theme(p, theme_tokens):
+            return False
+    if not _valid_prompt1_discovery(p1):
+        return False
+    if not _valid_prompt2_framing(p2):
+        return False
+    if not _valid_prompt3_constraint(p3):
+        return False
+    return True
+
+
+def _extract_ordered_prompt_triple(raw: str, brand: str) -> list[str]:
+    try:
+        parsed = _extract_json(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    slot_keys: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("prompt_1", ("Prompt 1",)),
+        ("prompt_2", ("Prompt 2",)),
+        ("prompt_3", ("Prompt 3",)),
+    )
     out: list[str] = []
-    seen: set[str] = set()
-    for prompt in prompts:
-        normalized = prompt.strip().lower()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        out.append(prompt.strip())
-        if len(out) >= max_prompts:
-            break
+    for primary, alternates in slot_keys:
+        val = parsed.get(primary)
+        if val in (None, ""):
+            for alt in alternates:
+                if parsed.get(alt) not in (None, ""):
+                    val = parsed.get(alt)
+                    break
+        text = _normalize_words(str(val or ""))
+        if not _is_valid_prompt(text, brand):
+            return []
+        out.append(text)
     return out
 
 
-def _search_signal_rows(project: dict[str, Any]) -> list[dict[str, str]]:
-    brand = (project.get("name") or "").strip()
-    category = (project.get("category") or "").strip()
-    region = (project.get("region") or "").strip()
-    if not brand and not category:
+def _extract_strict_prompts(raw: str, brand: str) -> list[str]:
+    """Backward-compatible loose extraction (unordered); prefer _extract_ordered_prompt_triple."""
+    triple = _extract_ordered_prompt_triple(raw, brand)
+    if len(triple) == 3:
+        return triple
+    try:
+        parsed = _extract_json(raw)
+    except Exception:
         return []
+    candidate_values: list[str] = []
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("prompts"), list):
+            candidate_values.extend(str(item or "") for item in parsed.get("prompts", []))
+        for key in ("prompt_1", "prompt_2", "prompt_3", "Prompt 1", "Prompt 2", "Prompt 3"):
+            if key in parsed:
+                candidate_values.append(str(parsed.get(key) or ""))
+    elif isinstance(parsed, list):
+        candidate_values.extend(str(item or "") for item in parsed)
 
-    query = " ".join(
-        part
-        for part in (
-            brand,
-            category,
-            "software alternatives pricing comparison review",
-            region,
-        )
-        if part
-    )
-    result = search_web(query=query, max_results=6, max_tokens_per_page=320)
-    if not result.get("ok"):
-        return []
-
-    rows = []
-    for item in result.get("results", [])[:6]:
-        rows.append(
-            {
-                "title": _clean_text(item.get("title", ""), 120),
-                "url": str(item.get("url") or "").strip(),
-                "snippet": _clean_text(item.get("snippet", ""), 180),
-            }
-        )
-    return rows
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidate_values:
+        text = _normalize_words(candidate)
+        if not _is_valid_prompt(text, brand):
+            continue
+        norm = text.lower()
+        if norm in seen:
+            continue
+        seen.add(norm)
+        cleaned.append(text)
+        if len(cleaned) >= 3:
+            break
+    return cleaned
 
 
-def generate_project_prompt_suggestions(project: dict[str, Any], max_prompts: int = 10) -> dict[str, Any]:
-    max_prompts = max(3, min(int(max_prompts or 10), 20))
-    snapshot = _collect_site_snapshot(project.get("website_url", ""))
-    search_rows = _search_signal_rows(project)
+def _build_suggestion_user_prompt(
+    project_name: str,
+    category: str,
+    region: str,
+    site_context: str,
+    theme_hint: str,
+) -> str:
+    return f"""You are an AI visibility strategist.
+The brand below is for context only: generate exactly 3 high-intent user search prompts that do NOT include the brand name or obvious variants.
 
-    prompt = f"""You are an AI visibility strategist creating prompt ideas for a brand project.
+Website-derived context (may be partial if fetch failed):
+{site_context}
 
-PROJECT:
-{json.dumps(project)}
+Requirements:
+- Each JSON value must be the raw query text only (no "Prompt 1:" prefixes or labels).
+- Each prompt must be 5-8 words only, natural conversational language, real buying or decision intent.
+- Do not mention the brand name in any prompt.
+- All three prompts must stay in the SAME product or service niche implied by the site context and category. Do not jump to unrelated parent categories (example: if the site is smart lighting, do not output generic home electronics).
+- Make prompts specific enough to surface competitor brands and alternatives.
+- Avoid "vs" / "versus" brand comparisons.
 
-WEBSITE SNAPSHOT:
-{json.dumps(snapshot)}
+Slot rules:
+- prompt_1: discovery intent (best / top / which / what options in this niche).
+- prompt_2: recommendation-style framing only. Prefer openers like: recommended, which are the best, top options, best picks, best choices, best <niche> for <audience>. Do not use a bare category pivot that ignores the site niche.
+- prompt_3: must reflect a constraint or scenario: price/budget (under, affordable, budget, tight budget), audience/space (small apartment, small team), timing (when renovating), or setting (for home, for travel) — and must read differently in intent from prompt_1 and prompt_2.
 
-SEARCH SIGNALS:
-{json.dumps(search_rows)}
-
-Create {max_prompts} high-quality prompts to track AI visibility and growth.
-Output requirements:
-1. Prompts must be specific to this website's offering and likely buyer intent.
-2. Include a mix: alternatives/comparisons, pricing, use-cases, implementation, and trust-proof queries.
-3. Keep each prompt concise (8-14 words).
-4. Avoid generic placeholders and duplicate phrasing.
-5. At least 3 prompts must clearly include the brand name.
+Brand (do not echo): {project_name}
+Category context: {category}
+Region context: {region or "global"}
+Theme anchor tokens (must be reflected across prompts via wording): {theme_hint}
 
 Return ONLY valid JSON:
 {{
-  "prompts": ["prompt 1", "prompt 2"]
+  "prompt_1": "...",
+  "prompt_2": "...",
+  "prompt_3": "..."
 }}"""
 
+
+def generate_project_prompt_suggestions(project: dict[str, Any], max_prompts: int = 10) -> dict[str, Any]:
+    _ = max_prompts
+    project_name = str(project.get("name") or "").strip()
+    category = _short_category(project.get("category") or "")
+    region = str(project.get("region") or "").strip()
+
+    snapshot = _collect_site_snapshot(project.get("website_url") or "")
+    site_context = _build_site_context_for_llm(snapshot)
+    theme_tokens = _cohesion_theme_tokens(project, snapshot)
+    theme_hint = ", ".join(sorted(theme_tokens)[:14]) if theme_tokens else category
+
+    base_prompt = _build_suggestion_user_prompt(
+        project_name, category, region, site_context, theme_hint
+    )
+
+    def attempt_llm(extra: str, temperature: float) -> list[str] | None:
+        body = f"{base_prompt}{extra}"
+        raw = chat("chatgpt", body, temperature=temperature)
+        triple = _extract_ordered_prompt_triple(raw, brand=project_name)
+        if len(triple) != 3:
+            return None
+        if not _validate_prompt_triple(triple, theme_tokens):
+            return None
+        return triple
+
+    retry_suffix = (
+        "\n\nRegenerate strictly: the previous JSON failed validation or drifted off-theme. "
+        f"Keep all three prompts in this product space: {theme_hint}. "
+        "Honor prompt_1 discovery, prompt_2 recommendation-style, prompt_3 constraint/scenario. "
+        "Do not broaden to unrelated parent categories."
+    )
+
     try:
-        raw = chat("chatgpt", prompt, temperature=0.35)
-        parsed = _extract_json(raw)
-        model_prompts = parsed.get("prompts", []) if isinstance(parsed, dict) else []
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for item in model_prompts:
-            text = _clean_text(item, 120)
-            normalized = text.lower()
-            if not text or normalized in seen:
-                continue
-            seen.add(normalized)
-            cleaned.append(text)
-            if len(cleaned) >= max_prompts:
-                break
-        if cleaned:
-            return {"prompts": cleaned, "source": "website+search+llm", "snapshot": snapshot}
+        triple = attempt_llm("", 0.35)
+        if triple is not None:
+            return {"prompts": triple, "source": "strict-rule-llm"}
+        triple = attempt_llm(retry_suffix, 0.15)
+        if triple is not None:
+            return {"prompts": triple, "source": "strict-rule-llm"}
     except Exception:
         pass
 
-    fallback = _build_fallback_prompts(project, snapshot, max_prompts=max_prompts)
-    return {"prompts": fallback, "source": "website+fallback", "snapshot": snapshot}
+    fallback = _build_fallback_prompts(project)
+    if len(fallback) < 3:
+        fallback = [
+            "Which are the best software options",
+            "Recommended software tools for growing teams",
+            "Best software options for tight budgets",
+        ]
+    return {"prompts": fallback[:3], "source": "strict-rule-fallback"}

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import ipaddress
 from collections import defaultdict
 from typing import Any
 from urllib.parse import urlparse
@@ -324,13 +325,35 @@ def _sanitize_action_items(raw_items: Any, focus_brand: str, default_priority: s
 
 
 def _extract_sources(response_text: str) -> list[str]:
+    def _is_public_http_url(url: str) -> bool:
+        try:
+            parsed = urlparse(str(url or "").strip())
+            if parsed.scheme not in {"http", "https"}:
+                return False
+            host = (parsed.hostname or "").strip().lower()
+            if not host:
+                return False
+            if host in {"localhost"} or host.endswith(".local"):
+                return False
+            try:
+                ip = ipaddress.ip_address(host)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                    return False
+            except ValueError:
+                pass
+            return True
+        except Exception:
+            return False
+
     sources: set[str] = set()
 
     # Capture full URLs first (higher fidelity).
     url_matches = re.findall(r"https?://[^\s<>\"')\]]+", response_text)
     for url in url_matches:
         cleaned = url.rstrip(".,;:!?)")
-        if any(blocked in cleaned.lower() for blocked in {"example.com", "localhost"}):
+        if any(blocked in cleaned.lower() for blocked in {"example.com"}):
+            continue
+        if not _is_public_http_url(cleaned):
             continue
         sources.add(cleaned)
 
@@ -338,7 +361,9 @@ def _extract_sources(response_text: str) -> list[str]:
     md_url_matches = re.findall(r"\[[^\]]+\]\((https?://[^)\s]+)\)", response_text)
     for url in md_url_matches:
         cleaned = url.rstrip(".,;:!?)")
-        if any(blocked in cleaned.lower() for blocked in {"example.com", "localhost"}):
+        if any(blocked in cleaned.lower() for blocked in {"example.com"}):
+            continue
+        if not _is_public_http_url(cleaned):
             continue
         sources.add(cleaned)
 

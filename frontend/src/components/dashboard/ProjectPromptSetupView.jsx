@@ -4,22 +4,24 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { ArrowLeft, CheckCircle2, Loader2, PlusCircle } from 'lucide-react';
 
 import { api } from '../../lib/api';
+import { SectionScaffold, StatePanel } from './ui/SectionScaffold';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
+import { Button } from '../ui/button';
+import { Textarea } from '../ui/textarea';
 
 const MAX_PROMPTS_PER_PROJECT = 10;
 
 function buildSuggestedPrompts(project) {
-  const brand = project?.name || 'our brand';
-  const industry = project?.category || 'our industry';
-  const region = project?.region || 'Global';
+  const categoryTokens = String(project?.category || 'software')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+  const category = categoryTokens.join(' ') || 'software';
 
   return [
-    `Best ${industry} tools in ${region}`,
-    `${brand} alternatives and competitors`,
-    `Is ${brand} good for small businesses?`,
-    `${brand} pricing and features comparison`,
-    `Top platforms for ${industry} teams`,
-    `${brand} reviews and user feedback`,
-    `How to choose the right ${industry} platform`,
+    `Which are the best ${category} options`,
+    `Recommended ${category} tools for teams like us`,
+    `Best ${category} options for tight budgets`,
   ];
 }
 
@@ -45,7 +47,7 @@ export default function ProjectPromptSetupView() {
     error: suggestedError,
   } = useQuery({
     queryKey: ['project-suggested-prompts', id, project?.website_url, project?.name, project?.category, project?.region],
-    queryFn: () => api.getSuggestedPrompts(id, 10),
+    queryFn: () => api.getSuggestedPrompts(id, 3),
     enabled: Boolean(id) && Boolean(project),
     staleTime: 5 * 60 * 1000,
     retry: 1,
@@ -122,29 +124,33 @@ export default function ProjectPromptSetupView() {
   }
 
   if (error || !project) {
-    return <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error?.message || 'Failed to load project details.'}</div>;
+    return <StatePanel variant="danger" title="Failed to load project details" description={error?.message || 'Please try again.'} />;
   }
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-xs font-semibold tracking-wide text-brand-primary">Project setup</p>
-          <h1 className="mt-1 text-2xl font-bold text-slate-900">Choose prompts for {project.name}</h1>
-          <p className="mt-1 text-sm text-slate-600">Pick suggested prompts, add your custom prompts, then continue to analysis.</p>
-        </div>
-        <Link to="/dashboard" className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50">
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Back
-        </Link>
-      </div>
+      <SectionScaffold
+        title={`Choose prompts for ${project.name}`}
+        description="Pick suggested prompts, add custom prompts, then continue to analysis."
+        actions={(
+          <Button variant="secondary" asChild>
+            <Link to="/dashboard">
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Back
+            </Link>
+          </Button>
+        )}
+      />
 
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-800">Suggested prompts</h2>
-        <p className="mt-1 text-xs text-slate-500">
-          Website-aware prompts generated from your site content and external search signals.
-          {suggestedPayload?.source ? ` Source: ${suggestedPayload.source}.` : ''}
-        </p>
+      <Card className="rounded-xl">
+        <CardHeader>
+          <CardTitle>Suggested prompts</CardTitle>
+          <CardDescription>
+            Suggestions use your website text, project category, and region when we can fetch them; they are not live web search results.
+            {suggestedPayload?.source ? ` Source: ${suggestedPayload.source}.` : ''}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
         {suggestedLoading ? (
           <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-slate-500">
             <Loader2 className="h-3.5 w-3.5 animate-spin text-brand-primary" />
@@ -180,25 +186,32 @@ export default function ProjectPromptSetupView() {
             );
           })}
         </div>
-      </div>
+        </CardContent>
+      </Card>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-800">Custom prompts</h2>
-        <p className="mt-1 text-xs text-slate-500">Add one prompt per line.</p>
-        <textarea
+      <Card className="rounded-xl">
+        <CardHeader>
+          <CardTitle>Custom prompts</CardTitle>
+          <CardDescription>Add one prompt per line.</CardDescription>
+        </CardHeader>
+        <CardContent>
+        <Textarea
           value={customPromptsInput}
           onChange={(event) => setCustomPromptsInput(event.target.value)}
           rows={5}
-          className="mt-3 w-full rounded-lg border border-slate-200 bg-[#f8fafc] px-3 py-2 text-sm text-slate-800 outline-none focus:border-brand-primary focus:bg-white focus:ring-2 focus:ring-brand-primary/15"
           placeholder={`How does ${project.name} compare to alternatives?\nBest ${project.category || 'industry'} options for teams`}
         />
-      </div>
+        </CardContent>
+      </Card>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-800">Review</h2>
-        <p className="mt-1 text-xs text-slate-500">
+      <Card className="rounded-xl">
+        <CardHeader>
+          <CardTitle>Review</CardTitle>
+          <CardDescription>
           {combinedPrompts.length} new prompts will be added ({totalAfterSave}/{MAX_PROMPTS_PER_PROJECT} total after saving).
-        </p>
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
 
         <ul className="mt-3 space-y-1.5">
           {combinedPrompts.map((item) => (
@@ -215,24 +228,20 @@ export default function ProjectPromptSetupView() {
         ) : null}
 
         <div className="mt-5 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => navigate(`/dashboard/project/${id}`)}
-            className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
-          >
+          <Button type="button" variant="secondary" onClick={() => navigate(`/dashboard/project/${id}`)}>
             Skip for now
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             disabled={savePromptsMutation.isPending || !canSave}
             onClick={() => savePromptsMutation.mutate(combinedPrompts)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-primary px-3 py-2 text-xs font-semibold text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {savePromptsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlusCircle className="h-3.5 w-3.5" />}
             Save prompts and continue
-          </button>
+          </Button>
         </div>
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

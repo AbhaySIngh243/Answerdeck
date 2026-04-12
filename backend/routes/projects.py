@@ -202,12 +202,6 @@ def get_project_suggested_prompts(project_id):
     if not project:
         raise NotFoundError("Project not found")
 
-    try:
-        max_prompts = int(request.args.get("max_prompts", 10))
-    except Exception:
-        max_prompts = 10
-    max_prompts = max(3, min(max_prompts, 20))
-
     payload = generate_project_prompt_suggestions(
         {
             "name": project.name,
@@ -216,6 +210,6 @@ def get_project_suggested_prompts(project_id):
             "website_url": project.website_url,
             "competitors": project.get_competitors_list(),
         },
-        max_prompts=max_prompts,
+        max_prompts=3,
     )
     return jsonify(payload)

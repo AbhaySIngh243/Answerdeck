@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react';
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
-import { chartTheme } from '../../lib/chartTheme';
+import { ResponsivePie } from '@nivo/pie';
 
 const SLICE_COLORS = [
   '#38bdf8',
@@ -15,14 +14,14 @@ const SLICE_COLORS = [
   '#a855f7',
 ];
 
-function SourcesTooltip({ active, payload }) {
-  if (!active || !payload?.length) return null;
-  const p = payload[0].payload;
+function SourcesTooltip({ datum }) {
+  const p = datum?.data;
+  if (!p) return null;
   const others = (p.aliases || []).filter((a) => a !== p.fullName);
   return (
-    <div style={chartTheme.tooltip.contentStyle}>
-      <p style={{ ...chartTheme.tooltip.labelStyle, marginBottom: 6 }}>{p.fullName}</p>
-      <p style={chartTheme.tooltip.itemStyle}>
+    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg">
+      <p className="mb-1 text-[11px] font-semibold text-slate-500">{p.fullName}</p>
+      <p className="text-xs font-semibold text-slate-800">
         {p.value} mentions · {p.pct}%
       </p>
       {others.length > 0 ? (
@@ -41,10 +40,12 @@ export default function SourcesPieChart({ data, maxItems = 10, className = '' })
   const { chartData, total } = useMemo(() => {
     const rows = (data || []).slice(0, maxItems);
     const sum = rows.reduce((s, d) => s + (Number(d.source_mentions) || 0), 0) || 1;
-    const chartDataInner = rows.map((d) => {
+      const chartDataInner = rows.map((d, index) => {
       const v = Number(d.source_mentions) || 0;
       const fullName = d.label || d.domain || 'Unknown';
       return {
+          id: fullName,
+          color: SLICE_COLORS[index % SLICE_COLORS.length],
         name: fullName,
         fullName,
         value: v,
@@ -67,27 +68,20 @@ export default function SourcesPieChart({ data, maxItems = 10, className = '' })
     <div className={`flex flex-col gap-4 ${className}`}>
       <div className="relative mx-auto w-full max-w-[320px]">
         <div className="aspect-square w-full max-h-[280px] min-h-[220px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
-              <Pie
-                data={chartData}
-                dataKey="value"
-                nameKey="name"
-                cx="50%"
-                cy="50%"
-                innerRadius="54%"
-                outerRadius="88%"
-                paddingAngle={1}
-                stroke="#ffffff"
-                strokeWidth={2}
-              >
-                {chartData.map((_, i) => (
-                  <Cell key={i} fill={SLICE_COLORS[i % SLICE_COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip content={<SourcesTooltip />} />
-            </PieChart>
-          </ResponsiveContainer>
+          <ResponsivePie
+            data={chartData}
+            margin={{ top: 10, right: 10, bottom: 10, left: 10 }}
+            innerRadius={0.6}
+            padAngle={0.7}
+            cornerRadius={4}
+            activeOuterRadiusOffset={5}
+            colors={(datum) => datum.data.color}
+            borderColor="#ffffff"
+            borderWidth={2}
+            enableArcLabels={false}
+            enableArcLinkLabels={false}
+            tooltip={SourcesTooltip}
+          />
         </div>
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center pb-1">
           <div className="text-center">

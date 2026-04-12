@@ -20,24 +20,14 @@ import {
   UserPlus,
   Zap,
 } from 'lucide-react';
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-  Area,
-  AreaChart,
-} from 'recharts';
 
 import { api } from '../../lib/api';
-import { chartTheme } from '../../lib/chartTheme';
 import { mergeSourcesByDomainKey } from '../../lib/mergeSources';
 import SourcesPieChart from './SourcesPieChart';
+import OverviewKpiGrid from './sections/OverviewKpiGrid';
+import PerformancePanel from './sections/PerformancePanel';
+import PromptPerformanceTable from './sections/PromptPerformanceTable';
+import CompetitorSnapshot from './sections/CompetitorSnapshot';
 
 const MAX_PROMPTS_PER_PROJECT = 10;
 
@@ -819,224 +809,36 @@ const ProjectDetailView = () => {
         </aside>
 
         <div className="space-y-5">
-      {/* ── Stat cards ── */}
-      {(() => {
-        const visibilityPct = Number(dashboard?.visibility_pct_current ?? dashboard?.current_visibility_score ?? 0);
-        const qualityScore = Number(dashboard?.quality_score_current ?? dashboard?.current_visibility_score ?? 0);
-        const qualityTrend = dashboard?.quality_score_trend || dashboard?.visibility_trend || [];
-        const prevQuality = qualityTrend.length >= 2 ? qualityTrend[qualityTrend.length - 2]?.score : null;
-        const qualityDeltaRaw = prevQuality != null ? qualityScore - prevQuality : null;
-        const qualityDelta = qualityDeltaRaw != null ? Math.round(qualityDeltaRaw * 10) / 10 : null;
-        const promptCount = prompts.length;
-        const engineCount = enabledEngines.length;
-        const competitorCount = (dashboard?.competitors || []).length;
-
-        const cards = [
-          { label: 'Visibility %', value: `${visibilityPct}%`, delta: null, deltaUp: true, sub: 'mention-rate across latest model runs' },
-          { label: 'Quality score', value: `${qualityScore}%`, delta: qualityDelta != null ? `${qualityDelta >= 0 ? '+' : ''}${qualityDelta}%` : null, deltaUp: qualityDelta >= 0, sub: 'rank + sentiment weighted score' },
-          { label: 'AI Engines', value: engineCount, delta: null, sub: `${competitorCount} competitors tracked` },
-          { label: 'Prompts', value: promptCount, delta: null, sub: promptCount > 0 ? 'active queries' : 'no queries yet' },
-        ];
-        return (
-          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-            {cards.map((c) => (
-              <div key={c.label} className={`${surf} border ${brd} rounded-xl px-4 py-4 flex flex-col justify-between gap-1`}>
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{c.label}</p>
-                  {c.label === 'AI Engines' && (
-                    <button
-                      onClick={() => runAllMutation.mutate(id)}
-                      disabled={runAllMutation.isPending || prompts.length === 0}
-                      className="inline-flex items-center gap-1 rounded-md bg-brand-primary px-2 py-1 text-[10px] font-semibold text-white hover:bg-blue-600 disabled:opacity-50"
-                    >
-                      {runAllMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <PlayCircle className="h-3 w-3" />}
-                      Run All
-                    </button>
-                  )}
-                </div>
-                <p className="text-2xl font-bold tabular-nums text-slate-900 tracking-tight">{c.value}</p>
-                <div className="flex items-center gap-2 mt-0.5">
-                  {c.delta != null && (
-                    <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${
-                      c.deltaUp ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'
-                    }`}>
-                      {c.deltaUp ? '↑' : '↓'} {c.delta}
-                    </span>
-                  )}
-                  <span className="text-[11px] text-slate-400 font-medium">{c.sub}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        );
-      })()}
+      <OverviewKpiGrid
+        dashboard={dashboard}
+        prompts={prompts}
+        enabledEngines={enabledEngines}
+        runAllMutation={runAllMutation}
+        projectId={id}
+      />
 
       {/* ===== DASHBOARD TAB ===== */}
       {activeSection === 'dashboard' && (
         <div className="space-y-5">
 
-          {/* ── Performance chart with toggle tabs ── */}
-          <section className={`rounded-xl border ${brd} ${surf} overflow-hidden`}>
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-3.5">
-              <h3 className="text-sm font-semibold text-slate-800">Performance</h3>
-              <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50/80 p-0.5">
-                {[
-                  { id: 'visibility', label: 'Quality Score' },
-                  { id: 'rankings', label: 'Rankings' },
-                  { id: 'engines', label: 'Engines' },
-                ].map((tab) => (
-                  <button
-                    key={tab.id}
-                    onClick={() => setDashChartMode(tab.id)}
-                    className={`rounded-md px-3 py-1.5 text-[11px] font-semibold transition-all ${
-                      dashChartMode === tab.id
-                        ? 'bg-white text-slate-800 shadow-sm ring-1 ring-slate-200'
-                        : 'text-slate-500 hover:text-slate-700'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="px-5 py-4">
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  {dashChartMode === 'visibility' ? (
-                    <AreaChart data={dashboard?.quality_score_trend || dashboard?.visibility_trend || []} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                      <defs>
-                        <linearGradient id="visAreaFill" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor={chartTheme.colors.accent} stopOpacity={0.15} />
-                          <stop offset="100%" stopColor={chartTheme.colors.accent} stopOpacity={0.01} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid {...chartTheme.grid} vertical={false} />
-                      <XAxis dataKey="date" tick={chartTheme.axisTick} axisLine={false} tickLine={false} dy={8} />
-                      <YAxis domain={[0, 100]} tick={chartTheme.axisTick} axisLine={false} tickLine={false} width={36} tickFormatter={(v) => `${v}%`} />
-                      <Tooltip contentStyle={chartTheme.tooltip.contentStyle} itemStyle={chartTheme.tooltip.itemStyle} labelStyle={chartTheme.tooltip.labelStyle} />
-                      <Area type="monotone" dataKey="score" stroke={chartTheme.colors.accent} strokeWidth={2.5} fill="url(#visAreaFill)" dot={false} activeDot={{ r: 4, strokeWidth: 0, fill: chartTheme.colors.accent }} name="Quality Score" />
-                    </AreaChart>
-                  ) : dashChartMode === 'rankings' ? (
-                    <AreaChart data={(promptAnalysis?.rows || []).slice(0, 12).map((r) => ({ name: r.prompt_text?.slice(0, 24) + (r.prompt_text?.length > 24 ? '…' : ''), rank: r.avg_rank, visibility: r.visibility_pct ?? r.visibility }))} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                      <defs>
-                        <linearGradient id="rankAreaFill" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor={chartTheme.colors.success} stopOpacity={0.15} />
-                          <stop offset="100%" stopColor={chartTheme.colors.success} stopOpacity={0.01} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid {...chartTheme.grid} vertical={false} />
-                      <XAxis dataKey="name" tick={{ ...chartTheme.axisTick, fontSize: 10 }} axisLine={false} tickLine={false} dy={8} interval={0} angle={-18} textAnchor="end" height={48} />
-                      <YAxis tick={chartTheme.axisTick} axisLine={false} tickLine={false} width={36} reversed domain={[1, 'auto']} />
-                      <Tooltip contentStyle={chartTheme.tooltip.contentStyle} itemStyle={chartTheme.tooltip.itemStyle} labelStyle={chartTheme.tooltip.labelStyle} />
-                      <Area type="monotone" dataKey="rank" stroke={chartTheme.colors.success} strokeWidth={2.5} fill="url(#rankAreaFill)" dot={{ r: 3, fill: chartTheme.colors.success, strokeWidth: 0 }} name="Avg Rank" />
-                    </AreaChart>
-                  ) : (
-                    <BarChart data={(dashboard?.competitors || []).slice(0, 10)} layout="vertical" margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
-                      <CartesianGrid {...chartTheme.grid} horizontal={false} />
-                      <XAxis type="number" tick={chartTheme.axisTick} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}%`} />
-                      <YAxis dataKey="brand" type="category" tick={{ ...chartTheme.axisTick, fontSize: 11, fontWeight: 600 }} width={96} axisLine={false} tickLine={false} tickFormatter={(v) => v?.length > 14 ? v.slice(0, 13) + '…' : v} />
-                      <Tooltip contentStyle={chartTheme.tooltip.contentStyle} itemStyle={chartTheme.tooltip.itemStyle} labelStyle={chartTheme.tooltip.labelStyle} />
-                      <Bar dataKey="visibility_pct" fill={chartTheme.colors.accent} radius={chartTheme.barRadiusHorizontal} barSize={16} name="Visibility %" />
-                    </BarChart>
-                  )}
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </section>
+          <PerformancePanel
+            mode={dashChartMode}
+            onModeChange={setDashChartMode}
+            dashboard={dashboard}
+            promptAnalysisRows={promptAnalysis?.rows || []}
+          />
 
           {/* ── Two-column: Prompt Performance + Competitor Quick View ── */}
           <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.3fr_1fr]">
-            {/* Prompt Performance Table */}
-            <section className={`${surf} border ${brd} rounded-xl overflow-hidden`}>
-              <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
-                <p className="text-sm font-semibold text-slate-700">Prompt Performance</p>
-                <button onClick={() => setActiveSection('prompts')} className="text-xs font-medium text-brand-primary hover:underline">View all</button>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-[13px]">
-                  <thead>
-                    <tr className="border-b border-slate-100 text-slate-400">
-                      <th className="text-left py-2.5 px-5 font-medium text-[11px] uppercase tracking-wider">Prompt</th>
-                      <th className="text-right py-2.5 px-4 font-medium text-[11px] uppercase tracking-wider">Visibility</th>
-                      <th className="text-right py-2.5 px-4 font-medium text-[11px] uppercase tracking-wider">Quality</th>
-                      <th className="text-right py-2.5 px-4 font-medium text-[11px] uppercase tracking-wider">Avg Rank</th>
-                      <th className="text-center py-2.5 px-4 font-medium text-[11px] uppercase tracking-wider">Sentiment</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {promptAnalysisLoading
-                      ? Array.from({ length: 5 }).map((_, idx) => (
-                          <tr key={`sk-${idx}`}>
-                            <td className="py-3 px-5"><div className="h-3 w-52 rounded bg-slate-100 animate-pulse" /></td>
-                            <td className="py-3 px-4 text-right"><div className="h-5 w-14 rounded bg-slate-100 animate-pulse inline-block" /></td>
-                            <td className="py-3 px-4 text-right"><div className="h-3 w-10 rounded bg-slate-100 animate-pulse inline-block" /></td>
-                            <td className="py-3 px-4 text-right"><div className="h-3 w-10 rounded bg-slate-100 animate-pulse inline-block" /></td>
-                            <td className="py-3 px-4 text-center"><div className="h-5 w-16 rounded bg-slate-100 animate-pulse inline-block" /></td>
-                          </tr>
-                        ))
-                      : (promptAnalysis?.rows || []).slice(0, 8).map((row) => (
-                          <tr key={row.prompt_id} className="hover:bg-slate-50/60 transition-colors">
-                            <td className="py-3 px-5 font-medium text-slate-800 truncate max-w-[260px]">{row.prompt_text}</td>
-                            <td className="py-3 px-4 text-right">
-                              <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums ${(row.visibility_pct ?? row.visibility) > 70 ? 'bg-emerald-50 text-emerald-600' : (row.visibility_pct ?? row.visibility) > 40 ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-500'}`}>
-                                {row.visibility_pct ?? row.visibility}%
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-right text-slate-500 tabular-nums font-medium">{row.quality_score ?? '-'}</td>
-                            <td className="py-3 px-4 text-right text-slate-500 tabular-nums font-medium">{row.avg_rank ?? '-'}</td>
-                            <td className="py-3 px-4 text-center">
-                              <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium capitalize ${
-                                row.sentiment === 'positive' ? 'bg-blue-50 text-blue-600'
-                                  : row.sentiment === 'negative' ? 'bg-red-50 text-red-600'
-                                  : 'bg-slate-50 text-slate-500'
-                              }`}>
-                                {row.sentiment}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            {/* Competitor Quick View */}
-            <section className={`${surf} border ${brd} rounded-xl overflow-hidden`}>
-              <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
-                <p className="text-sm font-semibold text-slate-700">Competitor Snapshot</p>
-                <button onClick={() => setActiveSection('competitors')} className="text-xs font-medium text-brand-primary hover:underline">View all</button>
-              </div>
-              <div className="divide-y divide-slate-100">
-                {(dashboard?.competitors || []).length === 0 ? (
-                  <p className="px-5 py-8 text-center text-sm text-slate-400">No competitor data yet. Run an analysis to populate.</p>
-                ) : (
-                  (dashboard?.competitors || []).slice(0, 6).map((c, idx) => {
-                    const vis = c.visibility_pct ?? 0;
-                    return (
-                      <div key={c.brand || idx} className="flex items-center gap-4 px-5 py-3 hover:bg-slate-50/60 transition-colors">
-                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[11px] font-bold text-slate-500">
-                          {idx + 1}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[13px] font-semibold text-slate-800">{c.brand}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="hidden w-24 sm:block">
-                            <div className="h-1.5 w-full rounded-full bg-slate-100">
-                              <div
-                                className="h-1.5 rounded-full bg-brand-primary transition-all"
-                                style={{ width: `${Math.min(100, vis)}%` }}
-                              />
-                            </div>
-                          </div>
-                          <span className="min-w-[3rem] text-right text-xs font-bold tabular-nums text-slate-700">{vis}%</span>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </section>
+            <PromptPerformanceTable
+              loading={promptAnalysisLoading}
+              rows={promptAnalysis?.rows || []}
+              onViewAll={() => setActiveSection('prompts')}
+            />
+            <CompetitorSnapshot
+              competitors={dashboard?.competitors || []}
+              onViewAll={() => setActiveSection('competitors')}
+            />
           </div>
 
           {/* ── Executive Intelligence Summary ── */}
