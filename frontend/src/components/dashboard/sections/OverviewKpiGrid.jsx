@@ -1,11 +1,27 @@
 import React from 'react';
-import { Loader2, PlayCircle } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Eye, Gauge, Cpu, MessageSquare, Loader2, PlayCircle } from 'lucide-react';
 import { Button } from '../../ui/button';
 import { MetricTile } from '../ui/MetricTile';
 
-export default function OverviewKpiGrid({ dashboard, prompts, enabledEngines, runAllMutation, projectId }) {
-  const visibilityPct = Number(dashboard?.visibility_pct_current ?? dashboard?.current_visibility_score ?? 0);
-  const qualityScore = Number(dashboard?.quality_score_current ?? dashboard?.current_visibility_score ?? 0);
+const container = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1, transition: { staggerChildren: 0.08 } },
+};
+
+export default function OverviewKpiGrid({
+  dashboard,
+  prompts,
+  enabledEngines,
+  runAllMutation,
+  projectId,
+}) {
+  const visibilityPct = Number(
+    dashboard?.visibility_pct_current ?? dashboard?.current_visibility_score ?? 0
+  );
+  const qualityScore = Number(
+    dashboard?.quality_score_current ?? dashboard?.current_visibility_score ?? 0
+  );
   const qualityTrend = dashboard?.quality_score_trend || dashboard?.visibility_trend || [];
   const prevQuality = qualityTrend.length >= 2 ? qualityTrend[qualityTrend.length - 2]?.score : null;
   const qualityDeltaRaw = prevQuality != null ? qualityScore - prevQuality : null;
@@ -15,20 +31,14 @@ export default function OverviewKpiGrid({ dashboard, prompts, enabledEngines, ru
   const competitorCount = (dashboard?.competitors || []).length;
 
   const cards = [
-    { label: 'Visibility %', value: `${visibilityPct}%`, delta: null, deltaUp: true, sub: 'mention-rate across latest model runs' },
-    {
-      label: 'Quality score',
-      value: `${qualityScore}%`,
-      delta: qualityDelta != null ? `${qualityDelta >= 0 ? '+' : ''}${qualityDelta}%` : null,
-      deltaUp: qualityDelta >= 0,
-      sub: 'rank + sentiment weighted score',
-    },
-    { label: 'AI Engines', value: engineCount, delta: null, sub: `${competitorCount} competitors tracked` },
-    { label: 'Prompts', value: promptCount, delta: null, sub: promptCount > 0 ? 'active queries' : 'no queries yet' },
+    { label: 'Visibility', value: `${visibilityPct}%`, delta: null, deltaUp: true, sub: 'across latest runs', icon: Eye, accent: 'blue' },
+    { label: 'Quality Score', value: `${qualityScore}%`, delta: qualityDelta != null ? `${qualityDelta >= 0 ? '+' : ''}${qualityDelta}%` : null, deltaUp: qualityDelta >= 0, sub: 'rank + sentiment', icon: Gauge, accent: 'green' },
+    { label: 'AI Engines', value: engineCount, delta: null, sub: `${competitorCount} competitors`, icon: Cpu, accent: 'purple' },
+    { label: 'Prompts', value: promptCount, delta: null, sub: promptCount > 0 ? 'active queries' : 'none yet', icon: MessageSquare, accent: 'amber' },
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+    <motion.div variants={container} initial="hidden" animate="visible" className="grid grid-cols-2 gap-4 xl:grid-cols-4">
       {cards.map((c) => (
         <MetricTile
           key={c.label}
@@ -37,6 +47,8 @@ export default function OverviewKpiGrid({ dashboard, prompts, enabledEngines, ru
           delta={c.delta}
           deltaUp={c.deltaUp}
           sub={c.sub}
+          icon={c.icon}
+          accent={c.accent}
           actions={
             c.label === 'AI Engines' ? (
               <Button
@@ -51,6 +63,6 @@ export default function OverviewKpiGrid({ dashboard, prompts, enabledEngines, ru
           }
         />
       ))}
-    </div>
+    </motion.div>
   );
 }

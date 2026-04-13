@@ -571,7 +571,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
                 seen_urls.add(valid_url)
 
         ui_sources.append({
-            "domain": domain + (" (Target Data Source)" if len(r_items) > 0 else ""),
+            "domain": domain + (" (Research Source)" if len(r_items) > 0 else ""),
             "mentions": count,
             "links": mapped_links[:20],
             "is_target": len(r_items) > 0
@@ -589,7 +589,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
                 })
 
         ui_sources.append({
-            "domain": (items[0].get("domain") or "Target Source") + " (Target Data Source)",
+            "domain": (items[0].get("domain") or "Research Source") + " (Research Source)",
             "mentions": 0,
             "links": mapped_links,
             "is_target": True
@@ -813,9 +813,8 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
 
     rows.sort(
         key=lambda item: (
-            not item["is_focus"],
-            not item["is_target_competitor"],
             -item["quality_score"],
+            -item["visibility_pct"],
             item["brand"].lower(),
         )
     )
@@ -964,12 +963,14 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
                 summary["not_mentioned"] += 1
 
             for source in sources:
-                normalized = source.strip()
+                normalized = _normalize_source_url(source)
                 if not normalized:
                     continue
-                summary["sources"][normalized] += 1
-                source_by_llm[response.engine][normalized] += 1
-                source_global[normalized] += 1
+                domain = _domain_from_url(normalized)
+                source_key = domain or normalized
+                summary["sources"][source_key] += 1
+                source_by_llm[response.engine][source_key] += 1
+                source_global[source_key] += 1
 
         prompt_rows.append(
             {
@@ -1240,7 +1241,7 @@ def export_project_csv(project_id):
     output = io.StringIO()
     writer = csv.writer(output)
 
-    writer.writerow(["RankLore AI Visibility Report"])
+    writer.writerow(["Answrdeck AI Visibility Report"])
     writer.writerow(["Project", payload["project"]["name"]])
     writer.writerow(["Generated At", payload["updated_at"]])
     writer.writerow(["Current Visibility Score", payload["current_visibility_score"]])
@@ -1263,7 +1264,7 @@ def export_project_csv(project_id):
     return FlaskResponse(
         content,
         mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=ranklore_project_{project_id}.csv"},
+        headers={"Content-Disposition": f"attachment; filename=answrdeck_project_{project_id}.csv"},
     )
 
 
@@ -1279,7 +1280,7 @@ def export_project_pdf(project_id):
     except Exception:
         # Fallback to plain text when reportlab is unavailable.
         text = (
-            f"RankLore AI Visibility Report\n"
+            f"Answrdeck AI Visibility Report\n"
             f"Project: {payload['project']['name']}\n"
             f"Current Score: {payload['current_visibility_score']}\n"
             f"Generated: {payload['updated_at']}\n"
@@ -1287,7 +1288,7 @@ def export_project_pdf(project_id):
         return FlaskResponse(
             text,
             mimetype="text/plain",
-            headers={"Content-Disposition": f"attachment; filename=ranklore_project_{project_id}.txt"},
+            headers={"Content-Disposition": f"attachment; filename=answrdeck_project_{project_id}.txt"},
         )
 
     buffer = io.BytesIO()
@@ -1303,9 +1304,9 @@ def export_project_pdf(project_id):
         pdf.drawString(40, y, line[:120])
         y -= offset
 
-    pdf.setTitle(f"RankLore Report - {payload['project']['name']}")
+    pdf.setTitle(f"Answrdeck Report - {payload['project']['name']}")
     pdf.setFont("Helvetica-Bold", 14)
-    write_line("RankLore AI Visibility Report", 22)
+    write_line("Answrdeck AI Visibility Report", 22)
     pdf.setFont("Helvetica", 11)
     write_line(f"Project: {payload['project']['name']}")
     write_line(f"Current Visibility Score: {payload['current_visibility_score']}")
@@ -1338,7 +1339,7 @@ def export_project_pdf(project_id):
     return FlaskResponse(
         buffer.getvalue(),
         mimetype="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=ranklore_project_{project_id}.pdf"},
+        headers={"Content-Disposition": f"attachment; filename=answrdeck_project_{project_id}.pdf"},
     )
 
 
@@ -1410,38 +1411,34 @@ def sources_intelligence(project_id):
     _get_project_for_user(project_id)
 
     prompts = Prompt.query.filter_by(project_id=project_id).all()
-    prompt_ids = [p.id for p in prompts]
-    responses = Response.query.filter(Response.prompt_id.in_(prompt_ids)).all() if prompt_ids else []
 
     domain_count: dict[str, int] = defaultdict(int)
     urls_by_domain: dict[str, list[str]] = defaultdict(list)
     mentions_by_domain: dict[str, int] = defaultdict(int)
 
-    for response in responses:
-        if not _is_analysis_engine(response.engine):
-            continue
-        sources = _parse_sources(response.sources)
-        for source in sources:
-            normalized_source = _normalize_source_url(source)
-            if not normalized_source:
+    for prompt in prompts:
+        latest_responses = _latest_responses_by_prompt(prompt.id)
+        for response in latest_responses:
+            if response.response_text and response.response_text.startswith("[") and "error:" in response.response_text.lower()[:80]:
                 continue
-            domain = _domain_from_url(normalized_source)
-            if not domain:
-                continue
-            domain_count[domain] += 1
-            if len(urls_by_domain[domain]) < 20:
-                if normalized_source not in urls_by_domain[domain]:
-                    urls_by_domain[domain].append(normalized_source)
+            sources = _parse_sources(response.sources)
+            domains_seen_this_response: set[str] = set()
+            for source in sources:
+                normalized_source = _normalize_source_url(source)
+                if not normalized_source:
+                    continue
+                domain = _domain_from_url(normalized_source)
+                if not domain:
+                    continue
+                domain_count[domain] += 1
+                if len(urls_by_domain[domain]) < 20:
+                    if normalized_source not in urls_by_domain[domain]:
+                        urls_by_domain[domain].append(normalized_source)
+                domains_seen_this_response.add(domain)
 
-        mention_count = Mention.query.filter_by(response_id=response.id).count()
-        for source in sources:
-            normalized_source = _normalize_source_url(source)
-            if not normalized_source:
-                continue
-            domain = _domain_from_url(normalized_source)
-            if not domain:
-                continue
-            mentions_by_domain[domain] += mention_count
+            mention_count = Mention.query.filter_by(response_id=response.id).count()
+            for domain in domains_seen_this_response:
+                mentions_by_domain[domain] += mention_count
 
     domains = []
     for domain, count in sorted(domain_count.items(), key=lambda item: item[1], reverse=True):
@@ -1468,13 +1465,13 @@ def competitor_table(project_id):
         table.append(
             {
                 "brand": item["brand"],
-                "market_share": round((item["visibility_pct"] / total) * 100, 2),
+                "ai_share": round((item["visibility_pct"] / total) * 100, 2),
                 "visibility_pct": item["visibility_pct"],
                 "quality_score": item["quality_score"],
                 "visibility": item["visibility_pct"],  # Backward compatibility
                 "avg_rank": item["avg_rank"],
                 "mentions": item["mentions"],
-                "sentiment_proxy": max(0, min(100, round(100 - ((item["avg_rank"] or 10) * 8), 1))),
+                "rank_score": max(0, min(100, round(100 - ((item["avg_rank"] or 10) * 8), 1))),
                 "is_focus": item["is_focus"],
                 "is_target_competitor": item.get("is_target_competitor", False),
             }

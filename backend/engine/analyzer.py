@@ -265,10 +265,11 @@ def _sanitize_audit_items(
             continue
         seen.add(key)
 
+        notes = []
         if focus_brand_text and focus_brand_text.lower() not in solution.lower():
-            solution = f"{solution.rstrip('.')} Ensure {focus_brand_text} is named explicitly."
+            notes.append(f"Ensure {focus_brand_text} is named explicitly in your implementation.")
         if query_text and query_text.lower() not in (root_cause + " " + solution).lower():
-            solution = f'{solution.rstrip(".")} Align to the exact prompt intent "{query_text}".'
+            notes.append(f'Align to the exact prompt intent "{query_text}".')
 
         item = {
             "title": title,
@@ -277,6 +278,8 @@ def _sanitize_audit_items(
             "avoid": avoid,
             "priority": _normalize_priority(row.get("priority"), default_priority),
         }
+        if notes:
+            item["note"] = " ".join(notes)
         if evidence:
             item["evidence"] = evidence
         cleaned.append(item)
@@ -307,17 +310,26 @@ def _sanitize_action_items(raw_items: Any, focus_brand: str, default_priority: s
             continue
         seen.add(key)
 
+        note = ""
         if focus and focus.lower() not in detail.lower():
-            detail = f"{detail.rstrip('.')} Apply this directly to {focus}."
+            note = f"Apply this directly to {focus}."
 
         item = {
             "title": title,
             "detail": detail,
             "priority": _normalize_priority(row.get("priority"), default_priority),
         }
-        link = str(row.get("link") or row.get("url") or "").strip()
-        if link:
-            item["link"] = link
+        if note:
+            item["note"] = note
+        link = str(row.get("link") or row.get("url") or "").strip().rstrip(".,;:!?)")
+        if link and (link.startswith("http://") or link.startswith("https://")):
+            try:
+                parsed_link = urlparse(link)
+                host = (parsed_link.hostname or "").strip().lower()
+                if host and host not in {"localhost", "example.com"} and not host.endswith(".local") and "." in host:
+                    item["link"] = link
+            except Exception:
+                pass
         cleaned.append(item)
 
     cleaned = _rebalance_priority_spread(cleaned)
@@ -726,11 +738,11 @@ def _brand_matches_alias(brand: str, aliases: list[str]) -> bool:
             continue
         if brand_canonical == alias_canonical:
             return True
-        # Handle slight variations like "answerdeck ai" vs "answerdeck".
-        if len(alias_canonical) >= 5 and (
-            brand_canonical.startswith(alias_canonical) or alias_canonical.startswith(brand_canonical)
-        ):
-            return True
+        shorter = min(brand_canonical, alias_canonical, key=len)
+        longer = max(brand_canonical, alias_canonical, key=len)
+        if len(shorter) >= 5 and longer.startswith(shorter):
+            if len(shorter) / len(longer) >= 0.65:
+                return True
     return False
 
 
@@ -920,7 +932,12 @@ def analyze_single_response(
     competitor_brands: list[str] | None = None,
     focus_brand_aliases: list[str] | None = None,
 ) -> dict[str, Any]:
-    if not response_text or response_text.startswith("["):
+    if not response_text:
+        return _empty_analysis()
+    text_lower_head = response_text[:100].lower()
+    if response_text.startswith("[") and ("error:" in text_lower_head or "error]" in text_lower_head):
+        return _empty_analysis()
+    if len(response_text.strip()) < 20:
         return _empty_analysis()
 
     competitors = competitor_brands or []
@@ -976,7 +993,7 @@ def build_competitor_comparison(analyses: dict[str, Any], focus_brand: str) -> l
                     "total_models": len(analyses),
                     "ranks": [],
                     "sentiments": [],
-                    "is_focus": key == focus_brand.strip().lower(),
+                    "is_focus": _brand_matches_alias(brand_name, [focus_brand]),
                 }
             
             row = brand_data[key]

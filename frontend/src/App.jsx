@@ -8,6 +8,7 @@ import LoginPage from './components/auth/LoginPage';
 import SignupPage from './components/auth/SignupPage';
 import LandingPage from './components/LandingPage';
 import DashboardLayout from './components/dashboard/DashboardLayout';
+import DashboardHome from './components/dashboard/DashboardHome';
 import ProjectsView from './components/dashboard/ProjectsView';
 import ProjectDetailView from './components/dashboard/ProjectDetailView';
 import ProjectPromptSetupView from './components/dashboard/ProjectPromptSetupView';
@@ -73,7 +74,8 @@ function AppRoutes() {
         <Route path="/login/*" element={<LoginPage />} />
         <Route path="/signup/*" element={<SignupPage />} />
         <Route path="/dashboard" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
-          <Route index element={<ProjectsView />} />
+          <Route index element={<DashboardHome />} />
+          <Route path="projects" element={<ProjectsView />} />
           <Route path="project/:id" element={<ProjectDetailView />} />
           <Route path="project/:id/prompts/setup" element={<ProjectPromptSetupView />} />
           <Route path="reports" element={<ReportsView />} />
