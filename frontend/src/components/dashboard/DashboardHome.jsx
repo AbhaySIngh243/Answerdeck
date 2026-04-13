@@ -11,14 +11,15 @@ import {
   Plus,
   FileText,
   Globe,
+  Search,
+  MessageSquare,
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { getDomainFromWebsiteUrl } from '../../lib/url';
 import DashboardCard from './DashboardCard';
 import StatsCard from './StatsCard';
-import ActivityFeed from './ActivityFeed';
-import { SkeletonStats, SkeletonCard } from './LoadingSkeleton';
+import { SkeletonStats } from './LoadingSkeleton';
 import { Button } from '../ui/button';
 
 function clerkDisplayName(u) {
@@ -40,6 +41,11 @@ const item = {
   visible: { opacity: 1, y: 0 },
 };
 
+const promptItem = {
+  hidden: { opacity: 0, x: -8 },
+  visible: { opacity: 1, x: 0 },
+};
+
 const DashboardHome = () => {
   const { user, loading: authLoading, isSignedIn } = useAuth();
   const navigate = useNavigate();
@@ -59,6 +65,15 @@ const DashboardHome = () => {
     staleTime: 30_000,
   });
 
+  const latestProject = projects.length > 0 ? projects[0] : null;
+
+  const { data: latestPrompts = [], isLoading: promptsLoading } = useQuery({
+    queryKey: ['prompts', latestProject?.id],
+    queryFn: () => api.getPrompts(latestProject.id),
+    enabled: Boolean(latestProject?.id),
+    staleTime: 30_000,
+  });
+
   const overviewProjects = overviewData?.projects || [];
 
   const totalPrompts = overviewProjects.reduce(
@@ -74,16 +89,6 @@ const DashboardHome = () => {
           ) / overviewProjects.length
         )
       : 0;
-
-  const activityItems = useMemo(() => {
-    return projects.slice(0, 6).map((p) => ({
-      id: p.id,
-      title: p.name,
-      description: `${p.category || 'Project'} · ${p.region || 'Global'}`,
-      type: 'project',
-      timestamp: p.updated_at || p.created_at,
-    }));
-  }, [projects]);
 
   const greeting = displayName
     ? `Welcome back, ${displayName.split(' ')[0]}`
@@ -162,21 +167,31 @@ const DashboardHome = () => {
 
       {/* Main content grid */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
-        {/* Your Projects */}
+        {/* Latest Prompts from most recent project */}
         <motion.div variants={item}>
           <DashboardCard
-            title="Your Projects"
-            icon={FolderKanban}
+            title={latestProject ? `Prompts — ${latestProject.name}` : 'Latest Prompts'}
+            icon={Search}
             headerAction={
-              <Link
-                to="/dashboard/projects"
-                className="text-xs font-medium text-brand-primary hover:underline"
-              >
-                View all
-              </Link>
+              latestProject ? (
+                <Link
+                  to={`/dashboard/project/${latestProject.id}`}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-brand-primary hover:underline"
+                >
+                  Open project <ArrowRight className="h-3 w-3" />
+                </Link>
+              ) : null
             }
           >
-            {projectsLoading ? (
+            {!latestProject ? (
+              <div className="flex flex-col items-center py-8 text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-50 text-slate-300">
+                  <MessageSquare className="h-6 w-6" />
+                </div>
+                <p className="text-sm font-medium text-slate-400">No projects yet</p>
+                <p className="mt-0.5 text-xs text-slate-400">Create a project to start tracking prompts</p>
+              </div>
+            ) : promptsLoading ? (
               <div className="space-y-3">
                 {Array.from({ length: 4 }).map((_, i) => (
                   <div key={i} className="flex items-center gap-3 animate-pulse">
@@ -188,11 +203,62 @@ const DashboardHome = () => {
                   </div>
                 ))}
               </div>
+            ) : latestPrompts.length === 0 ? (
+              <div className="flex flex-col items-center py-8 text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-primary/10 text-brand-primary">
+                  <Search className="h-6 w-6" />
+                </div>
+                <p className="text-sm font-medium text-slate-400">No prompts yet</p>
+                <p className="mt-0.5 text-xs text-slate-400">Add prompts to start tracking AI visibility</p>
+                <Link
+                  to={`/dashboard/project/${latestProject.id}`}
+                  className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-brand-primary hover:underline"
+                >
+                  Go to project <ArrowRight className="h-3 w-3" />
+                </Link>
+              </div>
             ) : (
-              <ActivityFeed
-                items={activityItems}
-                emptyMessage="No projects yet. Create your first project to get started."
-              />
+              <motion.div
+                initial="hidden"
+                animate="visible"
+                variants={{ visible: { transition: { staggerChildren: 0.05 } } }}
+                className="space-y-1"
+              >
+                {latestPrompts.slice(0, 6).map((prompt, idx) => (
+                  <motion.div
+                    key={prompt.id}
+                    variants={promptItem}
+                    className="group flex items-start gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-slate-50/80"
+                  >
+                    <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-brand-primary/8 text-[10px] font-bold text-brand-primary">
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-slate-700 group-hover:text-slate-900">
+                        {prompt.prompt_text}
+                      </p>
+                      <div className="mt-1 flex items-center gap-2">
+                        {prompt.country && (
+                          <span className="text-[10px] text-slate-400">{prompt.country}</span>
+                        )}
+                        {(prompt.tags || []).slice(0, 2).map((tag) => (
+                          <span key={tag} className="rounded-full bg-brand-primary/8 px-1.5 py-0.5 text-[9px] font-medium text-brand-primary">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </motion.div>
+                ))}
+                {latestPrompts.length > 6 && (
+                  <Link
+                    to={`/dashboard/project/${latestProject.id}`}
+                    className="block px-3 pt-1 text-xs font-medium text-slate-400 hover:text-brand-primary"
+                  >
+                    +{latestPrompts.length - 6} more prompts
+                  </Link>
+                )}
+              </motion.div>
             )}
           </DashboardCard>
         </motion.div>
@@ -210,12 +276,8 @@ const DashboardHome = () => {
                   <Plus className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-slate-800">
-                    Create New Project
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Start monitoring a brand
-                  </p>
+                  <p className="text-sm font-semibold text-slate-800">Create New Project</p>
+                  <p className="text-xs text-slate-400">Start monitoring a brand</p>
                 </div>
                 <ArrowRight className="h-4 w-4 text-slate-300 transition-transform group-hover:translate-x-0.5 group-hover:text-brand-primary" />
               </button>
@@ -229,12 +291,8 @@ const DashboardHome = () => {
                   <BarChart3 className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-slate-800">
-                    View Reports
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Export CSV and PDF reports
-                  </p>
+                  <p className="text-sm font-semibold text-slate-800">View Reports</p>
+                  <p className="text-xs text-slate-400">Export CSV and PDF reports</p>
                 </div>
                 <ArrowRight className="h-4 w-4 text-slate-300 transition-transform group-hover:translate-x-0.5 group-hover:text-amber-500" />
               </button>
@@ -248,12 +306,8 @@ const DashboardHome = () => {
                   <Globe className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-slate-800">
-                    Settings
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Configure workspace defaults
-                  </p>
+                  <p className="text-sm font-semibold text-slate-800">Settings</p>
+                  <p className="text-xs text-slate-400">Configure workspace defaults</p>
                 </div>
                 <ArrowRight className="h-4 w-4 text-slate-300 transition-transform group-hover:translate-x-0.5 group-hover:text-violet-500" />
               </button>
@@ -262,7 +316,7 @@ const DashboardHome = () => {
         </motion.div>
       </div>
 
-      {/* Projects mini-grid */}
+      {/* Projects grid */}
       {projects.length > 0 && (
         <motion.div variants={item}>
           <DashboardCard
