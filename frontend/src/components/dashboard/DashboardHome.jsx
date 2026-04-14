@@ -237,16 +237,6 @@ const DashboardHome = () => {
                       <p className="truncate text-sm font-medium text-slate-700 group-hover:text-slate-900">
                         {prompt.prompt_text}
                       </p>
-                      <div className="mt-1 flex items-center gap-2">
-                        {prompt.country && (
-                          <span className="text-[10px] text-slate-400">{prompt.country}</span>
-                        )}
-                        {(prompt.tags || []).slice(0, 2).map((tag) => (
-                          <span key={tag} className="rounded-full bg-brand-primary/8 px-1.5 py-0.5 text-[9px] font-medium text-brand-primary">
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
                     </div>
                   </motion.div>
                 ))}

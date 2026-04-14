@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Eye, Gauge, Cpu, MessageSquare, Loader2, PlayCircle } from 'lucide-react';
+import { Eye, Gauge, Cpu, MessageSquare, Loader2, PlayCircle, Link2 } from 'lucide-react';
 import { Button } from '../../ui/button';
 import { MetricTile } from '../ui/MetricTile';
 
@@ -29,16 +29,27 @@ export default function OverviewKpiGrid({
   const promptCount = prompts.length;
   const engineCount = enabledEngines.length;
   const competitorCount = (dashboard?.competitors || []).length;
+  const hasWebsite = Boolean(dashboard?.project?.website_url?.trim());
+  const siteCitedPct = Number(dashboard?.official_site_cited_pct ?? 0);
 
   const cards = [
-    { label: 'Visibility', value: `${visibilityPct}%`, delta: null, deltaUp: true, sub: 'across latest runs', icon: Eye, accent: 'blue' },
+    { label: 'Answer visibility', value: `${visibilityPct}%`, delta: null, deltaUp: true, sub: 'brand in model answers', icon: Eye, accent: 'blue' },
+    {
+      label: 'Site in citations',
+      value: hasWebsite ? `${siteCitedPct}%` : '—',
+      delta: null,
+      deltaUp: true,
+      sub: hasWebsite ? 'URLs on your domain' : 'add project website',
+      icon: Link2,
+      accent: 'amber',
+    },
     { label: 'Quality Score', value: `${qualityScore}%`, delta: qualityDelta != null ? `${qualityDelta >= 0 ? '+' : ''}${qualityDelta}%` : null, deltaUp: qualityDelta >= 0, sub: 'rank + sentiment', icon: Gauge, accent: 'green' },
     { label: 'AI Engines', value: engineCount, delta: null, sub: `${competitorCount} competitors`, icon: Cpu, accent: 'purple' },
     { label: 'Prompts', value: promptCount, delta: null, sub: promptCount > 0 ? 'active queries' : 'none yet', icon: MessageSquare, accent: 'amber' },
   ];
 
   return (
-    <motion.div variants={container} initial="hidden" animate="visible" className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+    <motion.div variants={container} initial="hidden" animate="visible" className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-5">
       {cards.map((c) => (
         <MetricTile
           key={c.label}

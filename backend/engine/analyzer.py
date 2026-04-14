@@ -750,12 +750,50 @@ def is_focus_brand_match(brand: str, aliases: list[str]) -> bool:
     return _brand_matches_alias(brand, aliases)
 
 
+# First hostname labels that are poor brand proxies (often create false focus matches).
+_GENERIC_HOSTNAME_LABELS = frozenset(
+    {
+        "www",
+        "app",
+        "apps",
+        "api",
+        "cdn",
+        "static",
+        "assets",
+        "img",
+        "images",
+        "mail",
+        "email",
+        "shop",
+        "store",
+        "blog",
+        "news",
+        "support",
+        "help",
+        "docs",
+        "status",
+        "dev",
+        "staging",
+        "m",
+        "mobile",
+    }
+)
+
+
 def build_focus_brand_aliases(focus_brand: str, website_url: str = "") -> list[str]:
+    """Derive matching strings for the focus brand: display name plus stable URL host forms.
+
+    The full hostname (e.g. brand.com) is always included when valid. The first DNS label
+    alone (e.g. app from app.brand.com) is skipped when it is short, generic, or already
+    covered by the project name — those cases caused spurious focus matches.
+    """
     aliases: list[str] = []
     for value in (focus_brand,):
         raw = (value or "").strip()
         if raw:
             aliases.append(raw)
+
+    focus_key = _canonical_brand(focus_brand)
 
     url = (website_url or "").strip()
     if url:
@@ -766,13 +804,20 @@ def build_focus_brand_aliases(focus_brand: str, website_url: str = "") -> list[s
             if host:
                 aliases.append(host)
                 root = host.split(".")[0]
-                if root:
+                root_key = _canonical_brand(root)
+                include_root = (
+                    root
+                    and root_key != focus_key
+                    and len(root_key) >= 4
+                    and root not in _GENERIC_HOSTNAME_LABELS
+                )
+                if include_root:
                     aliases.append(root)
         except Exception:
             pass
 
     # Keep original ordering but remove duplicates.
-    seen = set()
+    seen: set[str] = set()
     out: list[str] = []
     for item in aliases:
         key = _canonical_brand(item)
@@ -781,6 +826,108 @@ def build_focus_brand_aliases(focus_brand: str, website_url: str = "") -> list[s
         seen.add(key)
         out.append(item)
     return out
+
+
+def _collapse_ws(value: str) -> str:
+    return " ".join((value or "").split())
+
+
+def _phrase_in_response(response_text: str, phrase: str) -> bool:
+    p = _collapse_ws(phrase)
+    if len(p) < 6:
+        return False
+    return p.lower() in _collapse_ws(response_text).lower()
+
+
+def _alias_appears_in_response(response_text: str, alias: str) -> bool:
+    """True if alias is visibly present in the model answer (not inferred)."""
+    a = (alias or "").strip()
+    if not a:
+        return False
+    canon = _canonical_brand(a)
+    if len(canon) < 2:
+        return False
+    rt = response_text
+    lowered = rt.lower()
+    # Host-style aliases: substring match (URLs, inline domains).
+    if "." in a and " " not in a:
+        return a.lower() in lowered
+    # Very short tokens: avoid \\b on non-word chars; use explicit boundaries.
+    if len(a) <= 3:
+        return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(a)}(?![A-Za-z0-9])", rt, flags=re.IGNORECASE))
+    return bool(re.search(rf"\b{re.escape(a)}\b", rt, flags=re.IGNORECASE))
+
+
+def _focus_detail_substantiated_in_response(
+    response_text: str,
+    detail: dict[str, Any],
+    aliases: list[str],
+) -> bool:
+    """Ground-truth check: focus-style rows must appear in the raw answer text."""
+    brand = str(detail.get("brand") or "").strip()
+    context = str(detail.get("context") or "").strip()
+    if _phrase_in_response(response_text, context):
+        return True
+    candidates: list[str] = []
+    if brand:
+        candidates.append(brand)
+    candidates.extend(x for x in aliases if (x or "").strip())
+    seen: set[str] = set()
+    for c in candidates:
+        key = _canonical_brand(c)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if _alias_appears_in_response(response_text, c):
+            return True
+    return False
+
+
+def _recompute_focus_fields_from_details(
+    details: list[dict[str, Any]],
+    aliases: list[str],
+) -> dict[str, Any]:
+    focus = next((d for d in details if _brand_matches_alias(str(d.get("brand") or ""), aliases)), None)
+    if focus:
+        sentiment = str(focus.get("sentiment") or "neutral").strip().lower()
+        if sentiment not in {"positive", "neutral", "negative"}:
+            sentiment = "neutral"
+    else:
+        sentiment = "not_mentioned"
+    return {
+        "focus_brand_rank": focus.get("rank") if focus else None,
+        "focus_brand_mentioned": bool(focus),
+        "focus_brand_sentiment": sentiment,
+        "focus_brand_context": str(focus.get("context") or "") if focus else "",
+        "brands_mentioned": [str(d["brand"]) for d in details if d.get("brand")],
+    }
+
+
+def _sanitize_llm_brand_details_against_text(
+    parsed: dict[str, Any],
+    response_text: str,
+    focus_brand_aliases: list[str],
+) -> dict[str, Any]:
+    """Drop focus-matched rows the extractor invented when they are absent from the answer."""
+    raw_details = parsed.get("all_brand_details")
+    if not isinstance(raw_details, list):
+        return parsed
+    kept: list[dict[str, Any]] = []
+    for row in raw_details:
+        if not isinstance(row, dict):
+            continue
+        brand = str(row.get("brand") or "").strip()
+        if not brand:
+            continue
+        if _brand_matches_alias(brand, focus_brand_aliases):
+            if not _focus_detail_substantiated_in_response(response_text, row, focus_brand_aliases):
+                continue
+        kept.append(row)
+    parsed = dict(parsed)
+    parsed["all_brand_details"] = kept
+    parsed.update(_recompute_focus_fields_from_details(kept, focus_brand_aliases))
+    parsed["sources"] = _extract_sources(response_text)
+    return parsed
 
 
 def _sentiment_for_context(context: str) -> str:
@@ -941,10 +1088,38 @@ def analyze_single_response(
         return _empty_analysis()
 
     competitors = competitor_brands or []
+    aliases = focus_brand_aliases or [focus_brand]
 
     # Primary: LLM-based extraction — reliable, understands context.
     llm_result = _llm_extract_brands(response_text, focus_brand, query, competitors)
     if llm_result and llm_result.get("all_brand_details"):
+        pre_details = llm_result.get("all_brand_details") or []
+        pre_focus = any(
+            _brand_matches_alias(str(d.get("brand") or ""), aliases)
+            for d in pre_details
+            if isinstance(d, dict)
+        )
+        llm_result = _sanitize_llm_brand_details_against_text(llm_result, response_text, aliases)
+        post_details = llm_result.get("all_brand_details") or []
+        post_focus = any(
+            _brand_matches_alias(str(d.get("brand") or ""), aliases)
+            for d in post_details
+            if isinstance(d, dict)
+        )
+        # Unsubstantiated focus rows removed: prefer regex-grounded analysis if it finds the brand.
+        if pre_focus and not post_focus:
+            heuristic = _heuristic_analysis(
+                response_text, focus_brand, competitors, focus_brand_aliases=focus_brand_aliases
+            )
+            if heuristic.get("focus_brand_mentioned"):
+                return heuristic
+        if not post_details:
+            heuristic = _heuristic_analysis(
+                response_text, focus_brand, competitors, focus_brand_aliases=focus_brand_aliases
+            )
+            if heuristic.get("all_brand_details"):
+                return heuristic
+            return llm_result
         return llm_result
 
     # Fallback: heuristic for configured brands only (no auto-discovery).
@@ -1519,51 +1694,69 @@ PROMPT INTENT BUCKETS:
 Return ONLY valid JSON:
 {{
   "overall_health": "{computed_health}",
-  "executive_summary": "Write a 2-3 sentence summary that matches the computed health: if Strong, describe defending and expanding winning intents; if Critical, describe recovery from missing/weak intent coverage; if Neutral, describe stabilization and precision improvement.",
+  "executive_bullets": [
+    "First bullet: one line, max ~120 characters, no hype, state the core visibility fact for {focus_brand}.",
+    "Second bullet: one line, max ~120 characters, name the biggest coverage or rank gap.",
+    "Third bullet: one line, max ~120 characters, the single most important next focus."
+  ],
+  "executive_summary": "Optional: one plain sentence echoing bullet 1 (or leave empty string).",
   "strategic_roadmap": [
     {{
       "phase": "Primary Action",
-      "action": "Highly specific, publishable steps. Must mention the intent coverage strategy that matches overall_health."
+      "action": "Exactly ONE short sentence (max ~180 chars). Must mention intent coverage for {focus_brand} and match overall_health."
     }},
     {{
       "phase": "Next 2-4 Weeks",
-      "action": "Highly specific steps for the next window, including how to measure improvement (what metric should rise and when)."
+      "action": "Exactly ONE short sentence (max ~180 chars). Include one measurable check (e.g. rank, coverage, mentions)."
     }}
   ],
-  "competitive_threats": ["Threat 1 tied to intent coverage", "Threat 2 tied to retrieval/citation behavior"],
+  "competitive_threats": ["Max ~120 chars each", "Second threat, max ~120 chars"],
   "top_priority_prompts": {json.dumps(top_visibility_prompts[:2] if computed_health == 'Strong' else (low_visibility_prompts[:2] if computed_health == 'Critical' else (low_visibility_prompts[:1] + top_visibility_prompts[:1])) ) }
 }}
 
+STYLE: No marketing fluff, no numbered lists inside strings, no emojis. Crisp facts only.
+
 CRITICAL VALIDATION RULES:
 1. The "overall_health" field MUST equal "{computed_health}" exactly.
-2. Do not describe recovery steps when overall_health is Strong.
-3. Do not describe maintenance/defense when overall_health is Critical.
-4. The roadmap actions must be tactical and tied to intent coverage and AI retrieval behavior for "{focus_brand}".
+2. "executive_bullets" MUST have exactly 3 non-empty strings.
+3. Do not describe recovery steps when overall_health is Strong.
+4. Do not describe maintenance/defense when overall_health is Critical.
 5. strategic_roadmap[0].action MUST include at least one of the prompts from "top_priority_prompts" verbatim (exact text match).
-6. competitive_threats MUST clearly tie to retrieval/citation behavior and intent coverage gaps for "{focus_brand}" (based on overall_health).
+6. competitive_threats: 2 or 3 strings only; each ties to retrieval/citation or intent gaps for "{focus_brand}".
 """
 
     raw = chat("chatgpt", prompt, temperature=0.25)
     try:
         parsed = _clean_json(raw)
         if isinstance(parsed, dict) and parsed.get("overall_health"):
+            eb = parsed.get("executive_bullets")
+            if not isinstance(eb, list) or len([x for x in eb if str(x).strip()]) < 3:
+                es = str(parsed.get("executive_summary") or "").strip()
+                parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", es) if p.strip()]
+                pad = parts if parts else [es] if es else []
+                while len(pad) < 3:
+                    pad.append("Tighten intent coverage and citation-ready content for key prompts.")
+                parsed["executive_bullets"] = [str(pad[i])[:220] for i in range(3)]
             return parsed
     except Exception:
         pass
 
+    _tp = (
+        top_visibility_prompts[:2]
+        if computed_health == "Strong"
+        else (low_visibility_prompts[:2] if computed_health == "Critical" else low_visibility_prompts[:1] + top_visibility_prompts[:1])
+    )
     return {
         "overall_health": computed_health,
-        "executive_summary": (
-            f"Metric-derived visibility health for {focus_brand} is {computed_health}. "
-            "Use the intent buckets to guide content creation and retrieval alignment."
-        ),
+        "executive_bullets": [
+            f"{focus_brand}: visibility health is {computed_health} (coverage {coverage_ratio:.0%} of prompts ranked).",
+            f"Prioritize intent coverage for: {_tp[0] if _tp else 'key prompts'}.",
+            "Align pages and FAQs to how LLMs retrieve and cite answers in your category.",
+        ],
+        "executive_summary": f"Visibility health is {computed_health}; focus on ranked intent coverage and citation-ready content.",
         "strategic_roadmap": [],
         "competitive_threats": [],
-        "top_priority_prompts": (
-            top_visibility_prompts[:2]
-            if computed_health == "Strong"
-            else (low_visibility_prompts[:2] if computed_health == "Critical" else low_visibility_prompts[:1] + top_visibility_prompts[:1])
-        ),
+        "top_priority_prompts": _tp,
     }
 
 
@@ -1728,17 +1921,17 @@ RECURRING THEMES:
 
 Return ONLY valid JSON as a list of 4-6 objects.
 Each object must include:
-- "title"
-- "root_cause"
-- "solution"
-- "avoid"
+- "title" (short headline, max ~12 words)
+- "root_cause" (1-2 short sentences, max ~220 characters total; no fluff)
+- "solution" (1-2 short sentences, max ~220 characters; concrete next steps only)
+- "avoid" (one short phrase, max ~100 characters)
 - "priority" ("high" | "medium" | "low")
 - "evidence" (reference at least one recurring prompt pattern from input)
 
 Rules:
 1. Focus on repeated patterns, not isolated one-off issues.
 2. Do not reuse the same wording across multiple items.
-3. Solutions must include concrete portfolio-level moves (content architecture, distribution channels, and measurement).
+3. No marketing language, no bullet characters inside string values, no emojis.
 4. Do not assign the same priority to every item."""
 
     raw = chat("chatgpt", prompt, temperature=0.35)

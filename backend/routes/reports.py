@@ -821,6 +821,63 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
     return rows[:10]
 
 
+def _project_website_host(website_url: str) -> str:
+    """Normalized hostname from project website (no scheme/path), or ''."""
+    url = (website_url or "").strip()
+    if not url:
+        return ""
+    normalized = url if "://" in url else f"https://{url}"
+    try:
+        host = (urlparse(normalized).hostname or "").lower().replace("www.", "")
+        return host.strip()
+    except Exception:
+        return ""
+
+
+def _host_is_under_base(host: str, base_host: str) -> bool:
+    h = (host or "").lower().replace("www.", "")
+    b = (base_host or "").lower().replace("www.", "")
+    if not h or not b:
+        return False
+    return h == b or h.endswith("." + b)
+
+
+def _response_cites_project_domain(response: Response, base_host: str) -> bool:
+    if not base_host:
+        return False
+    for source in _parse_sources(response.sources):
+        if not isinstance(source, str):
+            continue
+        normalized = _normalize_source_url(source.strip())
+        domain = _domain_from_url(normalized) if normalized else ""
+        if domain and _host_is_under_base(domain, base_host):
+            return True
+    return False
+
+
+def _latest_project_responses(project_id: int) -> list[Response]:
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    latest: list[Response] = []
+    for prompt in prompts:
+        latest.extend(_latest_responses_by_prompt(prompt.id))
+    return latest
+
+
+def _compute_official_site_cited_stats(project_id: int, website_url: str) -> dict[str, float | int]:
+    base = _project_website_host(website_url)
+    latest_responses = _latest_project_responses(project_id)
+    total = len(latest_responses)
+    if not base or not total:
+        return {"official_site_cited_pct": 0.0, "official_site_cited_count": 0, "official_site_responses_total": total}
+    cited = sum(1 for r in latest_responses if _response_cites_project_domain(r, base))
+    pct = round((cited / total) * 100, 1)
+    return {
+        "official_site_cited_pct": pct,
+        "official_site_cited_count": cited,
+        "official_site_responses_total": total,
+    }
+
+
 def _compute_project_visibility_pct(project_id: int) -> float:
     prompts = Prompt.query.filter_by(project_id=project_id).all()
     if not prompts:
@@ -873,6 +930,7 @@ def _build_dashboard_payload(project_id: int) -> dict:
     visibility_trend = [{"date": metric.date, "score": metric.score} for metric in metrics]
     current_score = visibility_trend[-1]["score"] if visibility_trend else 0
     current_visibility_pct = _compute_project_visibility_pct(project_id)
+    official_site_stats = _compute_official_site_cited_stats(project_id, project.website_url or "")
 
     prompt_rankings = _build_prompt_rankings(project_id)
     competitors = _build_competitor_visibility(project_id)
@@ -893,6 +951,9 @@ def _build_dashboard_payload(project_id: int) -> dict:
         "quality_score_trend": visibility_trend,
         "current_visibility_score": current_score,  # Backward compatibility
         "visibility_trend": visibility_trend,  # Backward compatibility
+        "official_site_cited_pct": official_site_stats["official_site_cited_pct"],
+        "official_site_cited_count": official_site_stats["official_site_cited_count"],
+        "official_site_responses_total": official_site_stats["official_site_responses_total"],
         "prompt_rankings": prompt_rankings,
         "competitors": competitors,
         "recommendations": recommendations,

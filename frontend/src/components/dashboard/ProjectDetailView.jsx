@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -20,7 +20,6 @@ import {
   PlayCircle,
   Plus,
   Search,
-  Shield,
   ShieldAlert,
   Sparkles,
   Target,
@@ -46,7 +45,6 @@ const SECTION_IDS = [
   { id: 'prompts', label: 'Prompts', icon: Search },
   { id: 'competitors', label: 'Competitors', icon: Users },
   { id: 'sources', label: 'Sources', icon: Globe },
-  { id: 'audit', label: 'Audit', icon: Shield },
   { id: 'execute', label: 'Content Studio', icon: Zap },
   { id: 'opportunities', label: 'Opportunities', icon: Sparkles },
 ];
@@ -71,13 +69,6 @@ const DRAFT_TARGET_LABELS = {
 };
 
 const EXEC_CONTENT_TYPES = ['Article', 'Blog', 'Reddit Post'];
-const SEARCH_PROVIDER_OPTIONS = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'perplexity', label: 'Perplexity' },
-  { value: 'serper', label: 'Google (Serper)' },
-  { value: 'none', label: 'Off' },
-];
-
 function splitProseAndUrls(text) {
   if (!text) return { prose: '', urls: [] };
   const s = String(text);
@@ -246,14 +237,11 @@ const ProjectDetailView = () => {
   const queryClient = useQueryClient();
 
   const [newPromptText, setNewPromptText] = useState('');
-  const [newPromptCountry, setNewPromptCountry] = useState('');
-  const [newPromptTags, setNewPromptTags] = useState('');
   const [newPromptModels, setNewPromptModels] = useState([]);
   const [runningPrompts, setRunningPrompts] = useState({});
   const [selectedPromptId, setSelectedPromptId] = useState(null);
-  const [selectedSearchProvider, setSelectedSearchProvider] = useState('auto');
-  const [lastUsedSearchProvider, setLastUsedSearchProvider] = useState('');
   const [activeSection, setActiveSection] = useState('dashboard');
+  const deepIntelRef = useRef(null);
 
   const { data: projectData, isLoading, error } = useQuery({
     queryKey: ['project-data', id],
@@ -264,6 +252,12 @@ const ProjectDetailView = () => {
       return { project, prompts, dashboard, enabledEngines: engines.enabled_engines || [], availableEngines: engines.available_engines || [], searchLayer: engines.search_layer || {} };
     },
   });
+
+  const effectiveSearchProvider = useMemo(() => {
+    const p = projectData?.searchLayer?.provider;
+    const s = String(p ?? 'auto').trim();
+    return s || 'auto';
+  }, [projectData?.searchLayer?.provider]);
 
   const needsPromptAnalysis = activeSection === 'dashboard' || activeSection === 'prompts';
   const needsDeepAnalysis = activeSection === 'opportunities' || activeSection === 'execute';
@@ -287,21 +281,67 @@ const ProjectDetailView = () => {
   }, [selectedPromptId, promptDetailData?.sources, sourcesIntel?.domains]);
 
   const competitorDisplayRows = useMemo(() => competitorIntel?.rows || [], [competitorIntel?.rows]);
-  const promptAuditRows = useMemo(() => (Array.isArray(promptDetailData?.audit) ? promptDetailData.audit : []), [promptDetailData?.audit]);
-  const promptAuditCoverage = useMemo(() => {
-    const sentiment = promptDetailData?.sentiment || {};
-    const positive = Number(sentiment.positive) || 0;
-    const neutral = Number(sentiment.neutral) || 0;
-    const negative = Number(sentiment.negative) || 0;
-    const notMentioned = Number(sentiment.not_mentioned) || 0;
-    const total = positive + neutral + negative + notMentioned;
-    const mentioned = positive + neutral + negative;
-    const mentionRate = total > 0 ? Math.round((mentioned / total) * 100) : 0;
-    return { total, mentioned, notMentioned, mentionRate };
-  }, [promptDetailData?.sentiment]);
-
   const { data: intelSummary, isLoading: intelSummaryLoading } = useQuery({ queryKey: ['intel-summary', id], queryFn: () => api.getIntelSummary(id), enabled: Boolean(id) && activeSection === 'dashboard' && !selectedPromptId });
-  const { data: globalAudit, isLoading: globalAuditLoading } = useQuery({ queryKey: ['global-audit', id], queryFn: () => api.getGlobalAudit(id), enabled: Boolean(id) && activeSection === 'audit' && !selectedPromptId });
+  const { data: globalAudit, isLoading: globalAuditLoading } = useQuery({ queryKey: ['global-audit', id], queryFn: () => api.getGlobalAudit(id), enabled: Boolean(id) && activeSection === 'dashboard' && !selectedPromptId });
+
+  useEffect(() => {
+    setActiveSection((prev) => (prev === 'audit' ? 'dashboard' : prev));
+  }, []);
+
+  const modelIdToName = useMemo(() => {
+    const engines = projectData?.availableEngines || [];
+    return Object.fromEntries(engines.map((e) => [e.id, e.name]));
+  }, [projectData?.availableEngines]);
+
+  const coverageSnapshot = useMemo(() => {
+    if (!projectData?.dashboard || !projectData?.project) return null;
+    const d = projectData.dashboard;
+    const proms = projectData.prompts || [];
+    const rankings = d.prompt_rankings || [];
+    const total = Math.max(proms.length, rankings.length, 1);
+    const withRank = rankings.filter((r) => r.avg_rank != null).length;
+    const vis = d.visibility_pct_current;
+    const share = vis != null && Number.isFinite(Number(vis)) ? `${Math.round(Number(vis))}%` : '—';
+    const competitors = d.competitors || [];
+    const focus = (projectData.project.name || '').toLowerCase().trim();
+    const sorted = [...competitors].sort((a, b) => (Number(b.visibility_pct ?? b.visibility ?? 0)) - (Number(a.visibility_pct ?? a.visibility ?? 0)));
+    let topPos = '—';
+    const idx = sorted.findIndex((c) => String(c.brand || '').toLowerCase().trim() === focus);
+    if (idx >= 0) topPos = `#${idx + 1}`;
+    else if (sorted.length) topPos = 'Not ranked';
+    return {
+      queriesLine: `${withRank} / ${total} queries where you rank`,
+      shareLine: `${share} share of AI mentions`,
+      topCompetitorLine: `${topPos} your position vs competitors`,
+    };
+  }, [projectData]);
+
+  const dashboardIntelLayout = useMemo(() => {
+    if (!intelSummary) return null;
+    const eb = intelSummary.executive_bullets;
+    let happening = '';
+    if (Array.isArray(eb) && eb.length) {
+      happening = String(eb[0]).trim();
+    } else if (intelSummary.executive_summary) {
+      const s = String(intelSummary.executive_summary).trim();
+      const first = s.split(/(?<=[.!?])\s+/)[0];
+      happening = (first && first.length <= 280 ? first : s.slice(0, 220)).trim();
+    }
+    const fromRoadmap = (intelSummary.strategic_roadmap || []).map((step) => String(step.action || '').trim()).filter(Boolean);
+    const fromBullets = Array.isArray(intelSummary.executive_bullets) ? intelSummary.executive_bullets.slice(1).map((b) => String(b).trim()).filter(Boolean) : [];
+    const fromQueries = (intelSummary.top_priority_prompts || []).map((p) => String(p).trim()).filter(Boolean);
+    const seen = new Set();
+    const priorities = [];
+    for (const t of [...fromRoadmap, ...fromBullets, ...fromQueries]) {
+      const k = t.toLowerCase();
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      priorities.push(t);
+      if (priorities.length >= 5) break;
+    }
+    const losing = (intelSummary.competitive_threats || []).map((t) => String(t).trim()).filter(Boolean);
+    return { happening, priorities, losing };
+  }, [intelSummary]);
 
   const [execContent, setExecContent] = useState(null);
   const [isExecuting, setIsExecuting] = useState(false);
@@ -350,25 +390,24 @@ const ProjectDetailView = () => {
   };
 
   const executeActionMutation = useMutation({ mutationFn: (data) => api.executeAction(id, data), onSuccess: (res) => { setExecContent(res); setIsExecuting(false); setExecError(null); }, onError: (err) => { setIsExecuting(false); setExecError(err.message || 'Failed to generate content.'); } });
-  const setSearchLayerMutation = useMutation({ mutationFn: (provider) => api.setSearchLayer(provider), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project-data', id] }) });
 
   const refreshAll = () => {
     ['project-data', 'prompt-analysis', 'deep-analysis', 'sources-intelligence', 'competitor-intelligence', 'intel-summary', 'global-audit'].forEach((key) => queryClient.invalidateQueries({ queryKey: [key, id] }));
   };
 
   const analyzePromptMutation = useMutation({
-    mutationFn: async (payload) => { const created = await api.createPrompt(id, payload); const run = await api.runPromptAnalysis(created.id, { searchProvider: selectedSearchProvider }); return { promptId: created.id, jobId: run.job_id }; },
-    onSuccess: ({ promptId }) => { setSelectedPromptId(promptId); setRunningPrompts((prev) => ({ ...prev, [promptId]: true })); setLastUsedSearchProvider(selectedSearchProvider); setNewPromptText(''); setNewPromptCountry(''); setNewPromptTags(''); setNewPromptModels([]); },
+    mutationFn: async (payload) => { const created = await api.createPrompt(id, payload); const run = await api.runPromptAnalysis(created.id, { searchProvider: effectiveSearchProvider }); return { promptId: created.id, jobId: run.job_id }; },
+    onSuccess: ({ promptId }) => { setSelectedPromptId(promptId); setRunningPrompts((prev) => ({ ...prev, [promptId]: true })); setNewPromptText(''); setNewPromptModels([]); requestAnimationFrame(() => deepIntelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })); },
   });
 
   const deletePromptMutation = useMutation({ mutationFn: api.deletePrompt, onSuccess: refreshAll });
   const runPromptMutation = useMutation({
-    mutationFn: (promptId) => api.runPromptAnalysis(promptId, { searchProvider: selectedSearchProvider }),
-    onSuccess: (payload, promptId) => { if (!payload?.job_id) { refreshAll(); return; } setRunningPrompts((prev) => ({ ...prev, [promptId]: true })); setLastUsedSearchProvider(selectedSearchProvider); pollJobStatus(payload.job_id, promptId); },
+    mutationFn: (promptId) => api.runPromptAnalysis(promptId, { searchProvider: effectiveSearchProvider }),
+    onSuccess: (payload, promptId) => { if (!payload?.job_id) { refreshAll(); return; } setRunningPrompts((prev) => ({ ...prev, [promptId]: true })); pollJobStatus(payload.job_id, promptId); },
   });
   const runAllMutation = useMutation({
-    mutationFn: (projectId) => api.runAllPromptAnalysis(projectId, { searchProvider: selectedSearchProvider }),
-    onSuccess: (payload) => { const jobs = Array.isArray(payload?.results) ? payload.results : []; if (jobs.length === 0) { refreshAll(); return; } setLastUsedSearchProvider(selectedSearchProvider); jobs.forEach((item) => { setRunningPrompts((prev) => ({ ...prev, [item.prompt_id]: true })); pollJobStatus(item.job_id, item.prompt_id); }); },
+    mutationFn: (projectId) => api.runAllPromptAnalysis(projectId, { searchProvider: effectiveSearchProvider }),
+    onSuccess: (payload) => { const jobs = Array.isArray(payload?.results) ? payload.results : []; if (jobs.length === 0) { refreshAll(); return; } jobs.forEach((item) => { setRunningPrompts((prev) => ({ ...prev, [item.prompt_id]: true })); pollJobStatus(item.job_id, item.prompt_id); }); },
   });
 
   const pollJobStatus = async (jobId, promptId) => {
@@ -391,7 +430,7 @@ const ProjectDetailView = () => {
     return <div className="glass-card-v2 border-red-200/60 bg-red-50/60 p-5 text-sm text-red-600">{error?.message || 'Failed to load project'}</div>;
   }
 
-  const { project, prompts, dashboard, enabledEngines, availableEngines, searchLayer = {} } = projectData;
+  const { project, prompts, dashboard, enabledEngines, availableEngines } = projectData;
   const atPromptLimit = (prompts?.length ?? 0) >= MAX_PROMPTS_PER_PROJECT;
 
   const runExecuteFromTarget = (target) => {
@@ -417,11 +456,22 @@ const ProjectDetailView = () => {
   const handleAddPrompt = (event) => {
     event.preventDefault();
     if (!newPromptText.trim() || atPromptLimit) return;
-    const tags = newPromptTags.split(',').map((i) => i.trim()).filter(Boolean);
-    analyzePromptMutation.mutate({ prompt_text: newPromptText.trim(), country: newPromptCountry || project.region || '', tags, selected_models: newPromptModels, prompt_type: 'Manual', is_active: true });
+    analyzePromptMutation.mutate({
+      prompt_text: newPromptText.trim(),
+      country: project.region || '',
+      tags: [],
+      selected_models: newPromptModels,
+      prompt_type: 'Manual',
+      is_active: true,
+    });
   };
 
-  const togglePromptModel = (modelId) => setNewPromptModels((prev) => prev.includes(modelId) ? prev.filter((i) => i !== modelId) : [...prev, modelId]);
+  const togglePromptModel = (modelId) => setNewPromptModels((prev) => (prev.includes(modelId) ? prev.filter((i) => i !== modelId) : [...prev, modelId]));
+
+  const openPromptDeepIntel = (promptId) => {
+    setSelectedPromptId(promptId);
+    requestAnimationFrame(() => deepIntelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
 
   return (
     <div className="mx-auto w-full min-w-0 max-w-7xl space-y-5 pb-[max(3rem,env(safe-area-inset-bottom,0px))]">
@@ -491,34 +541,103 @@ const ProjectDetailView = () => {
                 </div>
 
                 {!selectedPromptId && (
-                  intelSummaryLoading ? (
-                    <div className="glass-card-v2 animate-pulse p-6">
-                      <div className="mb-6 space-y-3"><div className="h-5 w-64 rounded bg-slate-100" /><div className="h-3 w-44 rounded bg-slate-100" /></div>
-                      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1.4fr_1fr]"><div className="space-y-4"><div className="h-20 rounded-xl bg-slate-50 border border-slate-100" /><div className="h-28 rounded-xl bg-slate-50 border border-slate-100" /></div><div className="h-52 rounded-xl bg-slate-50 border border-slate-100" /></div>
-                    </div>
-                  ) : intelSummary && (
-                    <div className="glass-card-v2 overflow-hidden">
-                      <div className="flex items-center justify-between gap-4 border-b border-slate-100/80 px-6 py-4">
-                        <div><div className="flex items-center gap-2"><h2 className="text-sm font-semibold text-slate-800">Executive Intelligence Summary</h2><DataBadge type="ai" /></div><p className="mt-0.5 text-[11px] text-slate-400">Evidence-backed roadmap to improve AI visibility</p></div>
-                        <span className={`shrink-0 rounded-full px-3 py-1 text-[11px] font-semibold ${intelSummary.overall_health === 'Strong' ? 'bg-emerald-50 text-emerald-600' : intelSummary.overall_health === 'Critical' ? 'bg-red-50 text-red-600' : 'bg-brand-primary/10 text-brand-primary'}`}>{intelSummary.overall_health}</span>
+                  <>
+                    {intelSummaryLoading ? (
+                      <div className="glass-card-v2 animate-pulse p-6">
+                        <div className="mb-6 space-y-3"><div className="h-5 w-64 rounded bg-slate-100" /><div className="h-3 w-44 rounded bg-slate-100" /></div>
+                        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1.4fr_1fr]"><div className="space-y-4"><div className="h-20 rounded-xl bg-slate-50" /><div className="h-28 rounded-xl bg-slate-50" /></div><div className="h-52 rounded-xl bg-slate-50" /></div>
                       </div>
-                      <div className="grid grid-cols-1 divide-y divide-slate-100/80 lg:grid-cols-[1.4fr_1fr] lg:divide-x lg:divide-y-0">
-                        <div className="space-y-5 p-6">
-                          <div className="glass-inset rounded-xl p-4"><p className={`${lbl} mb-2`}>Summary</p><p className="text-sm leading-relaxed text-slate-700">{intelSummary.executive_summary}</p></div>
-                          <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-                            <div><p className={`${lbl} mb-2.5`}>Roadmap</p><div className="space-y-2">{(intelSummary.strategic_roadmap || []).map((step, idx) => (<div key={idx} className="flex items-start gap-2.5"><span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-lg bg-brand-primary text-[10px] font-semibold text-white">{idx + 1}</span><div className="min-w-0"><p className="text-[10px] font-semibold uppercase text-brand-primary">{step.phase}</p><p className="text-xs leading-relaxed text-slate-600">{step.action}</p></div></div>))}</div></div>
-                            <div><p className={`${lbl} mb-2.5`}>Competitive Threats</p><div className="space-y-2">{(intelSummary.competitive_threats || []).map((threat, idx) => (<div key={idx} className="flex items-start gap-2 text-xs leading-relaxed text-slate-600"><span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" /> {threat}</div>))}</div></div>
+                    ) : intelSummary && dashboardIntelLayout && (
+                      <div className="glass-card-v2 overflow-hidden">
+                        <div className="flex flex-wrap items-start justify-between gap-4 px-6 py-5">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h2 className="text-base font-semibold tracking-tight text-slate-900">Executive summary</h2>
+                              <DataBadge type="ai" />
+                            </div>
+                            <p className="mt-0.5 text-sm text-slate-500">Quick snapshot of your AI visibility</p>
+                          </div>
+                          <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${intelSummary.overall_health === 'Strong' ? 'bg-emerald-50 text-emerald-700' : intelSummary.overall_health === 'Critical' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{intelSummary.overall_health}</span>
+                        </div>
+                        <div className="grid grid-cols-1 gap-0 lg:grid-cols-[1.35fr_1fr] lg:gap-0">
+                          <div className="space-y-6 px-6 pb-6 lg:pr-8">
+                            <div>
+                              <p className={`${lbl} mb-2`}>What&apos;s happening</p>
+                              <p className="text-sm font-medium leading-snug text-slate-800">{dashboardIntelLayout.happening || '—'}</p>
+                            </div>
+                            <div>
+                              <p className={`${lbl} mb-2`}>Top priorities</p>
+                              <ul className="space-y-2">
+                                {(dashboardIntelLayout.priorities.length ? dashboardIntelLayout.priorities : ['Run analyses on your prompts to generate priorities.']).map((line, idx) => (
+                                  <li key={idx} className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{line}</li>
+                                ))}
+                              </ul>
+                            </div>
+                            <div>
+                              <p className={`${lbl} mb-2`}>Where you&apos;re losing</p>
+                              <ul className="list-disc space-y-1.5 pl-4 text-sm text-slate-600">
+                                {(dashboardIntelLayout.losing.length ? dashboardIntelLayout.losing : ['Insufficient data—complete prompt runs for competitive signals.']).map((line, idx) => (
+                                  <li key={idx}>{line}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                          <div className="space-y-5 border-t border-slate-100/80 px-6 py-6 lg:border-l lg:border-t-0 lg:pt-6">
+                            <div>
+                              <p className={`${lbl} mb-2`}>Priority queries</p>
+                              <div className="space-y-2">
+                                {(intelSummary.top_priority_prompts || []).length === 0 && <p className="text-sm text-slate-500">None flagged yet.</p>}
+                                {(intelSummary.top_priority_prompts || []).map((q, idx) => (
+                                  <div key={idx} className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{q}</div>
+                                ))}
+                              </div>
+                            </div>
+                            {coverageSnapshot && (
+                              <div>
+                                <p className={`${lbl} mb-2`}>Coverage snapshot</p>
+                                <div className="space-y-2">
+                                  <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.queriesLine}</div>
+                                  <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.shareLine}</div>
+                                  <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.topCompetitorLine}</div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </div>
-                        <div className="space-y-4 p-6">
-                          <p className={lbl}>Priority Directives</p>
-                          <div className="space-y-2.5">{(intelSummary.top_priority_prompts || []).map((prompt, idx) => (<div key={idx} className="group cursor-pointer rounded-xl border border-slate-100 p-3.5 transition-colors hover:border-brand-primary/40"><p className="text-[13px] font-medium text-slate-800 group-hover:text-brand-primary">{prompt}</p><p className="mt-0.5 text-[11px] text-slate-400">{intelSummary.overall_health === 'Strong' ? 'Defend winning intents' : intelSummary.overall_health === 'Critical' ? 'Remediate low-visibility' : 'Improve intent coverage'}</p></div>))}</div>
-                          <Button onClick={() => setActiveSection('execute')} className="w-full">{intelSummary.overall_health === 'Strong' ? 'Generate defense drafts' : intelSummary.overall_health === 'Critical' ? 'Generate remediation drafts' : 'Generate stabilization drafts'}</Button>
-                          <Button variant="secondary" onClick={() => setActiveSection('prompts')} className="w-full">Re-run prompt diagnostics</Button>
+                      </div>
+                    )}
+                    {globalAuditLoading ? (
+                      <div className="glass-card-v2 flex justify-center py-14"><Loader2 className="h-6 w-6 animate-spin text-slate-300" /></div>
+                    ) : Array.isArray(globalAudit) && globalAudit.length > 0 && (
+                      <div className="glass-card-v2 overflow-hidden">
+                        <div className="px-6 py-5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h2 className="text-base font-semibold tracking-tight text-slate-900">Project audit</h2>
+                            <DataBadge type="ai" />
+                          </div>
+                          <p className="mt-0.5 text-sm text-slate-500">Patterns across your prompt portfolio</p>
+                        </div>
+                        <div className="space-y-4 px-6 pb-6">
+                          {globalAudit.map((item, idx) => {
+                            const priority = String(item?.priority || 'medium').toLowerCase();
+                            return (
+                              <div key={idx} className="glass-inset rounded-xl p-4">
+                                <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                                  <h3 className="text-sm font-semibold text-slate-800">{item.title}</h3>
+                                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${priority === 'high' ? 'bg-red-50 text-red-600' : priority === 'low' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{priority}</span>
+                                </div>
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                  <div><p className={`${lbl} mb-1`}>Root cause</p><p className="text-xs leading-relaxed text-slate-600">{item.root_cause}</p></div>
+                                  <div><p className={`${lbl} mb-1`}>Solution</p><p className="text-xs leading-relaxed text-slate-700">{item.solution}</p></div>
+                                </div>
+                                {item.avoid && <p className="mt-2 text-xs text-slate-500"><span className="font-medium text-slate-600">Avoid:</span> {item.avoid}</p>}
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
-                    </div>
-                  )
+                    )}
+                  </>
                 )}
               </motion.div>
             )}
@@ -530,29 +649,27 @@ const ProjectDetailView = () => {
                   <div className="flex items-center justify-between border-b border-slate-100/80 px-6 py-4">
                     <div className="flex items-center gap-2.5">
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-primary/10 text-brand-primary"><Search className="h-4 w-4" /></div>
-                      <div><h2 className="text-sm font-semibold text-slate-800">Prompts Analysis</h2><p className="text-[11px] text-slate-400">Manage and track AI prompt performance</p></div>
+                      <div><h2 className="text-sm font-semibold text-slate-800">Prompts Analysis</h2><p className="text-[11px] text-slate-400">Visibility is share of runs where your brand appears in the model answer text (not whether your domain is in citation URLs).</p></div>
                     </div>
                     <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold tabular-nums text-slate-600">{(prompts?.length ?? 0)}/{MAX_PROMPTS_PER_PROJECT}</span>
                   </div>
                   <div className="bg-slate-50/40 p-5">
-                    <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200/60 bg-white/80 px-3.5 py-2.5 backdrop-blur-sm">
-                      <span className={`${lbl} mb-0`}>Search layer</span>
-                      <select value={selectedSearchProvider} onChange={(e) => { setSelectedSearchProvider(e.target.value); setSearchLayerMutation.mutate(e.target.value); }} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:border-brand-primary focus:outline-none">
-                        {SEARCH_PROVIDER_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                      </select>
-                      <span className="text-[11px] text-slate-500">Active: <span className="font-semibold text-slate-700">{searchLayer.provider || 'none'}</span></span>
-                      {lastUsedSearchProvider && <span className="rounded-full bg-brand-primary/10 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-primary">Last: {lastUsedSearchProvider}</span>}
-                    </div>
                     {analyzePromptMutation.isError && <div className="mb-3 rounded-xl border border-red-100 bg-red-50 px-3.5 py-2.5 text-sm text-red-600">{analyzePromptMutation.error?.message}</div>}
                     <form onSubmit={handleAddPrompt} className="space-y-4">
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                        {[{ label: 'Prompt Query', val: newPromptText, set: setNewPromptText, ph: 'e.g. Best budget 4k tv India 2024' }, { label: 'Region', val: newPromptCountry, set: setNewPromptCountry, ph: 'Country (optional)' }, { label: 'Tags', val: newPromptTags, set: setNewPromptTags, ph: 'Comma separated' }].map((f) => (
-                          <div key={f.label}><label className={`${lbl} mb-1 block`}>{f.label}</label><input type="text" value={f.val} onChange={(e) => f.set(e.target.value)} placeholder={f.ph} className="w-full rounded-xl border border-slate-200/80 bg-white px-3.5 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary/20" /></div>
-                        ))}
+                      <div>
+                        <label className={`${lbl} mb-1 block`}>Prompt query</label>
+                        <input type="text" value={newPromptText} onChange={(e) => setNewPromptText(e.target.value)} placeholder="e.g. Best budget 4k tv India 2024" className="w-full rounded-xl border border-slate-200/80 bg-white px-3.5 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary/20" />
                       </div>
-                      <div className="rounded-xl border border-slate-200/60 bg-white/80 p-3.5 backdrop-blur-sm">
-                        <p className={`${lbl} mb-2`}>Model Selection</p>
-                        <div className="flex flex-wrap gap-2">{availableEngines.map((engine) => (<button type="button" key={engine.id} onClick={() => togglePromptModel(engine.id)} disabled={!engine.enabled} className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${newPromptModels.includes(engine.id) ? 'border-brand-primary bg-brand-primary text-white' : 'border-slate-200 text-slate-500 hover:border-slate-300'} ${!engine.enabled ? 'cursor-not-allowed opacity-30' : ''}`}>{engine.name}</button>))}</div>
+                      <div className="glass-inset rounded-xl p-3.5">
+                        <p className={`${lbl} mb-2`}>Models</p>
+                        <div className="flex flex-wrap gap-x-5 gap-y-2">
+                          {availableEngines.map((engine) => (
+                            <label key={engine.id} className={`flex cursor-pointer items-center gap-2 text-sm ${engine.enabled ? 'text-slate-700' : 'cursor-not-allowed text-slate-400'}`}>
+                              <input type="checkbox" checked={newPromptModels.includes(engine.id)} onChange={() => togglePromptModel(engine.id)} disabled={!engine.enabled} className="h-3.5 w-3.5 rounded border-slate-300 text-brand-primary focus:ring-brand-primary/25 disabled:opacity-40" />
+                              {engine.name}
+                            </label>
+                          ))}
+                        </div>
                       </div>
                       <div className="flex items-center gap-3">
                         <Button type="submit" disabled={analyzePromptMutation.isPending || !newPromptText.trim() || atPromptLimit}>{analyzePromptMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}{atPromptLimit ? `Limit reached (${MAX_PROMPTS_PER_PROJECT})` : 'Analyze Prompt'}</Button>
@@ -562,29 +679,28 @@ const ProjectDetailView = () => {
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-[13px]">
-                      <thead><tr className="border-b border-slate-100/80 text-slate-400">{['Prompt', 'Visibility', 'Quality', 'Sentiment', 'Avg Rank', 'Models', 'Country', 'Tags', 'Actions'].map((h) => <th key={h} className="px-5 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider">{h}</th>)}</tr></thead>
+                      <thead><tr className="border-b border-slate-100/80 text-slate-400">{['Prompt', 'Answer vis.', 'Quality', 'Sentiment', 'Avg Rank', 'Models', 'Actions'].map((h) => <th key={h} className="px-5 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider">{h}</th>)}</tr></thead>
                       <tbody className="divide-y divide-slate-50">
-                        {promptAnalysisLoading ? Array.from({ length: 6 }).map((_, idx) => (<tr key={`sk-${idx}`}><td className="px-5 py-3"><div className="h-3 w-52 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-5 w-14 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-12 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-12 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-10 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-28 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-10 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-20 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-6 w-32 animate-pulse rounded bg-slate-100" /></td></tr>))
+                        {promptAnalysisLoading ? Array.from({ length: 6 }).map((_, idx) => (<tr key={`sk-${idx}`}><td className="px-5 py-3"><div className="h-3 w-52 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-5 w-14 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-12 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-12 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-10 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-28 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-6 w-24 animate-pulse rounded bg-slate-100" /></td></tr>))
                           : (promptAnalysis?.rows || []).map((row, idx) => (
                             <tr key={`${row.prompt_id}-${idx}`} className="transition-colors hover:bg-slate-50/50">
-                              <td className="max-w-[300px] truncate px-5 py-3 font-medium text-slate-800">{row.prompt_text}</td>
+                              <td className="max-w-[300px] px-5 py-3">
+                                <button type="button" onClick={() => openPromptDeepIntel(row.prompt_id)} className="block w-full truncate text-left text-sm font-medium text-slate-800 hover:text-brand-primary">{row.prompt_text}</button>
+                              </td>
                               <td className="px-5 py-3"><span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${(row.visibility_pct ?? row.visibility) > 70 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>{row.visibility_pct ?? row.visibility}%</span></td>
                               <td className="px-5 py-3 font-medium tabular-nums text-slate-500">{row.quality_score ?? '-'}</td>
                               <td className="px-5 py-3 text-xs font-medium capitalize text-slate-500">{row.sentiment}</td>
                               <td className="px-5 py-3 font-medium tabular-nums text-slate-500">{row.avg_rank ?? '-'}</td>
-                              <td className="px-5 py-3"><div className="flex flex-wrap gap-1">{(row.models || []).map((m) => <span key={m} className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase text-slate-500">{m}</span>)}</div></td>
-                              <td className="px-5 py-3 text-xs text-slate-500">{row.country || '-'}</td>
-                              <td className="px-5 py-3"><div className="flex flex-wrap gap-1">{(row.tags || []).map((t) => <span key={t} className="rounded-full bg-brand-primary/10 px-2 py-0.5 text-[10px] font-medium text-brand-primary">{t}</span>)}</div></td>
+                              <td className="max-w-[200px] px-5 py-3 text-xs text-slate-600">{(row.models || []).map((m) => modelIdToName[m] || m).join(', ') || '—'}</td>
                               <td className="px-5 py-3">
                                 <div className="flex items-center gap-1.5">
                                   <Button size="sm" onClick={() => runPromptMutation.mutate(row.prompt_id)} disabled={runningPrompts[row.prompt_id]}>{runningPrompts[row.prompt_id] ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}{runningPrompts[row.prompt_id] ? 'Running' : 'Run'}</Button>
-                                  <Button size="sm" variant="secondary" onClick={() => setSelectedPromptId(row.prompt_id)}><FileText className="h-3 w-3" />Details</Button>
                                   <Button size="sm" variant="ghost" onClick={() => deletePromptMutation.mutate(row.prompt_id)} className="text-slate-400 hover:text-red-500"><Trash2 className="h-3 w-3" /></Button>
                                 </div>
                               </td>
                             </tr>
                           ))}
-                        {!promptAnalysisLoading && (promptAnalysis?.rows || []).length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">No prompt analytics yet.</td></tr>}
+                        {!promptAnalysisLoading && (promptAnalysis?.rows || []).length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400">No prompt analytics yet.</td></tr>}
                       </tbody>
                     </table>
                   </div>
@@ -598,7 +714,7 @@ const ProjectDetailView = () => {
                 <div className="glass-card-v2 overflow-hidden">
                   <div className="flex items-center gap-2.5 border-b border-slate-100/80 px-6 py-4">
                     <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600"><Users className="h-4 w-4" /></div>
-                    <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Competitor Analysis</p><DataBadge type="measured" /></div><p className="text-[11px] text-slate-400">Brand visibility comparison across AI engines</p></div>
+                    <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Competitor Analysis</p><DataBadge type="measured" /></div><p className="text-[11px] text-slate-400">Rankings from brand mentions in model answers across engines (separate from citation URLs).</p></div>
                   </div>
                   <div className="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2 lg:grid-cols-3">
                     {competitorIntelLoading && competitorDisplayRows.length === 0
@@ -656,7 +772,7 @@ const ProjectDetailView = () => {
                   <div className="flex items-center justify-between border-b border-slate-100/80 px-6 py-4">
                     <div className="flex items-center gap-2.5">
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-600"><Globe className="h-4 w-4" /></div>
-                      <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Research Sources</p><DataBadge type="measured" /></div><p className="text-[11px] text-slate-400">Citations pulled by LLMs for your queries</p></div>
+                      <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Research Sources</p><DataBadge type="measured" /></div><p className="text-[11px] text-slate-400">Domains and URLs from model responses. “Site in citations” on the overview counts when your project website host appears here.</p></div>
                     </div>
                   </div>
                   <div className="p-6">
@@ -704,59 +820,6 @@ const ProjectDetailView = () => {
               </motion.div>
             )}
 
-            {/* ===== AUDIT TAB ===== */}
-            {activeSection === 'audit' && (
-              <motion.div key="audit" {...sectionMotion}>
-                <div className="glass-card-v2 overflow-hidden">
-                  <div className="flex items-center gap-2.5 border-b border-slate-100/80 px-6 py-4">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-500/10 text-rose-600"><Shield className="h-4 w-4" /></div>
-                    <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">{selectedPromptId ? `Audit: ${promptDetailData?.prompt_text}` : 'Action Audit'}</p><DataBadge type="ai" /></div><p className="text-[11px] text-slate-400">Visibility gaps and recommended fixes</p></div>
-                  </div>
-                  {globalAuditLoading || promptDetailLoading ? <div className="flex justify-center py-16"><Loader2 className="h-5 w-5 animate-spin text-slate-300" /></div> : (
-                    <div className="space-y-4 p-5">
-                      {selectedPromptId ? (
-                        <>
-                          <div className={`rounded-xl border p-4 ${promptAuditCoverage.notMentioned > 0 ? 'border-amber-200/60 bg-amber-50/60' : 'border-emerald-200/60 bg-emerald-50/60'}`}>
-                            <p className={`mb-1.5 text-[11px] font-semibold tracking-wide ${promptAuditCoverage.notMentioned > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>Prompt coverage</p>
-                            <p className={`flex items-center gap-2 text-sm ${promptAuditCoverage.notMentioned > 0 ? 'text-amber-700' : 'text-emerald-700'}`}><CheckCircle2 className="h-4 w-4" />Brand mentioned in {promptAuditCoverage.mentioned}/{promptAuditCoverage.total || '-'} engines ({promptAuditCoverage.mentionRate}%).</p>
-                            {promptAuditCoverage.notMentioned > 0 && <p className="mt-1 text-xs text-amber-700/90">Missing in {promptAuditCoverage.notMentioned} engine{promptAuditCoverage.notMentioned > 1 ? 's' : ''}.</p>}
-                          </div>
-                          {promptAuditRows.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No detailed audit points yet. Run this prompt again.</div> : promptAuditRows.map((item, idx) => {
-                            const priority = String(item?.priority || 'medium').toLowerCase();
-                            return (
-                              <div key={idx} className="glass-card-v2 p-5 transition-colors hover:shadow-[0_8px_32px_rgba(15,23,42,0.06)]">
-                                <div className="mb-3 flex items-start justify-between gap-3">
-                                  <div className="flex items-center gap-2.5"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-[10px] font-semibold text-slate-500">{idx + 1}</span><h4 className="text-sm font-semibold text-slate-800">{item?.title || 'Audit finding'}</h4></div>
-                                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${priority === 'high' ? 'bg-red-50 text-red-500' : priority === 'low' ? 'bg-emerald-50 text-emerald-600' : 'bg-brand-primary/10 text-brand-primary'}`}>{priority}</span>
-                                </div>
-                                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                                  <div><p className={`${lbl} mb-1`}>Root cause</p><p className="text-xs leading-relaxed text-slate-600">{item?.root_cause || item?.detail || 'No root cause provided.'}</p></div>
-                                  <div><p className={`${lbl} mb-1 text-brand-primary`}>Solution</p><p className="text-xs font-medium leading-relaxed text-slate-700">{item?.solution || 'No solution provided.'}</p></div>
-                                </div>
-                                {item?.avoid && <div className="mt-3 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50/60 px-3 py-2"><span className="mt-px shrink-0 text-[10px] font-semibold text-red-500">Avoid:</span><p className="text-xs leading-relaxed text-red-500/80">{item.avoid}</p></div>}
-                              </div>
-                            );
-                          })}
-                        </>
-                      ) : (
-                        (globalAudit || []).length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No project-level audit available yet. Run prompt analyses first.</div> : (globalAudit || []).map((item, idx) => (
-                          <div key={idx} className="glass-card-v2 p-5 transition-colors hover:shadow-[0_8px_32px_rgba(15,23,42,0.06)]">
-                            <div className="mb-3 flex items-start justify-between gap-3">
-                              <div className="flex items-center gap-2.5"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-[10px] font-semibold text-slate-500">{idx + 1}</span><h4 className="text-sm font-semibold text-slate-800">{item.title}</h4></div>
-                              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${item.priority === 'high' ? 'bg-red-50 text-red-500' : 'bg-brand-primary/10 text-brand-primary'}`}>{item.priority}</span>
-                            </div>
-                            <div className="grid grid-cols-1 gap-4 md:grid-cols-2"><div><p className={`${lbl} mb-1`}>Root Cause</p><p className="text-xs leading-relaxed text-slate-600">{item.root_cause}</p></div><div><p className={`${lbl} mb-1 text-brand-primary`}>Solution</p><p className="text-xs font-medium leading-relaxed text-slate-700">{item.solution}</p></div></div>
-                            {item.avoid && <div className="mt-3 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50/60 px-3 py-2"><span className="mt-px shrink-0 text-[10px] font-semibold text-red-500">Avoid:</span><p className="text-xs leading-relaxed text-red-500/80">{item.avoid}</p></div>}
-                            <Button onClick={() => { const t = { source: 'audit', headline: item.title, query: item.title, contentType: 'Article', auditRootCause: item.root_cause, auditSolution: item.solution }; setExecDraftTarget(t); setActiveSection('execute'); }} className="mt-3 w-full">Generate Fix Draft</Button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                </div>
-              </motion.div>
-            )}
-
             {/* ===== CONTENT STUDIO TAB ===== */}
             {activeSection === 'execute' && (
               <motion.div key="execute" {...sectionMotion} className="space-y-5">
@@ -786,7 +849,7 @@ const ProjectDetailView = () => {
                         ) : (
                           <div className="space-y-2">
                             <textarea value={customBriefText} onChange={(e) => setCustomBriefText(e.target.value)} rows={3} placeholder="Describe what you want to create... e.g. 'A comparison blog post about the best budget 4K TVs in India targeting first-time buyers'" className="w-full rounded-xl border border-slate-200/60 bg-white px-3.5 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand-primary focus:outline-none focus:ring-2 focus:ring-brand-primary/20" />
-                            <p className="text-[10px] text-slate-400">Or use "Draft from Top Citation" in Sources, "Generate Fix Draft" in Audit, or "Generate Draft" in Opportunities to pre-fill this.</p>
+                            <p className="text-[10px] text-slate-400">Or use &quot;Draft from Top Citation&quot; in Sources or &quot;Generate Draft&quot; in Opportunities to pre-fill this.</p>
                           </div>
                         )}
                       </div>
@@ -930,17 +993,16 @@ const ProjectDetailView = () => {
 
       {/* ===== SELECTED PROMPT DETAIL PANEL ===== */}
       {selectedPromptId && (
-        <motion.section initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass-card-v2 mt-8 overflow-hidden p-8">
-          <div className="h-1 bg-gradient-to-r from-brand-primary via-violet-500 to-cyan-400 -mx-8 -mt-8 mb-8" />
-          <div className="mb-8 flex items-center justify-between border-b border-slate-200/60 pb-6">
+        <motion.section ref={deepIntelRef} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass-card-v2 mt-8 scroll-mt-6 overflow-hidden p-8">
+          <div className="mb-8 flex items-center justify-between border-b border-slate-100/80 pb-6">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-primary/10 text-brand-primary"><Target className="h-5 w-5" /></div>
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-600"><Target className="h-5 w-5" /></div>
               <div>
-                <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Deep Intelligence Layer</h3>
+                <h3 className="text-xs font-medium text-slate-500">Prompt detail</h3>
                 <h2 className="text-xl font-bold tracking-tight text-slate-900">{promptDetailData?.prompt_text}</h2>
               </div>
             </div>
-            <button onClick={() => setSelectedPromptId(null)} className="rounded-xl border border-slate-200/60 p-2 text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600"><Plus className="h-5 w-5 rotate-45" /></button>
+            <button type="button" onClick={() => setSelectedPromptId(null)} className="rounded-xl p-2 text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600" aria-label="Close"><Plus className="h-5 w-5 rotate-45" /></button>
           </div>
 
           {promptDetailLoading ? <div className="flex items-center justify-center py-20"><Loader2 className="h-10 w-10 animate-spin text-brand-primary opacity-20" /></div>
@@ -971,15 +1033,39 @@ const ProjectDetailView = () => {
                       </div>
                     </div>
                   </div>
-                  <div className="glass-card-v2 relative overflow-hidden border-t-4 border-t-brand-primary bg-brand-primary/3 p-8">
-                    <div className="absolute -mr-16 -mt-16 right-0 top-0 h-32 w-32 rounded-full bg-brand-primary/10 blur-3xl opacity-50" />
-                    <h5 className="mb-8 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.3em] text-brand-primary"><CheckCircle2 className="h-5 w-5" /> Detailed Strategic Audit</h5>
-                    <div className="space-y-6">{(promptDetailData.audit || []).map((item, idx) => (<div key={idx} className="glass-card-v2 group p-5 transition-all hover:bg-white"><div className="mb-4 flex items-center justify-between"><h6 className="text-sm font-bold tracking-tight text-slate-900">{item.title}</h6><span className={`rounded-full px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-widest ${item.priority === 'high' ? 'bg-red-500/15 text-red-400' : 'bg-brand-primary/12 text-brand-primary'}`}>{item.priority}</span></div><div className="grid grid-cols-1 gap-4 md:grid-cols-2"><div className="space-y-1"><p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 opacity-60"><span className="h-1 w-1 rounded-full bg-slate-400" /> Root Cause</p><p className="text-xs font-semibold italic leading-relaxed text-slate-500">{renderTextWithLinks(item.root_cause || item.detail)}</p></div><div className="space-y-1 border-l border-slate-200/60 pl-4"><p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-brand-primary opacity-60"><span className="h-1 w-1 rounded-full bg-brand-primary" /> Tactical Solution</p><p className="text-xs font-bold leading-relaxed text-slate-900">{renderTextWithLinks(item.solution)}</p></div></div>{item.avoid && <div className="mt-4 flex items-start gap-2 border-t border-slate-200/60 pt-3"><Trash2 className="mt-0.5 h-3.5 w-3.5 text-red-400/50" /><p className="text-[10px] font-bold italic uppercase tracking-tighter text-red-400/60">Avoid: {item.avoid}</p></div>}</div>))}</div>
+                  <div className="glass-card-v2 p-6">
+                    <h5 className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-700"><CheckCircle2 className="h-4 w-4 text-slate-500" /> Strategic audit</h5>
+                    <div className="space-y-4">
+                      {(promptDetailData.audit || []).length === 0 && <p className="text-sm text-slate-500">No analysis yet. Run this prompt to generate audit findings.</p>}
+                      {(promptDetailData.audit || []).map((item, idx) => (
+                        <div key={idx} className="glass-inset rounded-xl p-4">
+                          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                            <h6 className="text-sm font-semibold text-slate-900">{item.title}</h6>
+                            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${item.priority === 'high' ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-600'}`}>{item.priority}</span>
+                          </div>
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            <div><p className={`${lbl} mb-1`}>Root cause</p><div className="text-xs leading-relaxed text-slate-600">{renderTextWithLinks(item.root_cause || item.detail)}</div></div>
+                            <div><p className={`${lbl} mb-1`}>Tactical solution</p><div className="text-xs leading-relaxed text-slate-800">{renderTextWithLinks(item.solution)}</div></div>
+                          </div>
+                          {item.avoid && <p className="mt-3 text-xs text-slate-500"><span className="font-medium text-slate-600">Avoid:</span> {item.avoid}</p>}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
-                <div className="glass-card-v2 border-l-4 border-l-brand-primary bg-brand-primary/3 p-8">
-                  <h5 className="mb-8 flex items-center gap-3 text-[10px] font-bold uppercase tracking-[0.3em] text-brand-primary"><PlayCircle className="h-6 w-6" /> Recommended Execution Steps</h5>
-                  <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">{(promptDetailData.recommended_actions || []).map((item, idx) => (<div key={idx} className="glass-card-v2 group flex flex-col justify-between p-6 transition-all hover:border-brand-primary/30"><div><h6 className="mb-2 text-sm font-bold text-slate-900 transition-colors group-hover:text-brand-primary">{item.title}</h6><p className="mb-6 text-xs font-semibold italic leading-relaxed text-slate-500">{renderTextWithLinks(item.detail)}</p></div>{item.link && <a href={item.link} target="_blank" rel="noreferrer" className="group/btn inline-flex items-center gap-2 rounded-xl border border-brand-primary/20 bg-brand-primary/8 px-5 py-3 text-[9px] font-bold uppercase tracking-widest text-brand-primary transition-all hover:border-brand-primary">Execute Strategy <ExternalLink className="h-3.5 w-3.5 transition-transform group-hover/btn:translate-x-0.5 group-hover/btn:-translate-y-0.5" /></a>}</div>))}</div>
+                <div className="glass-card-v2 p-6">
+                  <h5 className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-700"><PlayCircle className="h-5 w-5 text-slate-500" /> Recommended execution steps</h5>
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+                    {(promptDetailData.recommended_actions || []).map((item, idx) => (
+                      <div key={idx} className="glass-inset flex flex-col justify-between rounded-xl p-5">
+                        <div>
+                          <h6 className="mb-2 text-sm font-semibold text-slate-900">{item.title}</h6>
+                          <p className="text-xs leading-relaxed text-slate-600">{renderTextWithLinks(item.detail)}</p>
+                        </div>
+                        {item.link && <a href={item.link} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-brand-primary hover:underline">Open link <ExternalLink className="h-3 w-3" /></a>}
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 <div className="glass-card-v2 p-8">
                   <h5 className="mb-8 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500"><FileText className="h-4 w-4" /> Cited Sources & Knowledge Points</h5>
