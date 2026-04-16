@@ -29,6 +29,9 @@ const ProductPreview = () => {
             e.currentTarget.style.transform = 'perspective(1000px) rotateX(5deg)';
           }}
         >
+          <span className="absolute right-4 top-4 z-10 inline-flex items-center gap-1 rounded-full border border-slate-200/80 bg-white/95 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500 shadow-sm backdrop-blur-sm">
+            Illustrative preview
+          </span>
           <div className="flex min-h-[480px] flex-col overflow-hidden rounded-xl border border-[#e2e8f0] bg-[#f8fafc] md:flex-row">
             <div className="hidden w-56 flex-none border-r border-[#e2e8f0] bg-white p-5 text-left md:block">
               <div className="mb-8">

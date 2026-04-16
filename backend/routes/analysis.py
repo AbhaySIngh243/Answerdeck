@@ -3,6 +3,7 @@
 import os
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
@@ -13,7 +14,6 @@ from engine.analyzer import (
     build_focus_brand_aliases,
     build_competitor_comparison,
     calculate_visibility_score,
-    generate_positioning_insights,
     is_focus_brand_match,
     is_spurious_brand_mention,
 )
@@ -23,6 +23,7 @@ from engine.llm_clients import (
     query_engines,
     set_search_layer_provider,
 )
+from engine.url_verifier import verify_urls
 from exceptions import NotFoundError
 from extensions import executor
 from models import AnalysisJob, Mention, Project, Prompt, Response, VisibilityMetric, db
@@ -161,19 +162,63 @@ def async_run_analysis(
             analyses: dict[str, dict] = {}
             all_focus_mentions: list[dict] = []
 
-            for engine_name, response_text in raw_responses.items():
-                analysis = analyze_single_response(
-                    response_text=response_text,
+            def _run_extraction(eng, text):
+                return eng, analyze_single_response(
+                    response_text=text,
                     focus_brand=focus_brand,
                     query=prompt.prompt_text,
                     competitor_brands=competitor_brands,
                     focus_brand_aliases=focus_brand_aliases,
                 )
-                analyses[engine_name] = analysis
 
-                # Merge search grounding URLs into extracted sources so citations are never empty.
-                engine_sources = list(analysis.get("sources", []))
-                for url in grounding_urls:
+            with ThreadPoolExecutor(max_workers=max(1, len(raw_responses))) as pool:
+                futures = {
+                    pool.submit(_run_extraction, eng, text): eng
+                    for eng, text in raw_responses.items()
+                }
+                for future in as_completed(futures):
+                    eng_name, analysis = future.result()
+                    analyses[eng_name] = analysis
+
+            # Collect every URL across all engines + grounding so we can
+            # verify reachability in one pooled pass instead of per-engine.
+            all_urls_to_verify: list[str] = []
+            _seen_urls: set[str] = set()
+            for engine_name, response_text in raw_responses.items():
+                for url in analyses[engine_name].get("sources", []) or []:
+                    if url and url not in _seen_urls:
+                        _seen_urls.add(url)
+                        all_urls_to_verify.append(url)
+            for url in grounding_urls or []:
+                if url and url not in _seen_urls:
+                    _seen_urls.add(url)
+                    all_urls_to_verify.append(url)
+
+            try:
+                url_status = verify_urls(all_urls_to_verify) if all_urls_to_verify else {}
+            except Exception as exc:
+                app_obj.logger.info("URL verification skipped: %s", exc)
+                url_status = {}
+
+            def _verified_urls(urls: list[str]) -> list[str]:
+                out: list[str] = []
+                for raw in urls or []:
+                    info = url_status.get(raw) or {}
+                    status = info.get("status")
+                    if status == "ok":
+                        out.append(raw)
+                    elif status == "broken":
+                        continue
+                    else:
+                        # unknown (skipped or never probed) — keep but mark upstream.
+                        out.append(raw)
+                return out
+
+            for engine_name, response_text in raw_responses.items():
+                analysis = analyses[engine_name]
+
+                engine_sources = list(_verified_urls(analysis.get("sources", [])))
+                for url in _verified_urls(grounding_urls):
                     if url not in engine_sources:
                         engine_sources.append(url)
 
@@ -251,13 +296,6 @@ def async_run_analysis(
                     )
                 )
 
-            insights = generate_positioning_insights(
-                focus_brand=focus_brand,
-                query=prompt.prompt_text,
-                analyses=analyses,
-                competitors=competitors,
-            )
-
             db.session.commit()
 
             engine_analyses = {
@@ -283,15 +321,20 @@ def async_run_analysis(
                 ],
                 "competitors": competitors,
                 "sentiment": _build_sentiment_summary(engine_analyses),
-                "insights": insights,
+                "insights": {},
                 "raw_responses": [
                     {
                         "llm": engine.upper(),
                         "response": text,
                         "sources": analyses[engine].get("sources", []),
+                        "source_status": {
+                            url: (url_status.get(url) or {}).get("status", "unknown")
+                            for url in analyses[engine].get("sources", [])
+                        },
                     }
                     for engine, text in raw_responses.items()
                 ],
+                "url_status": url_status,
                 "timestamp": _now_iso(),
             }
 
@@ -494,6 +537,9 @@ def get_results(prompt_id):
     responses = Response.query.filter_by(prompt_id=prompt.id).order_by(Response.timestamp.desc()).all()
     payload: list[dict] = []
 
+    all_sources: list[str] = []
+    _seen_src: set[str] = set()
+
     for response in responses:
         engine_lower = (response.engine or "").strip().lower()
         if engine_lower.endswith("_research"):
@@ -502,6 +548,11 @@ def get_results(prompt_id):
             continue
 
         mentions = Mention.query.filter_by(response_id=response.id).all()
+        sources = json.loads(response.sources or "[]")
+        for url in sources:
+            if url not in _seen_src:
+                _seen_src.add(url)
+                all_sources.append(url)
         payload.append(
             {
                 "id": response.id,
@@ -509,7 +560,7 @@ def get_results(prompt_id):
                 "engine": response.engine,
                 "response_text": response.response_text,
                 "timestamp": response.timestamp,
-                "sources": json.loads(response.sources or "[]"),
+                "sources": sources,
                 "mentions": [
                     {
                         "brand": mention.brand,
@@ -523,11 +574,24 @@ def get_results(prompt_id):
             }
         )
 
+    # Only read the cache — never probe here, so the UI never waits.
+    try:
+        url_status = verify_urls(all_sources, allow_network=False) if all_sources else {}
+    except Exception:
+        url_status = {}
+
+    for row in payload:
+        row["source_status"] = {
+            url: (url_status.get(url) or {}).get("status", "unknown")
+            for url in row.get("sources", [])
+        }
+
     return jsonify(
         {
             "prompt_id": prompt.id,
             "prompt_text": prompt.prompt_text,
             "responses": payload,
+            "url_status": url_status,
         }
     )
 
@@ -575,14 +639,22 @@ def run_test_prompt(project_id):
 
     analyses = {}
     focus_brand_aliases = build_focus_brand_aliases(project.name, project.website_url)
-    for engine_name, response_text in responses.items():
-        analyses[engine_name] = analyze_single_response(
-            response_text=response_text,
+    competitor_brands = project.get_competitors_list()
+
+    def _test_extract(eng, text):
+        return eng, analyze_single_response(
+            response_text=text,
             focus_brand=project.name,
             query=query,
-            competitor_brands=project.get_competitors_list(),
+            competitor_brands=competitor_brands,
             focus_brand_aliases=focus_brand_aliases,
         )
+
+    with ThreadPoolExecutor(max_workers=max(1, len(responses))) as pool:
+        futures = {pool.submit(_test_extract, e, t): e for e, t in responses.items()}
+        for future in as_completed(futures):
+            eng_name, analysis = future.result()
+            analyses[eng_name] = analysis
 
     return jsonify(
         {

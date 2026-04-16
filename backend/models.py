@@ -7,13 +7,15 @@ db = SQLAlchemy()
 class Project(db.Model):
     __tablename__ = 'projects'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id = db.Column(db.String, nullable=False, index=True) # Linked to Supabase Auth user.id
+    user_id = db.Column(db.String, nullable=False, index=True)
     name = db.Column(db.String, nullable=False)
     category = db.Column(db.String, default="")
     competitors = db.Column(db.String, default="[]")
     region = db.Column(db.String, default="")
     website_url = db.Column(db.String, default="")
     collaborators = db.Column(db.String, default="[]")
+    onboarding_data = db.Column(db.Text, default="{}")
+    onboarding_completed = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.String, nullable=False)
 
     prompts = db.relationship('Prompt', backref='project', cascade="all, delete-orphan")
@@ -52,11 +54,22 @@ class Project(db.Model):
         except Exception:
             return []
 
+    def get_onboarding_data(self):
+        try:
+            parsed = json.loads(self.onboarding_data or "{}")
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    def set_onboarding_data(self, payload: dict):
+        safe = payload if isinstance(payload, dict) else {}
+        self.onboarding_data = json.dumps(safe)
+
 
 class Prompt(db.Model):
     __tablename__ = 'prompts'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id = db.Column(db.String, nullable=False, index=True) # Linked to Supabase Auth user.id
+    user_id = db.Column(db.String, nullable=False, index=True)
     project_id = db.Column(db.Integer, db.ForeignKey('projects.id', ondelete="CASCADE"), nullable=False)
     prompt_text = db.Column(db.String, nullable=False)
     prompt_type = db.Column(db.String, default="Manual")
@@ -112,6 +125,45 @@ class VisibilityMetric(db.Model):
     project_id = db.Column(db.Integer, db.ForeignKey('projects.id', ondelete="CASCADE"), nullable=False)
     score = db.Column(db.Float, nullable=False)
     date = db.Column(db.String, nullable=False)
+
+
+class UserBilling(db.Model):
+    """Clerk user subscription state synced from Razorpay webhooks."""
+
+    __tablename__ = "user_billing"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    clerk_user_id = db.Column(db.String, unique=True, nullable=False, index=True)
+    internal_plan = db.Column(db.String, nullable=False, default="free")  # free|standard|pro
+    razorpay_subscription_id = db.Column(db.String, default="", index=True)
+    razorpay_plan_id = db.Column(db.String, default="")
+    status = db.Column(db.String, nullable=False, default="free")
+    current_period_end = db.Column(db.String, default="")
+    updated_at = db.Column(db.String, nullable=False)
+
+
+class BillingConfig(db.Model):
+    """Small key/value store for Razorpay plan IDs, webhook secret, etc.
+
+    Keeps auto-provisioned plan IDs stable across restarts so we don't create
+    duplicate plans on every boot when env vars aren't set.
+    """
+
+    __tablename__ = "billing_config"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    key = db.Column(db.String, unique=True, nullable=False, index=True)
+    value = db.Column(db.String, default="")
+    updated_at = db.Column(db.String, default="")
+
+
+class VerifiedUrl(db.Model):
+    """Cache of URL reachability checks so we don't re-probe on every report render."""
+
+    __tablename__ = "verified_urls"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    url = db.Column(db.String, unique=True, nullable=False, index=True)
+    http_code = db.Column(db.Integer, default=0)
+    status = db.Column(db.String, default="unknown")  # ok|broken|unknown
+    verified_at = db.Column(db.String, default="")
 
 
 class AnalysisJob(db.Model):

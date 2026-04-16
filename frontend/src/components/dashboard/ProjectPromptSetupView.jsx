@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CheckCircle2, Loader2, PlusCircle } from 'lucide-react';
 
 import { api } from '../../lib/api';
@@ -8,8 +8,6 @@ import { SectionScaffold, StatePanel } from './ui/SectionScaffold';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Textarea } from '../ui/textarea';
-
-const MAX_PROMPTS_PER_PROJECT = 10;
 
 function buildSuggestedPrompts(project) {
   const categoryTokens = String(project?.category || 'software')
@@ -28,6 +26,7 @@ function buildSuggestedPrompts(project) {
 export default function ProjectPromptSetupView() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const { data: project, isLoading, error } = useQuery({
     queryKey: ['project', id],
@@ -40,6 +39,13 @@ export default function ProjectPromptSetupView() {
     queryFn: () => api.getPrompts(id),
     enabled: Boolean(id),
   });
+
+  const { data: billing } = useQuery({
+    queryKey: ['billing', 'me'],
+    queryFn: api.getBillingMe,
+    staleTime: 60_000,
+  });
+  const maxPrompts = billing?.limits?.max_prompts_per_project ?? 3;
 
   const {
     data: suggestedPayload,
@@ -81,6 +87,7 @@ export default function ProjectPromptSetupView() {
       );
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
       navigate(`/dashboard/project/${id}`);
     },
   });
@@ -108,11 +115,11 @@ export default function ProjectPromptSetupView() {
         deduped.push(text);
       }
     }
-    return deduped.slice(0, Math.max(0, MAX_PROMPTS_PER_PROJECT - existingPrompts.length));
-  }, [customPrompts, existingPrompts, selectedSuggested]);
+    return deduped.slice(0, Math.max(0, maxPrompts - existingPrompts.length));
+  }, [customPrompts, existingPrompts, selectedSuggested, maxPrompts]);
 
   const totalAfterSave = existingPrompts.length + combinedPrompts.length;
-  const canSave = combinedPrompts.length > 0 && totalAfterSave <= MAX_PROMPTS_PER_PROJECT;
+  const canSave = combinedPrompts.length > 0 && totalAfterSave <= maxPrompts;
 
   if (isLoading) {
     return (
@@ -208,7 +215,7 @@ export default function ProjectPromptSetupView() {
         <CardHeader>
           <CardTitle>Review</CardTitle>
           <CardDescription>
-          {combinedPrompts.length} new prompts will be added ({totalAfterSave}/{MAX_PROMPTS_PER_PROJECT} total after saving).
+          {combinedPrompts.length} new prompts will be added ({totalAfterSave}/{maxPrompts} total after saving).
           </CardDescription>
         </CardHeader>
         <CardContent>

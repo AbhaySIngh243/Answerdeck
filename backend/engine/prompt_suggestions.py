@@ -655,6 +655,56 @@ Return ONLY valid JSON:
 }}"""
 
 
+def generate_competitor_suggestions(project: dict[str, Any], max_items: int = 6) -> list[str]:
+    """Use LLM + website context to suggest competitors when no Mention data exists."""
+    project_name = str(project.get("name") or "").strip()
+    category = _short_category(project.get("category") or "")
+    region = str(project.get("region") or "").strip()
+    existing = [str(c).strip() for c in (project.get("competitors") or []) if c]
+
+    snapshot = _collect_site_snapshot(project.get("website_url") or "")
+    site_context = _build_site_context_for_llm(snapshot)
+
+    existing_clause = ""
+    if existing:
+        existing_clause = f"\nAlready known competitors (do not repeat): {', '.join(existing[:8])}"
+
+    prompt = f"""You are a competitive intelligence analyst.
+Given the brand and website context below, return a JSON array of {max_items} direct competitor brand names.
+
+Brand: {project_name}
+Category: {category}
+Region: {region or "global"}
+{existing_clause}
+
+Website context:
+{site_context}
+
+Rules:
+- Return only real brand/company names that compete in the same market segment.
+- Do not include the brand itself.
+- Short names only (1-3 words each, the brand name people search for).
+
+Return ONLY a valid JSON array of strings, e.g. ["Competitor A", "Competitor B"]"""
+
+    try:
+        raw = chat("chatgpt", prompt, temperature=0.3)
+        parsed = _extract_json(raw)
+        if isinstance(parsed, list):
+            existing_lower = {e.lower() for e in existing}
+            existing_lower.add(project_name.lower())
+            results = []
+            for item in parsed:
+                name = str(item or "").strip()
+                if name and name.lower() not in existing_lower and len(name) < 60:
+                    results.append(name)
+                    existing_lower.add(name.lower())
+            return results[:max_items]
+    except Exception:
+        pass
+    return []
+
+
 def generate_project_prompt_suggestions(project: dict[str, Any], max_prompts: int = 10) -> dict[str, Any]:
     _ = max_prompts
     project_name = str(project.get("name") or "").strip()

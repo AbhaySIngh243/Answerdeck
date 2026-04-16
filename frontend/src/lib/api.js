@@ -230,6 +230,24 @@ export const api = {
     }),
   getSuggestedPrompts: (projectId, maxPrompts = 3) =>
     request(`/projects/${projectId}/suggested-prompts?max_prompts=${encodeURIComponent(maxPrompts)}`),
+  updateOnboardingStep: (projectId, body) =>
+    request(`/projects/${projectId}/onboarding/step`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  getOnboardingSuggestions: (projectId, body = {}) =>
+    request(`/projects/${projectId}/onboarding/suggestions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  completeOnboarding: (projectId) =>
+    request(`/projects/${projectId}/onboarding/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
 
   getPrompts: (projectId) => request(`/prompts/project/${projectId}`),
   createPrompt: (projectId, payload) =>
@@ -312,6 +330,34 @@ export const api = {
       timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     }),
   getOverview: () => request('/reports/overview'),
+
+  getBillingMe: () => request('/billing/me'),
+  getBillingHealth: () => request('/billing/health'),
+  createSubscription: (planKey) =>
+    request('/billing/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan_key: planKey }),
+    }),
+
+  askOnboardingAssistant: (projectId, payload) =>
+    request(`/projects/${projectId}/assistant`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  improvePrompt: (promptId, payload = {}) =>
+    request(`/prompts/${promptId}/assistant`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  draftPrompt: (payload) =>
+    request('/prompts/assistant/draft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
 };
 
 export async function downloadFile(path, filename) {

@@ -1,6 +1,8 @@
 import os
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+from sqlalchemy import inspect, text
+
 from models import db
 
 
@@ -63,3 +65,26 @@ def init_db(app):
     with app.app_context():
         # Auto-create tables in the new Postgres database
         db.create_all()
+        _ensure_runtime_schema(db.engine)
+
+
+def _ensure_runtime_schema(engine):
+    """Best-effort additive schema updates for environments without migrations."""
+    try:
+        inspector = inspect(engine)
+        if "projects" not in inspector.get_table_names():
+            return
+        columns = {col["name"] for col in inspector.get_columns("projects")}
+        statements = []
+        if "onboarding_data" not in columns:
+            statements.append("ALTER TABLE projects ADD COLUMN onboarding_data TEXT DEFAULT '{}'")
+        if "onboarding_completed" not in columns:
+            statements.append("ALTER TABLE projects ADD COLUMN onboarding_completed BOOLEAN DEFAULT FALSE")
+        if not statements:
+            return
+        with engine.begin() as conn:
+            for stmt in statements:
+                conn.execute(text(stmt))
+    except Exception:
+        # Startup should not fail due to best-effort schema drift handling.
+        return

@@ -26,6 +26,8 @@ import {
   Trash2,
   TrendingUp,
   Users,
+  Wand2,
+  X,
   Zap,
 } from 'lucide-react';
 
@@ -37,8 +39,6 @@ import PerformancePanel from './sections/PerformancePanel';
 import PromptPerformanceTable from './sections/PromptPerformanceTable';
 import CompetitorSnapshot from './sections/CompetitorSnapshot';
 import { Button } from '../ui/button';
-
-const MAX_PROMPTS_PER_PROJECT = 10;
 
 const SECTION_IDS = [
   { id: 'dashboard', label: 'Dashboard', icon: BarChart2 },
@@ -124,7 +124,8 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
     if (next && !playbook && !playbookLoading) refetch();
   }, [open, playbook, playbookLoading, refetch]);
 
-  const { prose, urls } = useMemo(() => splitProseAndUrls(item.detail), [item.detail]);
+  const detailText = item.detail || (Array.isArray(item.action_plan) ? item.action_plan.join(' ') : '');
+  const { prose, urls } = useMemo(() => splitProseAndUrls(detailText), [detailText]);
 
   return (
     <div className="glass-card-v2 overflow-hidden transition-shadow hover:shadow-[0_8px_32px_rgba(15,23,42,0.08)]">
@@ -135,7 +136,20 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
             {item.priority}
           </span>
         </div>
+        {item.trigger_signal && <p className="mb-2 text-[11px] text-slate-500"><span className="font-semibold text-slate-600">Signal:</span> {item.trigger_signal}</p>}
         {prose && <p className="mb-2 text-xs leading-relaxed text-slate-500">{prose}</p>}
+        {Array.isArray(item.action_plan) && item.action_plan.length > 0 && (
+          <ul className="mb-2 list-disc space-y-1 pl-5 text-[11px] text-slate-700">
+            {item.action_plan.slice(0, 4).map((step, idx) => <li key={`${idx}-${step}`}>{step}</li>)}
+          </ul>
+        )}
+        {(item.source_count || item.confidence) && (
+          <p className="mb-1 text-[10px] text-slate-400">
+            {item.source_count ? `${item.source_count} sources` : null}
+            {item.source_count && item.confidence ? ' · ' : null}
+            {item.confidence ? `${Math.round(Number(item.confidence) * 100)}% confidence` : null}
+          </p>
+        )}
         {urls.length > 0 && (
           <div className="mb-1">
             <p className={`${lbl} mb-1.5`}>Sources ({urls.length})</p>
@@ -241,6 +255,7 @@ const ProjectDetailView = () => {
   const [runningPrompts, setRunningPrompts] = useState({});
   const [selectedPromptId, setSelectedPromptId] = useState(null);
   const [activeSection, setActiveSection] = useState('dashboard');
+  const [improveTarget, setImproveTarget] = useState(null); // {prompt_id, prompt_text}
   const deepIntelRef = useRef(null);
 
   const { data: projectData, isLoading, error } = useQuery({
@@ -251,6 +266,12 @@ const ProjectDetailView = () => {
       ]);
       return { project, prompts, dashboard, enabledEngines: engines.enabled_engines || [], availableEngines: engines.available_engines || [], searchLayer: engines.search_layer || {} };
     },
+  });
+
+  const { data: billing } = useQuery({
+    queryKey: ['billing', 'me'],
+    queryFn: api.getBillingMe,
+    staleTime: 60_000,
   });
 
   const effectiveSearchProvider = useMemo(() => {
@@ -279,6 +300,16 @@ const ProjectDetailView = () => {
     });
     return mergeSourcesByDomainKey(normalized);
   }, [selectedPromptId, promptDetailData?.sources, sourcesIntel?.domains]);
+  const strictSourceRows = useMemo(() => (Array.isArray(sourcesIntel?.sources) ? sourcesIntel.sources : []), [sourcesIntel?.sources]);
+  const contextState = useMemo(
+    () => (
+      projectData?.dashboard?.context_state ||
+      deepAnalysis?.context_state ||
+      sourcesIntel?.context_state ||
+      { context_ready: true }
+    ),
+    [projectData?.dashboard?.context_state, deepAnalysis?.context_state, sourcesIntel?.context_state]
+  );
 
   const competitorDisplayRows = useMemo(() => competitorIntel?.rows || [], [competitorIntel?.rows]);
   const { data: intelSummary, isLoading: intelSummaryLoading } = useQuery({ queryKey: ['intel-summary', id], queryFn: () => api.getIntelSummary(id), enabled: Boolean(id) && activeSection === 'dashboard' && !selectedPromptId });
@@ -431,7 +462,8 @@ const ProjectDetailView = () => {
   }
 
   const { project, prompts, dashboard, enabledEngines, availableEngines } = projectData;
-  const atPromptLimit = (prompts?.length ?? 0) >= MAX_PROMPTS_PER_PROJECT;
+  const maxPromptsPerProject = billing?.limits?.max_prompts_per_project ?? 3;
+  const atPromptLimit = (prompts?.length ?? 0) >= maxPromptsPerProject;
 
   const runExecuteFromTarget = (target) => {
     if (!target?.source) return;
@@ -509,6 +541,18 @@ const ProjectDetailView = () => {
           </div>
         </div>
       </motion.div>
+
+      {!contextState?.context_ready && (
+        <div className="rounded-xl border border-amber-200/70 bg-amber-50/70 px-4 py-3 text-sm text-amber-900">
+          <p className="font-semibold">Limited context mode</p>
+          <p className="mt-1 text-xs text-amber-800">
+            Complete onboarding to step 5 for sharper, context-rich recommendations.
+            <Link to={`/dashboard/project/${id}/onboarding`} className="ml-1 font-semibold underline underline-offset-2">
+              Improve context
+            </Link>
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[200px_minmax(0,1fr)]">
         {/* Section sidebar */}
@@ -651,7 +695,17 @@ const ProjectDetailView = () => {
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-primary/10 text-brand-primary"><Search className="h-4 w-4" /></div>
                       <div><h2 className="text-sm font-semibold text-slate-800">Prompts Analysis</h2><p className="text-[11px] text-slate-400">Visibility is share of runs where your brand appears in the model answer text (not whether your domain is in citation URLs).</p></div>
                     </div>
-                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold tabular-nums text-slate-600">{(prompts?.length ?? 0)}/{MAX_PROMPTS_PER_PROJECT}</span>
+                    <div className="flex items-center gap-2">
+                      <Link
+                        to={`/dashboard/project/${id}/prompts/setup`}
+                        className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:border-brand-primary hover:text-brand-primary"
+                        title="Bulk add from AI suggestions"
+                      >
+                        <Sparkles className="h-3 w-3" />
+                        Bulk add from suggestions
+                      </Link>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold tabular-nums text-slate-600">{(prompts?.length ?? 0)}/{maxPromptsPerProject}</span>
+                    </div>
                   </div>
                   <div className="bg-slate-50/40 p-5">
                     {analyzePromptMutation.isError && <div className="mb-3 rounded-xl border border-red-100 bg-red-50 px-3.5 py-2.5 text-sm text-red-600">{analyzePromptMutation.error?.message}</div>}
@@ -672,7 +726,7 @@ const ProjectDetailView = () => {
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
-                        <Button type="submit" disabled={analyzePromptMutation.isPending || !newPromptText.trim() || atPromptLimit}>{analyzePromptMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}{atPromptLimit ? `Limit reached (${MAX_PROMPTS_PER_PROJECT})` : 'Analyze Prompt'}</Button>
+                        <Button type="submit" disabled={analyzePromptMutation.isPending || !newPromptText.trim() || atPromptLimit}>{analyzePromptMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}{atPromptLimit ? `Limit reached (${maxPromptsPerProject})` : 'Analyze Prompt'}</Button>
                         {Object.values(runningPrompts).some(Boolean) && <span className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-primary"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Analysis in progress</span>}
                       </div>
                     </form>
@@ -695,12 +749,26 @@ const ProjectDetailView = () => {
                               <td className="px-5 py-3">
                                 <div className="flex items-center gap-1.5">
                                   <Button size="sm" onClick={() => runPromptMutation.mutate(row.prompt_id)} disabled={runningPrompts[row.prompt_id]}>{runningPrompts[row.prompt_id] ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}{runningPrompts[row.prompt_id] ? 'Running' : 'Run'}</Button>
+                                  <Button size="sm" variant="secondary" onClick={() => setImproveTarget({ prompt_id: row.prompt_id, prompt_text: row.prompt_text })} title="Improve this prompt with AI"><Wand2 className="h-3 w-3" /></Button>
                                   <Button size="sm" variant="ghost" onClick={() => deletePromptMutation.mutate(row.prompt_id)} className="text-slate-400 hover:text-red-500"><Trash2 className="h-3 w-3" /></Button>
                                 </div>
                               </td>
                             </tr>
                           ))}
-                        {!promptAnalysisLoading && (promptAnalysis?.rows || []).length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400">No prompt analytics yet.</td></tr>}
+                        {!promptAnalysisLoading && (promptAnalysis?.rows || []).length === 0 && (
+                          <tr>
+                            <td colSpan={7} className="py-10 text-center text-sm text-slate-400">
+                              <p>No prompts yet. Add one above, or</p>
+                              <Link
+                                to={`/dashboard/project/${id}/prompts/setup`}
+                                className="mt-1 inline-flex items-center gap-1 text-brand-primary hover:underline"
+                              >
+                                <Sparkles className="h-3 w-3" />
+                                bulk add from AI suggestions
+                              </Link>
+                            </td>
+                          </tr>
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -780,6 +848,21 @@ const ProjectDetailView = () => {
                       <p className={lbl}>Evidence-backed targets</p>
                       <button onClick={() => { const top = mergedSourcesRows[0]; if (!top) return; const domainLabel = top.label || top.domain; const intent = intelSummary?.top_priority_prompts?.[0] || project.name; const t = { source: 'citation', headline: `${domainLabel} · ${intent}`, query: intent, contentType: 'Article', domain: domainLabel }; setExecDraftTarget(t); setActiveSection('execute'); }} disabled={mergedSourcesRows.length === 0} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200/60 bg-white/60 px-3 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:border-brand-primary hover:text-brand-primary disabled:opacity-50">Draft from Top Citation</button>
                     </div>
+                    {strictSourceRows.length > 0 && (
+                      <div className="mb-5 grid grid-cols-1 gap-2 md:grid-cols-2">
+                        {strictSourceRows.slice(0, 4).map((row) => (
+                          <div key={`${row.domain}-${row.source_class}`} className="rounded-xl border border-slate-200/70 bg-white/70 p-3">
+                            <div className="mb-1 flex items-center justify-between gap-2">
+                              <p className="truncate text-xs font-semibold text-slate-800">{row.domain}</p>
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">{row.source_class}</span>
+                            </div>
+                            <p className="text-[11px] text-slate-500">{row.evidence}</p>
+                            <p className="mt-1 text-[11px] text-slate-700"><span className="font-semibold">This week:</span> {row.action}</p>
+                            <p className="mt-1 text-[10px] text-slate-400">{Math.round(Number(row.confidence || 0) * 100)}% confidence · {row.source_count || 0} citations</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {(sourcesIntelLoading || (Boolean(selectedPromptId) && promptDetailLoading)) && mergedSourcesRows.length === 0 ? (
                       <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1.5fr_1fr]">
                         <div className="glass-inset h-80 animate-pulse rounded-2xl p-4"><div className="mb-4 h-5 w-[55%] rounded bg-slate-100" /><div className="h-[230px] rounded-2xl border border-slate-200 bg-slate-50" /></div>
@@ -963,7 +1046,7 @@ const ProjectDetailView = () => {
                         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600"><Sparkles className="h-4 w-4" /></div>
                         <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Strategic Action Plan</p><DataBadge type="ai" /></div><p className="text-[11px] text-slate-400">Expand any item for a step-by-step execution playbook</p></div>
                       </div>
-                      <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">{(deepAnalysis?.action_plan || []).map((item, idx) => <ActionPlanCard key={idx} item={item} projectId={id} onGenerateDraft={(action) => { const t = { source: 'path', headline: action.title, query: action.detail?.slice(0, 200) || action.title, pathRec: action.detail || action.title, contentType: 'Article' }; setExecDraftTarget(t); setActiveSection('execute'); }} />)}</div>
+                      <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">{(deepAnalysis?.action_plan || []).map((item, idx) => <ActionPlanCard key={idx} item={item} projectId={id} onGenerateDraft={(action) => { const pathDetail = action.detail || (Array.isArray(action.action_plan) ? action.action_plan.join(' ') : action.title); const t = { source: 'path', headline: action.title, query: (action.trigger_signal || pathDetail || action.title).slice(0, 200), pathRec: pathDetail || action.title, contentType: 'Article' }; setExecDraftTarget(t); setActiveSection('execute'); }} />)}</div>
                     </div>
                     {deepAnalysis?.search_intel?.enabled && (
                       <div className="glass-card-v2 p-6">
@@ -1040,13 +1123,23 @@ const ProjectDetailView = () => {
                       {(promptDetailData.audit || []).map((item, idx) => (
                         <div key={idx} className="glass-inset rounded-xl p-4">
                           <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-                            <h6 className="text-sm font-semibold text-slate-900">{item.title}</h6>
+                            <h6 className="text-sm font-semibold text-slate-900">{item.issue || item.title}</h6>
                             <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${item.priority === 'high' ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-600'}`}>{item.priority}</span>
                           </div>
                           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                             <div><p className={`${lbl} mb-1`}>Root cause</p><div className="text-xs leading-relaxed text-slate-600">{renderTextWithLinks(item.root_cause || item.detail)}</div></div>
-                            <div><p className={`${lbl} mb-1`}>Tactical solution</p><div className="text-xs leading-relaxed text-slate-800">{renderTextWithLinks(item.solution)}</div></div>
+                            <div><p className={`${lbl} mb-1`}>Evidence</p><div className="text-xs leading-relaxed text-slate-800">{renderTextWithLinks(item.evidence || item.solution)}</div></div>
                           </div>
+                          {Array.isArray(item.fix_steps) && item.fix_steps.length > 0 && (
+                            <div className="mt-3">
+                              <p className={`${lbl} mb-1`}>What to do this week</p>
+                              <ul className="list-disc space-y-1 pl-5 text-xs leading-relaxed text-slate-700">
+                                {item.fix_steps.slice(0, 4).map((step) => <li key={step}>{renderTextWithLinks(step)}</li>)}
+                              </ul>
+                            </div>
+                          )}
+                          {item.expected_impact && <p className="mt-3 text-xs text-slate-500"><span className="font-medium text-slate-600">Expected impact:</span> {item.expected_impact}</p>}
+                          {(item.confidence || item.source_type) && <p className="mt-2 text-[10px] text-slate-400">{item.source_type === 'measured' ? 'Measured' : 'AI-generated'}{item.confidence ? ` · ${Math.round(Number(item.confidence) * 100)}% confidence` : ''}</p>}
                           {item.avoid && <p className="mt-3 text-xs text-slate-500"><span className="font-medium text-slate-600">Avoid:</span> {item.avoid}</p>}
                         </div>
                       ))}
@@ -1079,8 +1172,145 @@ const ProjectDetailView = () => {
             )}
         </motion.section>
       )}
+
+      {improveTarget && (
+        <ImprovePromptModal
+          promptId={improveTarget.prompt_id}
+          originalText={improveTarget.prompt_text}
+          projectName={project?.name || ''}
+          industry={project?.category || ''}
+          onClose={() => setImproveTarget(null)}
+          onAccept={async (rewritten) => {
+            try {
+              await api.updatePrompt(improveTarget.prompt_id, { prompt_text: rewritten });
+              queryClient.invalidateQueries({ queryKey: ['prompts', id] });
+              queryClient.invalidateQueries({ queryKey: ['prompt-analysis', id] });
+            } finally {
+              setImproveTarget(null);
+            }
+          }}
+        />
+      )}
     </div>
   );
 };
+
+function ImprovePromptModal({ promptId, originalText, projectName, industry, onClose, onAccept }) {
+  const [editable, setEditable] = useState('');
+  const [saving, setSaving] = useState(false);
+  const improveMutation = useMutation({
+    mutationFn: () =>
+      api.improvePrompt(promptId, {
+        prompt_text: originalText,
+        focus_brand: projectName,
+        industry,
+      }),
+    onSuccess: (data) => {
+      if (data?.rewritten_prompt) setEditable(data.rewritten_prompt);
+    },
+  });
+
+  useEffect(() => {
+    improveMutation.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const suggestion = improveMutation.data;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+      <div className="relative w-full max-w-xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+          <div className="flex items-center gap-2">
+            <Wand2 className="h-4 w-4 text-brand-primary" />
+            <div>
+              <p className="text-sm font-semibold text-slate-800">Improve this prompt</p>
+              <p className="text-[11px] text-slate-400">AI rewrite tuned for LLM visibility tracking.</p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-4 px-5 py-4 text-sm">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Original</p>
+            <p className="mt-1 rounded-lg bg-slate-50 px-3 py-2 text-slate-700">{originalText}</p>
+          </div>
+
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Rewrite</p>
+            {improveMutation.isPending ? (
+              <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Generating a crisper version...
+              </div>
+            ) : (
+              <textarea
+                value={editable}
+                onChange={(e) => setEditable(e.target.value)}
+                rows={3}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-brand-primary focus:outline-none focus:ring-2 focus:ring-brand-primary/20"
+              />
+            )}
+            {suggestion?.reasoning && (
+              <p className="mt-1 text-[11px] text-slate-500">
+                <span className="font-semibold text-slate-600">Why: </span>{suggestion.reasoning}
+              </p>
+            )}
+            {typeof suggestion?.quality_score === 'number' && (
+              <p className="mt-1 text-[11px] text-slate-400">Quality score: {suggestion.quality_score}</p>
+            )}
+          </div>
+
+          {Array.isArray(suggestion?.alternative_angles) && suggestion.alternative_angles.length > 0 && (
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Alternative angles</p>
+              <div className="mt-1 space-y-1">
+                {suggestion.alternative_angles.map((alt, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setEditable(alt)}
+                    className="flex w-full items-start gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm text-slate-700 hover:border-brand-primary hover:bg-brand-primary/5"
+                  >
+                    <Sparkles className="mt-0.5 h-3.5 w-3.5 text-brand-primary" />
+                    <span>{alt}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-slate-100 bg-slate-50/60 px-5 py-3">
+          <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={async () => {
+              if (!editable.trim() || editable.trim() === originalText.trim()) {
+                onClose();
+                return;
+              }
+              setSaving(true);
+              try {
+                await onAccept(editable.trim());
+              } finally {
+                setSaving(false);
+              }
+            }}
+            disabled={saving || improveMutation.isPending || !editable.trim()}
+          >
+            {saving ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="mr-1 h-3.5 w-3.5" />}
+            Replace prompt
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default ProjectDetailView;

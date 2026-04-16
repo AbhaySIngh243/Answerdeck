@@ -403,7 +403,32 @@ def _extract_perplexity_citation_urls(response: Any) -> list[str]:
     return urls[:20]
 
 
-def chat(engine: str, prompt: str, temperature: float | None = None) -> str:
+def _prompt_expects_json(prompt: str) -> bool:
+    """Detect analyzer/audit calls that want JSON-only output so we can
+    switch the underlying API into strict JSON mode. Heuristic is conservative
+    — only flip when we see one of the explicit phrases our own prompts use.
+    """
+    p = str(prompt or "")
+    if not p:
+        return False
+    markers = (
+        "Return ONLY valid JSON",
+        "Return ONLY a valid JSON",
+        "return only valid json",
+        "Return a JSON object",
+        "respond with JSON",
+    )
+    lowered = p.lower()
+    return any(m.lower() in lowered for m in markers)
+
+
+def chat(
+    engine: str,
+    prompt: str,
+    temperature: float | None = None,
+    *,
+    json_mode: bool | None = None,
+) -> str:
     engine = engine.lower()
     cfg = ENGINE_CONFIG.get(engine)
     if not cfg:
@@ -415,6 +440,8 @@ def chat(engine: str, prompt: str, temperature: float | None = None) -> str:
         effective_temperature = RANKLORE_LLM_TEMPERATURE if temperature is None else float(temperature)
     except Exception:
         effective_temperature = RANKLORE_LLM_TEMPERATURE
+
+    wants_json = json_mode if json_mode is not None else _prompt_expects_json(prompt)
 
     try:
         if engine == "perplexity":
@@ -441,7 +468,10 @@ def chat(engine: str, prompt: str, temperature: float | None = None) -> str:
         if engine == "deepseek" and DEEPSEEK_REQUIRE_WEB_SEARCH:
             return "[DeepSeek web-search required but not supported by current API integration]"
 
-        if engine == "chatgpt" and OPENAI_ENABLE_WEB_SEARCH:
+        # JSON-mode requests bypass the web-search tool because
+        # responses.create does not accept response_format in the same way and
+        # we want deterministic structured output.
+        if engine == "chatgpt" and OPENAI_ENABLE_WEB_SEARCH and not wants_json:
             # Align API behavior more closely with ChatGPT app results by enabling web grounding.
             try:
                 country = _infer_web_search_country(prompt)
@@ -477,11 +507,24 @@ def chat(engine: str, prompt: str, temperature: float | None = None) -> str:
             text_parts = [block.text for block in response.content if getattr(block, "type", "") == "text"]
             return "\n".join(text_parts).strip()
 
-        response = client.chat.completions.create(
-            model=cfg["model"],
-            messages=[{"role": "user", "content": prompt}],
-            temperature=effective_temperature,
-        )
+        completion_kwargs: dict[str, Any] = {
+            "model": cfg["model"],
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": effective_temperature,
+        }
+        if wants_json and engine in {"chatgpt", "openai", "deepseek"}:
+            completion_kwargs["response_format"] = {"type": "json_object"}
+
+        try:
+            response = client.chat.completions.create(**completion_kwargs)
+        except Exception as exc:
+            # Older DeepSeek / self-hosted OpenAI-compatible servers may reject
+            # response_format. Retry without it.
+            if "response_format" in str(exc).lower() and "response_format" in completion_kwargs:
+                completion_kwargs.pop("response_format", None)
+                response = client.chat.completions.create(**completion_kwargs)
+            else:
+                raise
         return (response.choices[0].message.content or "").strip()
     except Exception as exc:
         return f"[{cfg.get('display_name', engine)} error: {exc}]"

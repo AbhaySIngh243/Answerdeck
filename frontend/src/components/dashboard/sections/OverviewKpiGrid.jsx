@@ -66,9 +66,10 @@ export default function OverviewKpiGrid({
                 onClick={() => runAllMutation.mutate(projectId)}
                 disabled={runAllMutation.isPending || prompts.length === 0}
                 size="sm"
+                className="h-7 shrink-0 gap-1.5 px-2.5 text-[11px] font-semibold"
               >
                 {runAllMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <PlayCircle className="h-3 w-3" />}
-                Run All
+                Run
               </Button>
             ) : null
           }

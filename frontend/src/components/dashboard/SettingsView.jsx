@@ -1,8 +1,13 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Settings, Save } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle, CheckCircle2, CreditCard, Settings, Save } from 'lucide-react';
 import DashboardCard from './DashboardCard';
 import { Button } from '../ui/button';
+import { api } from '../../lib/api';
+import { startSubscriptionCheckout } from '../../lib/subscriptionCheckout';
+import { useToast } from '../ui/toast';
 
 const container = {
   hidden: { opacity: 0 },
@@ -15,6 +20,20 @@ const item = {
 };
 
 const SettingsView = () => {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const { data: billing, isLoading: billingLoading } = useQuery({
+    queryKey: ['billing', 'me'],
+    queryFn: api.getBillingMe,
+    staleTime: 60_000,
+  });
+  const { data: billingHealth } = useQuery({
+    queryKey: ['billing', 'health'],
+    queryFn: api.getBillingHealth,
+    staleTime: 120_000,
+  });
+  const [checkoutBusy, setCheckoutBusy] = useState(null);
+
   const [timezone, setTimezone] = useState(
     localStorage.getItem('ranklore_timezone') ||
       Intl.DateTimeFormat().resolvedOptions().timeZone ||
@@ -30,7 +49,29 @@ const SettingsView = () => {
     localStorage.setItem('ranklore_default_country', defaultCountry);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+    toast.success('Settings saved');
   };
+
+  const runUpgrade = async (planKey) => {
+    setCheckoutBusy(planKey);
+    try {
+      const outcome = await startSubscriptionCheckout(planKey);
+      if (outcome === 'paid') {
+        queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
+        queryClient.invalidateQueries({ queryKey: ['projects'] });
+        toast.success('Subscription active', 'We are refreshing your limits now.');
+      } else if (outcome === 'dismissed') {
+        toast.info('Checkout closed', 'You can restart the upgrade anytime.');
+      }
+    } catch (e) {
+      toast.error('Checkout failed', e?.message || 'Please try again.');
+    } finally {
+      setCheckoutBusy(null);
+    }
+  };
+
+  const planLabel =
+    billing?.plan === 'pro' ? 'Pro' : billing?.plan === 'standard' ? 'Standard' : 'Free';
 
   return (
     <motion.div
@@ -43,6 +84,103 @@ const SettingsView = () => {
       <motion.div variants={item} className="border-b border-slate-200/60 pb-5">
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">Settings</h1>
         <p className="mt-1 text-sm text-slate-400">Configure workspace defaults for prompt analysis.</p>
+      </motion.div>
+
+      <motion.div variants={item}>
+        <DashboardCard title="Plan & billing" icon={CreditCard}>
+          {billingHealth ? (
+            billingHealth.keys_configured && billingHealth.plans_configured ? (
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-2.5 text-xs text-emerald-800">
+                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <div>
+                  <p className="font-semibold">Billing is fully configured.</p>
+                  <p>
+                    Payments are collected in {billingHealth.currency}. Upgrade or cancel at any
+                    time from your Razorpay subscription portal.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-xs text-amber-900">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <div>
+                  <p className="font-semibold">Billing needs attention.</p>
+                  <ul className="mt-0.5 list-disc pl-4">
+                    {!billingHealth.keys_configured ? (
+                      <li>Razorpay keys are missing on the server.</li>
+                    ) : null}
+                    {billingHealth.keys_configured && !billingHealth.plans_configured ? (
+                      <li>
+                        Plans are not configured yet — the first upgrade click will auto-provision
+                        INR plans via the Razorpay API.
+                      </li>
+                    ) : null}
+                    {!billingHealth.webhook_secret_configured ? (
+                      <li>
+                        Webhook secret is not set in env (a dev secret is auto-generated — paste it
+                        into the Razorpay Dashboard webhook config before going live).
+                      </li>
+                    ) : null}
+                  </ul>
+                </div>
+              </div>
+            )
+          ) : null}
+
+          {billingLoading ? (
+            <p className="text-sm text-slate-400">Loading plan…</p>
+          ) : (
+            <div className="space-y-4 text-sm text-slate-600">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Current plan</p>
+                <p className="mt-1 font-semibold text-slate-900">{planLabel}</p>
+                {billing?.limits ? (
+                  <p className="mt-1 text-xs text-slate-500">
+                    Up to {billing.limits.max_projects} project
+                    {billing.limits.max_projects === 1 ? '' : 's'} · {billing.limits.max_prompts_per_project} prompts
+                    per project
+                  </p>
+                ) : null}
+                {billing?.subscription?.status ? (
+                  <p className="mt-1 text-xs text-slate-500">
+                    Subscription status:{' '}
+                    <span className="font-medium text-slate-700">{billing.subscription.status}</span>
+                  </p>
+                ) : null}
+              </div>
+              {billing?.plan === 'free' ? (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={checkoutBusy}
+                    onClick={() => runUpgrade('standard')}
+                  >
+                    {checkoutBusy === 'standard' ? 'Opening…' : 'Upgrade — Standard'}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={checkoutBusy}
+                    onClick={() => runUpgrade('pro')}
+                  >
+                    {checkoutBusy === 'pro' ? 'Opening…' : 'Upgrade — Pro'}
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" asChild>
+                    <Link to="/#pricing">View pricing</Link>
+                  </Button>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  Manage renewals and payment methods in your Razorpay account emails and customer portal when enabled.
+                  For plan changes, contact support or use the pricing page after cancelling the current subscription in
+                  Razorpay.
+                </p>
+              )}
+            </div>
+          )}
+        </DashboardCard>
       </motion.div>
 
       {/* Settings form */}

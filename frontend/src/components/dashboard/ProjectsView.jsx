@@ -21,7 +21,6 @@ import { Select } from '../ui/select';
 import { Badge } from '../ui/badge';
 import { SkeletonCard } from './LoadingSkeleton';
 
-const MAX_PROJECTS_PER_ACCOUNT = 3;
 const PROJECTS_CACHE_KEY = 'answerdeck.projects.cache.v1';
 const REGION_OPTIONS = [
   'Global', 'India', 'United States', 'United Kingdom', 'Canada',
@@ -64,6 +63,15 @@ const ProjectsView = () => {
     staleTime: 30_000,
   });
 
+  const { data: billing } = useQuery({
+    queryKey: ['billing', 'me'],
+    queryFn: api.getBillingMe,
+    enabled: !authLoading && Boolean(isSignedIn),
+    staleTime: 60_000,
+  });
+
+  const maxProjects = billing?.limits?.max_projects ?? 1;
+
   useEffect(() => {
     try {
       window.localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify(projects || []));
@@ -76,13 +84,14 @@ const ProjectsView = () => {
     retryDelay: (attempt) => Math.min(3000 * Math.pow(2, attempt), 10000),
     onSuccess: (payload) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
       setShowCreateModal(false);
       setForm(initialForm);
-      if (payload?.id) navigate(`/dashboard/project/${payload.id}/prompts/setup`);
+      if (payload?.id) navigate(`/dashboard/project/${payload.id}/onboarding`);
     },
   });
 
-  const atProjectLimit = projects.length >= MAX_PROJECTS_PER_ACCOUNT;
+  const atProjectLimit = projects.length >= maxProjects;
 
   const deleteProjectMutation = useMutation({
     mutationFn: api.deleteProject,
@@ -147,7 +156,7 @@ const ProjectsView = () => {
           <p className="mt-1 text-sm text-slate-400">Monitor, analyze, and improve your brand visibility across AI answers.</p>
         </div>
         <div className="flex items-center gap-3">
-          <Badge variant="secondary" className="text-xs">{projects.length}/{MAX_PROJECTS_PER_ACCOUNT} projects</Badge>
+          <Badge variant="secondary" className="text-xs">{projects.length}/{maxProjects} projects</Badge>
           <Button onClick={() => !atProjectLimit && setShowCreateModal(true)} disabled={atProjectLimit}>
             <Plus className="h-4 w-4" />
             {atProjectLimit ? 'Limit reached' : 'New Project'}
@@ -178,6 +187,7 @@ const ProjectsView = () => {
           {projects.map((project) => {
             const competitors = Array.isArray(project.competitors) ? project.competitors : [];
             const domain = getDomainFromWebsiteUrl(project.website_url);
+            const projectRoute = project.context_ready ? `/dashboard/project/${project.id}` : `/dashboard/project/${project.id}/onboarding`;
             return (
               <motion.div key={project.id} variants={item} whileHover={{ y: -4, transition: { duration: 0.2 } }}>
                 <div className="glass-card-v2 group flex h-full flex-col overflow-hidden transition-shadow duration-200 hover:shadow-[0_12px_40px_rgba(15,23,42,0.1)]">
@@ -196,7 +206,7 @@ const ProjectsView = () => {
                       </Button>
                     </div>
 
-                    <Link to={`/dashboard/project/${project.id}`} className="flex-1 space-y-3">
+                    <Link to={projectRoute} className="flex-1 space-y-3">
                       <div>
                         <div className="mb-1.5 flex items-center gap-2">
                           {domain && (
@@ -231,11 +241,11 @@ const ProjectsView = () => {
 
                     <div className="border-t border-slate-100/80 pt-4">
                       <div className="flex items-center justify-between">
-                        <Link to={`/dashboard/project/${project.id}`} className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-primary transition-colors hover:text-blue-700">
-                          Analysis Center
+                        <Link to={projectRoute} className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-primary transition-colors hover:text-blue-700">
+                          {project.context_ready ? 'Analysis Center' : 'Continue onboarding'}
                           <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
                         </Link>
-                        <div className="h-2 w-2 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/40" />
+                        <div className={`h-2 w-2 rounded-full ${project.context_ready ? 'bg-emerald-400 shadow-emerald-400/40' : 'bg-amber-400 shadow-amber-400/40'} shadow-sm`} />
                       </div>
                     </div>
                   </div>
@@ -289,7 +299,7 @@ const ProjectsView = () => {
             <div className="grid grid-cols-2 gap-3 pt-2">
               <Button type="button" variant="secondary" onClick={() => setShowCreateModal(false)}>Discard</Button>
               <Button type="submit" disabled={createDisabled}>
-                {createProjectMutation.isPending ? <><Loader2 className="h-4 w-4 animate-spin" /><span>Creating...</span></> : <span>Next: Choose prompts</span>}
+                {createProjectMutation.isPending ? <><Loader2 className="h-4 w-4 animate-spin" /><span>Creating...</span></> : <span>Next: Onboarding</span>}
               </Button>
             </div>
           </form>

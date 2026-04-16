@@ -3,15 +3,21 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'r
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Show, SignInButton, SignUpButton, UserButton } from '@clerk/react';
 import { AuthProvider } from './contexts/AuthContext';
+import { ToastProvider } from './components/ui/toast';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import LoginPage from './components/auth/LoginPage';
 import SignupPage from './components/auth/SignupPage';
 import LandingPage from './components/LandingPage';
+import PrivacyPage from './components/PrivacyPage';
+import TermsPage from './components/TermsPage';
+import AboutPage from './components/AboutPage';
+import ContactPage from './components/ContactPage';
 import DashboardLayout from './components/dashboard/DashboardLayout';
 import DashboardHome from './components/dashboard/DashboardHome';
 import ProjectsView from './components/dashboard/ProjectsView';
 import ProjectDetailView from './components/dashboard/ProjectDetailView';
 import ProjectPromptSetupView from './components/dashboard/ProjectPromptSetupView';
+import ProjectOnboardingWizard from './components/dashboard/ProjectOnboardingWizard';
 import ReportsView from './components/dashboard/ReportsView';
 import SettingsView from './components/dashboard/SettingsView';
 
@@ -33,7 +39,11 @@ function hideFloatingClerkPath(pathname) {
     pathname === '/' ||
     pathname.startsWith('/login') ||
     pathname.startsWith('/signup') ||
-    pathname.startsWith('/dashboard')
+    pathname.startsWith('/dashboard') ||
+    pathname.startsWith('/privacy') ||
+    pathname.startsWith('/terms') ||
+    pathname.startsWith('/about') ||
+    pathname.startsWith('/contact')
   );
 }
 
@@ -70,6 +80,10 @@ function AppRoutes() {
       ) : null}
       <Routes>
         <Route path="/" element={<LandingPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/about" element={<AboutPage />} />
+        <Route path="/contact" element={<ContactPage />} />
         {/* Clerk's "routing=path" may navigate to sub-routes under these paths. */}
         <Route path="/login/*" element={<LoginPage />} />
         <Route path="/signup/*" element={<SignupPage />} />
@@ -77,6 +91,7 @@ function AppRoutes() {
           <Route index element={<DashboardHome />} />
           <Route path="projects" element={<ProjectsView />} />
           <Route path="project/:id" element={<ProjectDetailView />} />
+          <Route path="project/:id/onboarding" element={<ProjectOnboardingWizard />} />
           <Route path="project/:id/prompts/setup" element={<ProjectPromptSetupView />} />
           <Route path="reports" element={<ReportsView />} />
           <Route path="settings" element={<SettingsView />} />
@@ -92,9 +107,11 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <Router>
         <AuthProvider>
-          <div className="min-h-screen bg-transparent selection:bg-brand-primary/25 selection:text-white">
-            <AppRoutes />
-          </div>
+          <ToastProvider>
+            <div className="min-h-screen bg-transparent selection:bg-brand-primary/25 selection:text-white">
+              <AppRoutes />
+            </div>
+          </ToastProvider>
         </AuthProvider>
       </Router>
     </QueryClientProvider>
@@ -102,4 +119,3 @@ function App() {
 }
 
 export default App;
-

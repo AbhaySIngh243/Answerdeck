@@ -8,12 +8,12 @@ from pydantic import ValidationError as PydanticValidationError
 
 from exceptions import NotFoundError, ValidationError
 from models import Prompt, Project, db
-from schemas import PromptCreateSchema, PromptUpdateSchema
+from schemas import PromptCreateSchema, PromptUpdateSchema, PromptAssistantSchema
 from auth import require_auth
+from billing.entitlements import get_limits
+from engine.onboarding_assistant import rewrite_prompt
 
 prompts_bp = Blueprint("prompts", __name__)
-
-MAX_PROMPTS_PER_PROJECT = 10
 
 
 def _json_list(values):
@@ -78,9 +78,12 @@ def add_prompt(project_id):
     project = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
     if not project:
         raise NotFoundError("Project not found")
+    _, max_prompts = get_limits(g.user.id)
     prompt_count = Prompt.query.filter_by(project_id=project_id).count()
-    if prompt_count >= MAX_PROMPTS_PER_PROJECT:
-        raise ValidationError(f"Maximum {MAX_PROMPTS_PER_PROJECT} prompts per project. Delete a prompt to add another.")
+    if prompt_count >= max_prompts:
+        raise ValidationError(
+            f"Maximum {max_prompts} prompts per project on your plan. Delete a prompt or upgrade to add more."
+        )
     data = request.get_json(force=True) or {}
     try:
         validated = PromptCreateSchema(**data)
@@ -142,3 +145,45 @@ def delete_prompt(prompt_id):
         db.session.delete(prompt)
         db.session.commit()
     return jsonify({"message": "Prompt deleted successfully"})
+
+
+@prompts_bp.route("/<int:prompt_id>/assistant", methods=["POST"])
+@require_auth
+def improve_prompt(prompt_id):
+    """Rewrite a prompt more crisply and return alternatives."""
+    prompt = Prompt.query.filter_by(id=prompt_id, user_id=g.user.id).first()
+    if not prompt:
+        raise NotFoundError("Prompt not found")
+    project = Project.query.filter_by(id=prompt.project_id, user_id=g.user.id).first()
+
+    data = request.get_json(silent=True) or {}
+    try:
+        validated = PromptAssistantSchema(**data)
+    except Exception:
+        validated = PromptAssistantSchema()
+
+    payload = rewrite_prompt(
+        prompt_text=validated.prompt_text or prompt.prompt_text,
+        focus_brand=validated.focus_brand or (project.name if project else ""),
+        industry=validated.industry or (project.category if project else ""),
+        funnel_stage=validated.funnel_stage or "",
+    )
+    return jsonify(payload)
+
+
+@prompts_bp.route("/assistant/draft", methods=["POST"])
+@require_auth
+def draft_prompt():
+    """Draft a brand-new prompt (no existing prompt_id) from hints."""
+    data = request.get_json(force=True) or {}
+    try:
+        validated = PromptAssistantSchema(**data)
+    except Exception:
+        validated = PromptAssistantSchema()
+    payload = rewrite_prompt(
+        prompt_text=validated.prompt_text or "Best options in this category",
+        focus_brand=validated.focus_brand or "",
+        industry=validated.industry or "",
+        funnel_stage=validated.funnel_stage or "",
+    )
+    return jsonify(payload)

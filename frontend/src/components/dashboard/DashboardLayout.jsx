@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Home,
@@ -10,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { warmUpBackend } from '../../lib/api';
+import { PENDING_RAZORPAY_PLAN_KEY, startSubscriptionCheckout } from '../../lib/subscriptionCheckout';
 import Sidebar from './Sidebar';
 import DashboardNavbar from './DashboardNavbar';
 import BrandLogo from '../BrandLogo';
@@ -23,11 +25,14 @@ const MOBILE_NAV = [
 ];
 
 const DashboardLayout = () => {
-  const { signOut } = useAuth();
+  const { signOut, isSignedIn } = useAuth();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
   const [backendReady, setBackendReady] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  /** Prevents duplicate subscribe/checkout when React Strict Mode runs effects twice in dev. */
+  const razorpayInFlightRef = useRef(false);
 
   const [sidebarExpanded, setSidebarExpanded] = useState(() => {
     if (typeof window === 'undefined') return true;
@@ -37,6 +42,46 @@ const DashboardLayout = () => {
   useEffect(() => {
     warmUpBackend().then((ok) => setBackendReady(ok));
   }, []);
+
+  useEffect(() => {
+    if (!isSignedIn || !backendReady) return undefined;
+    if (razorpayInFlightRef.current) return undefined;
+
+    let plan;
+    try {
+      plan = sessionStorage.getItem(PENDING_RAZORPAY_PLAN_KEY);
+    } catch {
+      return undefined;
+    }
+    if (!plan || !['standard', 'pro'].includes(plan)) return undefined;
+
+    razorpayInFlightRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        sessionStorage.removeItem(PENDING_RAZORPAY_PLAN_KEY);
+        const outcome = await startSubscriptionCheckout(plan);
+        if (outcome === 'paid') {
+          queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
+        }
+      } catch (e) {
+        if (!cancelled) {
+          console.error(e);
+          try {
+            sessionStorage.setItem(PENDING_RAZORPAY_PLAN_KEY, plan);
+          } catch {
+            /* ignore */
+          }
+        }
+      } finally {
+        razorpayInFlightRef.current = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSignedIn, backendReady, queryClient]);
 
   useEffect(() => {
     try {
