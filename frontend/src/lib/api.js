@@ -22,14 +22,43 @@ const DEFAULT_REQUEST_TIMEOUT_MS = Number(
 );
 
 function timeoutHintMessage(timeoutMs) {
-  if (apiBaseLooksLocal()) {
-    return `Request timed out after ${timeoutMs}ms. For local dev: confirm the backend is running (e.g. python app.py in backend/), then retry. Slow LLM work uses a longer limit — set VITE_API_LONG_TIMEOUT_MS in frontend/.env if needed (default ${LONG_REQUEST_TIMEOUT_MS}ms for those routes).`;
-  }
-  return `Request timed out after ${timeoutMs}ms. Check VITE_API_BASE_URL, CORS on the server, and that the API host is up.`;
+  // Keep user-facing messaging neutral (avoid exposing infrastructure details).
+  // Also keep the substring "timed out" for UI heuristics (e.g., cached fallback banners).
+  const seconds = Math.max(1, Math.round(timeoutMs / 1000));
+  return `Request timed out after ${seconds}s. Please retry.`;
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function toPublicRequestError(err, { timeoutMs }) {
+  const status = err?.status;
+  const msg = String(err?.message || '');
+
+  // Abort/timeouts
+  if (err?.name === 'AbortError') return new Error(timeoutHintMessage(timeoutMs));
+  if (msg.toLowerCase().includes('timed out')) return new Error(timeoutHintMessage(timeoutMs));
+
+  // Network-ish errors
+  const isNetwork =
+    msg.includes('Failed to fetch') ||
+    msg.includes('NetworkError') ||
+    msg.includes('Load failed');
+  if (isNetwork) return new Error('Network error. Please check your connection and retry.');
+
+  // Auth errors are already user-friendly.
+  if (status === 401) return err;
+
+  // Server errors: keep generic.
+  if (typeof status === 'number' && status >= 500) {
+    return new Error('Something went wrong. Please retry in a moment.');
+  }
+
+  // Rate limiting.
+  if (status === 429) return new Error('Too many requests. Please retry shortly.');
+
+  return err;
 }
 
 function buildHelpfulError({ url, response, payload, isJson }) {
@@ -140,14 +169,16 @@ async function request(path, options = {}) {
 
       return payload;
     } catch (err) {
-      const isAbort = err?.name === 'AbortError';
+      const publicErr = toPublicRequestError(err, { timeoutMs });
       const isNetwork =
-        isAbort ||
+        publicErr?.message?.toLowerCase?.().includes('timed out') ||
+        publicErr?.message?.includes('Network error') ||
         err?.message?.includes('Failed to fetch') ||
         err?.message?.includes('NetworkError') ||
-        err?.message?.includes('Load failed');
+        err?.message?.includes('Load failed') ||
+        err?.name === 'AbortError';
 
-      lastErr = isAbort ? new Error(timeoutHintMessage(timeoutMs)) : err;
+      lastErr = publicErr;
 
       const status = err?.status;
       const shouldRetry =

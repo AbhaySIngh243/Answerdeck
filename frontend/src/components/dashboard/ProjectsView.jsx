@@ -130,8 +130,8 @@ const ProjectsView = () => {
 
   const errorBanner = error && !hasProjects ? (
     <div className="glass-card-v2 space-y-2 border-amber-200/60 bg-amber-50/60 p-4 text-sm text-amber-800">
-      <div className="font-semibold">{isTimeout ? 'Server is waking up...' : 'Could not load projects.'}</div>
-      <div className="text-xs text-amber-700">{isTimeout ? 'Free-tier servers can take up to a minute. Retrying...' : error.message}</div>
+      <div className="font-semibold">{isTimeout ? 'Taking longer than usual…' : 'Could not load projects.'}</div>
+      <div className="text-xs text-amber-700">{isTimeout ? 'Still trying in the background. Retrying…' : error.message}</div>
       <button type="button" onClick={() => refetch()} className="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-50">
         {isFetching ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
         Retry now
@@ -139,7 +139,7 @@ const ProjectsView = () => {
     </div>
   ) : error && hasProjects ? (
     <div className="glass-card-v2 flex items-center gap-2 border-amber-200/60 bg-amber-50/60 px-4 py-2.5 text-xs font-medium text-amber-800">
-      <span>{isTimeout ? 'Server is waking up — showing cached projects.' : 'Refresh failed — showing cached projects.'}</span>
+      <span>{isTimeout ? 'Refresh is taking longer than usual — showing cached projects.' : 'Refresh failed — showing cached projects.'}</span>
       <button type="button" onClick={() => refetch()} className="ml-auto inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[10px] font-semibold text-amber-800 hover:bg-amber-50">
         {isFetching ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
         Retry
