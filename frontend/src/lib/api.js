@@ -7,16 +7,7 @@ const LONG_REQUEST_TIMEOUT_MS = Number(
   import.meta.env.VITE_API_LONG_TIMEOUT_MS || 180000,
 );
 
-function apiBaseLooksLocal() {
-  try {
-    const { hostname } = new URL(API_BASE_URL);
-    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
-  } catch {
-    return false;
-  }
-}
-
-/** Local: 60s. Production default 60s too (hosted APIs often cold-start; override with VITE_API_TIMEOUT_MS). */
+/** Default request timeout for regular API reads/writes. */
 const DEFAULT_REQUEST_TIMEOUT_MS = Number(
   import.meta.env.VITE_API_TIMEOUT_MS || 60000,
 );
@@ -141,7 +132,8 @@ async function request(path, options = {}) {
 
   const url = `${API_BASE_URL}${path}`;
   const timeoutMs = Number(options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
-  const defaultRetries = method === 'GET' ? 2 : 1;
+  // React Query already handles retries for most reads; avoid stacking retry loops here.
+  const defaultRetries = 0;
   const retries = Number(options.retries ?? defaultRetries);
 
   let lastErr;
@@ -235,7 +227,7 @@ export const api = {
 
   health: () => request('/health'),
 
-  getProjects: () => request('/projects/'),
+  getProjects: (options = {}) => request('/projects/', options),
   getProject: (projectId) => request(`/projects/${projectId}`),
   createProject: (body) =>
     request('/projects/', {
@@ -280,7 +272,7 @@ export const api = {
       body: JSON.stringify({}),
     }),
 
-  getPrompts: (projectId) => request(`/prompts/project/${projectId}`),
+  getPrompts: (projectId, options = {}) => request(`/prompts/project/${projectId}`, options),
   createPrompt: (projectId, payload) =>
     request(`/prompts/project/${projectId}`, {
       method: 'POST',
@@ -360,7 +352,7 @@ export const api = {
       body: JSON.stringify(body),
       timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     }),
-  getOverview: () => request('/reports/overview'),
+  getOverview: (options = {}) => request('/reports/overview', options),
 
   getBillingMe: () => request('/billing/me'),
   getBillingHealth: () => request('/billing/health'),

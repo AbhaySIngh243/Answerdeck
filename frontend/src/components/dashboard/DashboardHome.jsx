@@ -7,6 +7,7 @@ import {
   BarChart3,
   Activity,
   Target,
+  AlertTriangle,
   ArrowRight,
   Plus,
   FileText,
@@ -50,29 +51,51 @@ const DashboardHome = () => {
   const { user, loading: authLoading, isSignedIn } = useAuth();
   const navigate = useNavigate();
   const displayName = useMemo(() => clerkDisplayName(user), [user]);
+  const homeRequestOptions = { timeoutMs: 15_000, retries: 0 };
 
-  const { data: overviewData, isLoading: overviewLoading } = useQuery({
+  const {
+    data: overviewData,
+    isLoading: overviewLoading,
+    error: overviewError,
+    refetch: refetchOverview,
+  } = useQuery({
     queryKey: ['reports-overview'],
-    queryFn: api.getOverview,
+    queryFn: () => api.getOverview(homeRequestOptions),
     enabled: !authLoading && Boolean(isSignedIn),
     staleTime: 30_000,
+    retry: 0,
   });
 
-  const { data: projects = [], isLoading: projectsLoading } = useQuery({
+  const {
+    data: projects = [],
+    isLoading: projectsLoading,
+    error: projectsError,
+    refetch: refetchProjects,
+  } = useQuery({
     queryKey: ['projects'],
-    queryFn: api.getProjects,
+    queryFn: () => api.getProjects(homeRequestOptions),
     enabled: !authLoading && Boolean(isSignedIn),
     staleTime: 30_000,
+    retry: 0,
   });
 
-  const latestProject = projects.length > 0 ? projects[0] : null;
+  const latestProject = Array.isArray(projects) && projects.length > 0 ? projects[0] : null;
 
-  const { data: latestPrompts = [], isLoading: promptsLoading } = useQuery({
+  const {
+    data: latestPrompts = [],
+    isLoading: promptsLoading,
+    error: promptsError,
+    refetch: refetchPrompts,
+  } = useQuery({
     queryKey: ['prompts', latestProject?.id],
-    queryFn: () => api.getPrompts(latestProject.id),
+    queryFn: () => api.getPrompts(latestProject.id, homeRequestOptions),
     enabled: Boolean(latestProject?.id),
     staleTime: 30_000,
+    retry: 0,
   });
+
+  const homeError = overviewError || projectsError;
+  const promptLoadError = promptsError && latestProject;
 
   const overviewProjects = overviewData?.projects || [];
 
@@ -123,6 +146,31 @@ const DashboardHome = () => {
           New Project
         </Button>
       </motion.div>
+
+      {homeError ? (
+        <motion.div
+          variants={item}
+          className="glass-card-v2 flex flex-col gap-3 border-amber-200/60 bg-amber-50/60 p-4 text-sm text-amber-900 sm:flex-row sm:items-center"
+        >
+          <div className="flex min-w-0 items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+            <div className="min-w-0">
+              <div className="font-semibold">Dashboard data is taking longer than usual.</div>
+              <div className="text-xs text-amber-800/80">
+                We could not load the latest summary right now. You can retry without leaving the page.
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-2 sm:ml-auto">
+            <Button size="sm" variant="secondary" onClick={() => refetchOverview()}>
+              Retry overview
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => refetchProjects()}>
+              Retry projects
+            </Button>
+          </div>
+        </motion.div>
+      ) : null}
 
       {/* Stats row */}
       {overviewLoading || projectsLoading ? (
@@ -202,6 +250,22 @@ const DashboardHome = () => {
                     </div>
                   </div>
                 ))}
+              </div>
+            ) : promptLoadError ? (
+              <div className="flex flex-col items-center py-8 text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-amber-600">
+                  <AlertTriangle className="h-6 w-6" />
+                </div>
+                <p className="text-sm font-medium text-slate-500">Latest prompts could not be loaded</p>
+                <p className="mt-0.5 text-xs text-slate-400">Retry to fetch the most recent project prompts.</p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="mt-3"
+                  onClick={() => refetchPrompts()}
+                >
+                  Retry prompts
+                </Button>
               </div>
             ) : latestPrompts.length === 0 ? (
               <div className="flex flex-col items-center py-8 text-center">
