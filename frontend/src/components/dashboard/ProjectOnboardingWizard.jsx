@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
@@ -219,6 +219,8 @@ function promptQualityScore(prompt, brandName) {
 export default function ProjectOnboardingWizard() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const renderSeqRef = useRef(0);
+  renderSeqRef.current += 1;
   const [form, setForm] = useState(null);
   const [suggestedPrompts, setSuggestedPrompts] = useState([]);
   const [suggestedCompetitors, setSuggestedCompetitors] = useState([]);
@@ -240,6 +242,29 @@ export default function ProjectOnboardingWizard() {
     queryFn: () => api.getEngines(),
   });
 
+  // #region agent log
+  fetch('http://127.0.0.1:7891/ingest/ee334ea7-00e3-458a-a414-ee9f64eb340f', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '08d755' },
+    body: JSON.stringify({
+      sessionId: '08d755',
+      runId: 'pre-fix',
+      hypothesisId: 'A',
+      location: 'ProjectOnboardingWizard.jsx:afterQueries',
+      message: 'wizard render',
+      data: {
+        seq: renderSeqRef.current,
+        id: id || null,
+        isLoading,
+        formIsNull: form == null,
+        currentStep,
+        willEarlyReturn: isLoading || !form,
+      },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+
   const availableEngines = useMemo(
     () => (enginesData?.available_engines || []).filter((e) => e.enabled),
     [enginesData],
@@ -253,7 +278,69 @@ export default function ProjectOnboardingWizard() {
     mutationFn: ({ step, data }) => api.updateOnboardingStep(id, { step, data }),
     onSuccess: (payload) => {
       const nextStep = Number(payload?.project?.onboarding_current_step || currentStep + 1);
-      setForm((prev) => ({ ...prev, step: Math.min(TOTAL_STEPS, nextStep) }));
+      // #region agent log
+      fetch('http://127.0.0.1:7891/ingest/ee334ea7-00e3-458a-a414-ee9f64eb340f', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '08d755' },
+        body: JSON.stringify({
+          sessionId: '08d755',
+          runId: 'pre-fix',
+          hypothesisId: 'B',
+          location: 'ProjectOnboardingWizard.jsx:saveStep.onSuccess',
+          message: 'onboarding step saved',
+          data: {
+            id: id || null,
+            rawNext: payload?.project?.onboarding_current_step,
+            parsedNextStep: nextStep,
+            currentStepBefore: currentStep,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+      setForm((prev) => {
+        // #region agent log
+        fetch('http://127.0.0.1:7891/ingest/ee334ea7-00e3-458a-a414-ee9f64eb340f', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '08d755' },
+          body: JSON.stringify({
+            sessionId: '08d755',
+            runId: 'pre-fix',
+            hypothesisId: 'D',
+            location: 'ProjectOnboardingWizard.jsx:setForm.updater',
+            message: 'merging next onboarding step',
+            data: {
+              prevIsNull: prev == null,
+              prevKeys: prev && typeof prev === 'object' ? Object.keys(prev) : [],
+              nextStep: Math.min(TOTAL_STEPS, nextStep),
+            },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+        return { ...prev, step: Math.min(TOTAL_STEPS, nextStep) };
+      });
+    },
+    onError: (err) => {
+      // #region agent log
+      fetch('http://127.0.0.1:7891/ingest/ee334ea7-00e3-458a-a414-ee9f64eb340f', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '08d755' },
+        body: JSON.stringify({
+          sessionId: '08d755',
+          runId: 'pre-fix',
+          hypothesisId: 'C',
+          location: 'ProjectOnboardingWizard.jsx:saveStep.onError',
+          message: 'onboarding step save failed',
+          data: {
+            id: id || null,
+            errMessage: err?.message || String(err),
+            errStatus: err?.status,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
     },
   });
 
@@ -456,6 +543,43 @@ export default function ProjectOnboardingWizard() {
     }
   }
 
+  const assistantContext = useMemo(
+    () => {
+      // #region agent log
+      fetch('http://127.0.0.1:7891/ingest/ee334ea7-00e3-458a-a414-ee9f64eb340f', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '08d755' },
+        body: JSON.stringify({
+          sessionId: '08d755',
+          runId: 'post-fix',
+          hypothesisId: 'A',
+          location: 'ProjectOnboardingWizard.jsx:assistantContext.useMemo',
+          message: 'assistantContext computing (now before early return)',
+          data: {
+            seq: renderSeqRef.current,
+            currentStep,
+            formIsNull: form == null,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+      return {
+        step: currentStep,
+        brand_name: form?.step1?.brand_name || '',
+        domain: form?.step1?.domain || '',
+        industry: form?.step1?.industry || '',
+        region: form?.step1?.region || '',
+        competitors: form?.step1?.competitors || [],
+        seed_prompts: form?.step3?.seed_prompts || [],
+        funnel_stage: form?.step3?.funnel_stage || 'awareness',
+        target_engines: form?.step4?.target_engines || [],
+        search_provider: form?.step4?.search_provider || 'auto',
+      };
+    },
+    [form, currentStep],
+  );
+
   if (isLoading || !form) {
     return (
       <div className="flex h-52 items-center justify-center">
@@ -466,22 +590,6 @@ export default function ProjectOnboardingWizard() {
 
   const isBusy =
     saveStepMutation.isPending || completeMutation.isPending || launchingAnalysis;
-
-  const assistantContext = useMemo(
-    () => ({
-      step: currentStep,
-      brand_name: form.step1.brand_name,
-      domain: form.step1.domain,
-      industry: form.step1.industry,
-      region: form.step1.region,
-      competitors: form.step1.competitors,
-      seed_prompts: form.step3.seed_prompts,
-      funnel_stage: form.step3.funnel_stage,
-      target_engines: form.step4.target_engines,
-      search_provider: form.step4.search_provider,
-    }),
-    [form, currentStep],
-  );
 
   const siteSummary = {
     has_domain: Boolean(form.step1.domain),
