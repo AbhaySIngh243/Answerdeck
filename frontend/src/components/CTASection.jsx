@@ -92,6 +92,9 @@ const CTASection = () => {
 
           {/* Pro */}
           <div className="relative flex flex-col rounded-2xl border-2 border-brand-primary/40 bg-gradient-to-b from-[#eff6ff] to-white p-6 shadow-md md:-mt-2 md:mb-2 md:pb-8">
+            <span className="absolute right-4 top-4 rounded-full bg-brand-primary px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+              Most popular
+            </span>
             <p className="text-xs font-bold uppercase tracking-wider text-brand-primary">Pro</p>
             <p className="mt-3 flex items-baseline gap-1 text-[#0f172a]">
               <span className="text-3xl font-bold tracking-tight">₹3,999</span>

@@ -7,13 +7,13 @@ import {
   BarChart3,
   Activity,
   Target,
-  AlertTriangle,
   ArrowRight,
   Plus,
   FileText,
   Globe,
   Search,
   MessageSquare,
+  AlertTriangle,
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
@@ -63,7 +63,8 @@ const DashboardHome = () => {
     queryFn: () => api.getOverview(homeRequestOptions),
     enabled: !authLoading && Boolean(isSignedIn),
     staleTime: 30_000,
-    retry: 0,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1200 * Math.pow(2, attempt), 8000),
   });
 
   const {
@@ -76,7 +77,8 @@ const DashboardHome = () => {
     queryFn: () => api.getProjects(homeRequestOptions),
     enabled: !authLoading && Boolean(isSignedIn),
     staleTime: 30_000,
-    retry: 0,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1200 * Math.pow(2, attempt), 8000),
   });
 
   const latestProject = Array.isArray(projects) && projects.length > 0 ? projects[0] : null;
@@ -91,10 +93,10 @@ const DashboardHome = () => {
     queryFn: () => api.getPrompts(latestProject.id, homeRequestOptions),
     enabled: Boolean(latestProject?.id),
     staleTime: 30_000,
-    retry: 0,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1200 * Math.pow(2, attempt), 8000),
   });
 
-  const homeError = overviewError || projectsError;
   const promptLoadError = promptsError && latestProject;
 
   const overviewProjects = overviewData?.projects || [];
@@ -147,30 +149,33 @@ const DashboardHome = () => {
         </Button>
       </motion.div>
 
-      {homeError ? (
+      {(overviewError || projectsError) && (
         <motion.div
           variants={item}
-          className="glass-card-v2 flex flex-col gap-3 border-amber-200/60 bg-amber-50/60 p-4 text-sm text-amber-900 sm:flex-row sm:items-center"
+          className="rounded-2xl border border-amber-200/80 bg-amber-50/80 p-4 text-sm text-amber-900"
         >
-          <div className="flex min-w-0 items-start gap-2.5">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
-            <div className="min-w-0">
-              <div className="font-semibold">Dashboard data is taking longer than usual.</div>
-              <div className="text-xs text-amber-800/80">
-                We could not load the latest summary right now. You can retry without leaving the page.
-              </div>
+          <div className="flex gap-3">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold">Dashboard data could not be loaded</p>
+              <p className="mt-1 break-words text-xs text-amber-800">
+                {projectsError?.message || overviewError?.message || 'Check that the API is running and your session is valid.'}
+              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="mt-3"
+                onClick={() => {
+                  refetchOverview();
+                  refetchProjects();
+                }}
+              >
+                Retry dashboard
+              </Button>
             </div>
           </div>
-          <div className="flex gap-2 sm:ml-auto">
-            <Button size="sm" variant="secondary" onClick={() => refetchOverview()}>
-              Retry overview
-            </Button>
-            <Button size="sm" variant="secondary" onClick={() => refetchProjects()}>
-              Retry projects
-            </Button>
-          </div>
         </motion.div>
-      ) : null}
+      )}
 
       {/* Stats row */}
       {overviewLoading || projectsLoading ? (
@@ -231,7 +236,19 @@ const DashboardHome = () => {
               ) : null
             }
           >
-            {!latestProject ? (
+            {projectsLoading ? (
+              <div className="space-y-3">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-3 animate-pulse">
+                    <div className="h-8 w-8 rounded-lg bg-slate-100" />
+                    <div className="flex-1 space-y-1.5">
+                      <div className="h-3 w-3/4 rounded bg-slate-100" />
+                      <div className="h-2.5 w-1/2 rounded bg-slate-100" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : !latestProject ? (
               <div className="flex flex-col items-center py-8 text-center">
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-50 text-slate-300">
                   <MessageSquare className="h-6 w-6" />

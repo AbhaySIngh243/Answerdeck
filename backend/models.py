@@ -181,3 +181,20 @@ class AnalysisJob(db.Model):
     created_at = db.Column(db.String, nullable=False)
     started_at = db.Column(db.String, default="")
     completed_at = db.Column(db.String, default="")
+
+    synthesis_json = db.Column(db.Text, default="", nullable=True)
+    drift_json = db.Column(db.Text, default="", nullable=True)
+
+
+class DisplacementRecord(db.Model):
+    __tablename__ = "displacement_records"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    prompt_id = db.Column(db.Integer, db.ForeignKey("prompts.id", ondelete="CASCADE"), nullable=False, index=True)
+    engine = db.Column(db.String, nullable=False)
+    competitor_brand = db.Column(db.String, nullable=False)
+    displacement_context = db.Column(db.String, default="")
+    displacement_reason = db.Column(db.String, default="")
+    rank_of_competitor = db.Column(db.Integer, nullable=True)
+    rank_of_focus = db.Column(db.Integer, nullable=True)
+    cited_url = db.Column(db.String, default="")
+    timestamp = db.Column(db.String, nullable=False)

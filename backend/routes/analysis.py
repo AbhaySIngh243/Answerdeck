@@ -3,6 +3,8 @@
 import os
 import json
 import uuid
+import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
@@ -14,8 +16,19 @@ from engine.analyzer import (
     build_focus_brand_aliases,
     build_competitor_comparison,
     calculate_visibility_score,
+    generate_detailed_audit,
     is_focus_brand_match,
     is_spurious_brand_mention,
+)
+from engine.brain_pipeline import (
+    BrandContext,
+    CausalSignals,
+    DisplacementEvent,
+    _make_fallback_causal_signals,
+    decompose_intent,
+    detect_drift,
+    extract_causal_signals,
+    synthesize_evidence,
 )
 from engine.llm_clients import (
     get_available_engine_catalog,
@@ -26,8 +39,9 @@ from engine.llm_clients import (
 from engine.url_verifier import verify_urls
 from exceptions import NotFoundError
 from extensions import executor
-from models import AnalysisJob, Mention, Project, Prompt, Response, VisibilityMetric, db
+from models import AnalysisJob, DisplacementRecord, Mention, Project, Prompt, Response, VisibilityMetric, db
 from auth import require_auth
+from routes.reports import invalidate_project_report_caches
 
 analysis_bp = Blueprint("analysis", __name__)
 
@@ -37,6 +51,128 @@ MAX_QUEUED_JOBS_GLOBAL = int(os.getenv("MAX_QUEUED_JOBS_GLOBAL", "24"))
 PENDING_JOB_TIMEOUT_MINUTES = int(os.getenv("PENDING_JOB_TIMEOUT_MINUTES", "15"))
 RUNNING_JOB_TIMEOUT_MINUTES = int(os.getenv("RUNNING_JOB_TIMEOUT_MINUTES", "25"))
 VALID_SEARCH_PROVIDER_OVERRIDES = {"auto", "serper", "perplexity", "none"}
+RANKLORE_DEBUG = os.getenv("RANKLORE_DEBUG", "false").lower() in {"1", "true", "yes"}
+
+
+def _dbg(hypothesis_id: str, location: str, message: str, data: dict[str, Any] | None = None, run_id: str = "acceptance") -> None:
+    if not RANKLORE_DEBUG:
+        return
+    # region agent log
+    try:
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        path = os.path.join(root, "debug-ef0486.log")
+        payload = {
+            "sessionId": "ef0486",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "timestamp": int(time.time() * 1000),
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # endregion agent log
+
+
+def _merge_variant_signals(engine_name: str, variant_signals: dict[str, CausalSignals]) -> CausalSignals:
+    preferred_order = ["direct", "comparative", "use_case"]
+    ordered = [variant_signals[k] for k in preferred_order if k in variant_signals]
+    if not ordered:
+        raise ValueError(f"No variant signals for engine '{engine_name}'")
+    primary = variant_signals.get("direct", ordered[0])
+
+    all_details: list[dict[str, Any]] = []
+    all_sources: list[str] = []
+    evidence_phrases: list[str] = []
+    cited_urls: list[str] = []
+    cited_domains: list[str] = []
+    framing_words: list[str] = []
+    displacement_events: list[DisplacementEvent] = []
+    seen_event_keys: set[tuple[Any, ...]] = set()
+
+    mentioned_any = False
+    mention_ranks: list[int] = []
+    mention_context = ""
+    mention_sentiment = "not_mentioned"
+
+    for sig in ordered:
+        ba = sig.brand_analysis or {}
+        for detail in ba.get("all_brand_details", []) or []:
+            if isinstance(detail, dict):
+                all_details.append(detail)
+        for src in ba.get("sources", []) or []:
+            src_clean = str(src or "").strip()
+            if src_clean and src_clean not in all_sources:
+                all_sources.append(src_clean)
+
+        if bool(ba.get("focus_brand_mentioned")):
+            mentioned_any = True
+            rank_val = ba.get("focus_brand_rank")
+            if isinstance(rank_val, int):
+                mention_ranks.append(rank_val)
+            if not mention_context:
+                mention_context = str(ba.get("focus_brand_context") or "")
+            if mention_sentiment == "not_mentioned":
+                mention_sentiment = str(ba.get("focus_brand_sentiment") or "neutral")
+
+        for phrase in sig.focus_brand_evidence_phrases or []:
+            cleaned = str(phrase or "").strip()
+            if cleaned and cleaned not in evidence_phrases:
+                evidence_phrases.append(cleaned)
+        for url in sig.focus_brand_cited_urls or []:
+            cleaned = str(url or "").strip()
+            if cleaned and cleaned not in cited_urls:
+                cited_urls.append(cleaned)
+        for dom in sig.cited_source_domains or []:
+            cleaned = str(dom or "").strip()
+            if cleaned and cleaned not in cited_domains:
+                cited_domains.append(cleaned)
+        for word in sig.framing_words or []:
+            cleaned = str(word or "").strip()
+            if cleaned and cleaned not in framing_words:
+                framing_words.append(cleaned)
+        for ev in sig.competitor_displacement_events or []:
+            key = (
+                ev.competitor_brand,
+                ev.displacement_context,
+                ev.displacement_reason,
+                ev.rank_of_competitor,
+                ev.rank_of_focus,
+                ev.cited_url,
+            )
+            if key in seen_event_keys:
+                continue
+            seen_event_keys.add(key)
+            displacement_events.append(ev)
+
+    merged_brand_analysis = dict(primary.brand_analysis or {})
+    merged_brand_analysis["all_brand_details"] = all_details
+    merged_brand_analysis["sources"] = all_sources
+    merged_brand_analysis["focus_brand_mentioned"] = mentioned_any
+    merged_brand_analysis["focus_brand_rank"] = min(mention_ranks) if mention_ranks else None
+    merged_brand_analysis["focus_brand_sentiment"] = mention_sentiment
+    merged_brand_analysis["focus_brand_context"] = mention_context
+
+    merged_framing = next(
+        (sig.focus_brand_framing for sig in ordered if str(sig.focus_brand_framing or "").strip() and sig.focus_brand_framing != "absent"),
+        primary.focus_brand_framing,
+    )
+
+    return CausalSignals(
+        brand_analysis=merged_brand_analysis,
+        focus_brand_framing=merged_framing,
+        focus_brand_evidence_phrases=evidence_phrases,
+        focus_brand_cited_urls=cited_urls,
+        competitor_displacement_events=displacement_events,
+        cited_source_domains=cited_domains,
+        framing_words=framing_words,
+        response_structure=primary.response_structure,
+        engine=engine_name,
+        variant="merged",
+    )
 
 
 def _now_iso() -> str:
@@ -120,6 +256,7 @@ def async_run_analysis(
 
     try:
         with app_obj.app_context():
+            _dbg("H1", "routes/analysis.py:async_run_analysis", "start", {"job_id": job_id, "prompt_id": prompt_id, "project_id": project_id})
             job = AnalysisJob.query.filter_by(job_id=job_id, user_id=user_id).first()
             if job:
                 job.status = "running"
@@ -138,13 +275,32 @@ def async_run_analysis(
                     db.session.commit()
                 return
 
+            brand_context = BrandContext(
+                brand_name=project.name,
+                competitors=project.get_competitors_list(),
+                website_url=project.website_url or "",
+                category=project.category or "",
+                region=project.region or "",
+            )
+
+            intent_context = decompose_intent(
+                query=prompt.prompt_text,
+                brand=project.name,
+                category=project.category or "",
+                region=project.region or "",
+            )
+            _dbg("H2", "routes/analysis.py:async_run_analysis", "intent_context", {"buyer_stage": intent_context.buyer_stage, "variants": intent_context.prompt_variants})
+
             selected_models = prompt.get_models()
             result = query_engines(
                 prompt.prompt_text,
                 selected_models=selected_models,
                 search_provider_override=search_provider_override,
+                intent_context=intent_context,
+                brand_context=brand_context,
             )
             raw_responses = result.get("responses", {}) if isinstance(result, dict) else result
+            variant_responses = result.get("variant_responses", {}) if isinstance(result, dict) else {}
             search_context = result.get("search_context", {}) if isinstance(result, dict) else {}
             grounding_urls = search_context.get("urls", []) or []
 
@@ -155,30 +311,104 @@ def async_run_analysis(
                     job.completed_at = _now_iso()
                     db.session.commit()
                 return
+            _dbg("H3", "routes/analysis.py:async_run_analysis", "query_engines_ok", {"engine_count": len(raw_responses), "engines": list(raw_responses.keys())})
 
             focus_brand = project.name
             focus_brand_aliases = build_focus_brand_aliases(project.name, project.website_url)
             competitor_brands = project.get_competitors_list()
-            analyses: dict[str, dict] = {}
-            all_focus_mentions: list[dict] = []
+            causal_signals_by_engine: dict[str, CausalSignals] = {}
+            signals_by_engine_variant: dict[str, dict[str, CausalSignals]] = defaultdict(dict)
+            variant_payloads: dict[str, dict[str, str]] = {}
+            for eng, direct_text in raw_responses.items():
+                per_engine: dict[str, str] = {}
+                raw_variants = variant_responses.get(eng, {}) if isinstance(variant_responses, dict) else {}
+                if isinstance(raw_variants, dict):
+                    for variant_key in ("direct", "comparative", "use_case"):
+                        value = raw_variants.get(variant_key)
+                        if isinstance(value, str) and value.strip():
+                            per_engine[variant_key] = value
+                if "direct" not in per_engine and isinstance(direct_text, str) and direct_text.strip():
+                    per_engine["direct"] = direct_text
+                if per_engine:
+                    variant_payloads[eng] = per_engine
 
-            def _run_extraction(eng, text):
-                return eng, analyze_single_response(
-                    response_text=text,
-                    focus_brand=focus_brand,
-                    query=prompt.prompt_text,
-                    competitor_brands=competitor_brands,
-                    focus_brand_aliases=focus_brand_aliases,
-                )
-
-            with ThreadPoolExecutor(max_workers=max(1, len(raw_responses))) as pool:
-                futures = {
-                    pool.submit(_run_extraction, eng, text): eng
-                    for eng, text in raw_responses.items()
-                }
+            total_variant_jobs = sum(len(rows) for rows in variant_payloads.values())
+            with ThreadPoolExecutor(max_workers=max(1, total_variant_jobs)) as pool:
+                futures = {}
+                for eng, variant_map in variant_payloads.items():
+                    for variant_key, text in variant_map.items():
+                        futures[
+                            pool.submit(
+                                extract_causal_signals,
+                                text,
+                                focus_brand,
+                                focus_brand_aliases,
+                                competitor_brands,
+                                prompt.prompt_text,
+                                eng,
+                                variant_key,
+                            )
+                        ] = (eng, variant_key, text)
                 for future in as_completed(futures):
-                    eng_name, analysis = future.result()
-                    analyses[eng_name] = analysis
+                    eng_name, variant_key, text = futures[future]
+                    try:
+                        signals_by_engine_variant[eng_name][variant_key] = future.result()
+                    except Exception as exc:
+                        app_obj.logger.warning(
+                            "causal extraction failed for %s (%s): %s",
+                            eng_name,
+                            variant_key,
+                            exc,
+                        )
+                        signals_by_engine_variant[eng_name][variant_key] = _make_fallback_causal_signals(
+                            response_text=text,
+                            focus_brand=focus_brand,
+                            focus_brand_aliases=focus_brand_aliases,
+                            competitor_brands=competitor_brands,
+                            query=prompt.prompt_text,
+                            engine_name=eng_name,
+                        )
+
+            for eng_name, variant_map in signals_by_engine_variant.items():
+                causal_signals_by_engine[eng_name] = _merge_variant_signals(eng_name, variant_map)
+
+            analyses: dict[str, dict] = {
+                eng: signals.brand_analysis for eng, signals in causal_signals_by_engine.items()
+            }
+
+            research_data = {
+                "sources": search_context.get("sources", []),
+                "summary": f"Search grounding via {search_context.get('provider', 'none')}",
+                "provider": search_context.get("provider", "none"),
+            }
+            analyses["research_data"] = research_data
+
+            synthesis = synthesize_evidence(
+                causal_signals_by_engine=causal_signals_by_engine,
+                focus_brand=focus_brand,
+                query=prompt.prompt_text,
+                research_data=research_data,
+            )
+            _dbg("H4", "routes/analysis.py:async_run_analysis", "synthesis", {"consensus_rank": synthesis.consensus_rank, "mentioning": synthesis.engines_mentioning_focus, "not_mentioning": synthesis.engines_not_mentioning_focus})
+
+            drift_report = detect_drift(
+                project_id=project.id,
+                prompt_id=prompt.id,
+                current_synthesis=synthesis,
+                db_session=db.session,
+            )
+            _dbg("H5", "routes/analysis.py:async_run_analysis", "drift", {"velocity": drift_report.velocity, "rank_delta": drift_report.rank_delta, "previous_rank": drift_report.previous_rank, "current_rank": drift_report.current_rank})
+
+            audit_items = generate_detailed_audit(
+                focus_brand,
+                prompt.prompt_text,
+                None,
+                synthesis=synthesis,
+                known_competitors=competitor_brands,
+            )
+            _dbg("H6", "routes/analysis.py:async_run_analysis", "audit_items", {"count": len(audit_items), "first_issue": (audit_items[0].get("issue") if audit_items else None)})
+
+            all_focus_mentions: list[dict] = []
 
             # Collect every URL across all engines + grounding so we can
             # verify reachability in one pooled pass instead of per-engine.
@@ -266,14 +496,6 @@ def async_run_analysis(
 
             competitors = build_competitor_comparison(analyses, focus_brand)
 
-            # Use search grounding data as research context (no separate SERP response).
-            research_data = {
-                "sources": search_context.get("sources", []),
-                "summary": f"Search grounding via {search_context.get('provider', 'none')}",
-                "provider": search_context.get("provider", "none"),
-            }
-            analyses["research_data"] = research_data
-
             # Persist research grounding as a dedicated *_research response so
             # reporting endpoints can reliably recover structured citations later.
             if search_context.get("ok") and research_data.get("sources"):
@@ -296,7 +518,25 @@ def async_run_analysis(
                     )
                 )
 
+            batch_ts = _now_iso()
+            for eng_name, signals in causal_signals_by_engine.items():
+                for event in signals.competitor_displacement_events:
+                    db.session.add(
+                        DisplacementRecord(
+                            prompt_id=prompt.id,
+                            engine=eng_name,
+                            competitor_brand=event.competitor_brand,
+                            displacement_context=(event.displacement_context or "")[:500],
+                            displacement_reason=(event.displacement_reason or "")[:300],
+                            rank_of_competitor=event.rank_of_competitor,
+                            rank_of_focus=event.rank_of_focus,
+                            cited_url=event.cited_url or "",
+                            timestamp=batch_ts,
+                        )
+                    )
+
             db.session.commit()
+            invalidate_project_report_caches(project_id)
 
             engine_analyses = {
                 engine: data
@@ -336,12 +576,42 @@ def async_run_analysis(
                 ],
                 "url_status": url_status,
                 "timestamp": _now_iso(),
+                "intent_context": {
+                    "buyer_stage": intent_context.buyer_stage,
+                    "comparison_axis": intent_context.comparison_axis,
+                    "implicit_question": intent_context.implicit_question,
+                    "region_signal": intent_context.region_signal,
+                },
+                "synthesis": {
+                    "engines_mentioning": synthesis.engines_mentioning_focus,
+                    "engines_not_mentioning": synthesis.engines_not_mentioning_focus,
+                    "consensus_rank": synthesis.consensus_rank,
+                    "rank_variance": round(synthesis.rank_variance, 2),
+                    "top_displacement_competitors": synthesis.top_displacement_competitors,
+                    "recurring_displacement_reasons": synthesis.recurring_displacement_reasons,
+                    "top_cited_domains": synthesis.top_cited_domains,
+                    "citation_concentration": round(synthesis.citation_concentration, 2),
+                    "focus_brand_dominant_framing": synthesis.focus_brand_dominant_framing,
+                },
+                "audit": audit_items,
+                "drift": {
+                    "velocity": drift_report.velocity,
+                    "rank_delta": drift_report.rank_delta,
+                    "mention_rate_delta": drift_report.mention_rate_delta,
+                    "new_displacing_competitors": drift_report.new_displacing_competitors,
+                    "lost_displacing_competitors": drift_report.lost_displacing_competitors,
+                    "framing_shift": drift_report.framing_shift,
+                    "previous_rank": drift_report.previous_rank,
+                    "current_rank": drift_report.current_rank,
+                },
             }
 
             if job:
                 job.status = "completed"
                 job.result_json = json.dumps(payload)
                 job.completed_at = _now_iso()
+                job.synthesis_json = json.dumps(payload.get("synthesis") or {})
+                job.drift_json = json.dumps(payload.get("drift") or {})
                 db.session.commit()
     except Exception as exc:  # pragma: no cover - safety path
         try:

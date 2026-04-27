@@ -39,6 +39,7 @@ export default function ProjectPromptSetupView() {
     queryFn: () => api.getPrompts(id),
     enabled: Boolean(id),
   });
+  const safeExistingPrompts = Array.isArray(existingPrompts) ? existingPrompts : [];
 
   const { data: billing } = useQuery({
     queryKey: ['billing', 'me'],
@@ -107,7 +108,7 @@ export default function ProjectPromptSetupView() {
   );
 
   const combinedPrompts = useMemo(() => {
-    const existingSet = new Set(existingPrompts.map((p) => String(p.prompt_text || '').toLowerCase()));
+    const existingSet = new Set(safeExistingPrompts.map((p) => String(p.prompt_text || '').toLowerCase()));
     const deduped = [];
     for (const text of [...selectedSuggested, ...customPrompts]) {
       const normalized = text.toLowerCase();
@@ -115,10 +116,10 @@ export default function ProjectPromptSetupView() {
         deduped.push(text);
       }
     }
-    return deduped.slice(0, Math.max(0, maxPrompts - existingPrompts.length));
-  }, [customPrompts, existingPrompts, selectedSuggested, maxPrompts]);
+    return deduped.slice(0, Math.max(0, maxPrompts - safeExistingPrompts.length));
+  }, [customPrompts, safeExistingPrompts, selectedSuggested, maxPrompts]);
 
-  const totalAfterSave = existingPrompts.length + combinedPrompts.length;
+  const totalAfterSave = safeExistingPrompts.length + combinedPrompts.length;
   const canSave = combinedPrompts.length > 0 && totalAfterSave <= maxPrompts;
 
   if (isLoading) {

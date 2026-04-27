@@ -5,6 +5,10 @@ import { ResponsiveLine } from '@nivo/line';
 import { BarChart3, TrendingUp, Activity } from 'lucide-react';
 import { chartTheme, BRAND_BLUE } from '../../../lib/chartTheme';
 
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function CustomTooltip({ point }) {
   if (!point) return null;
   return (
@@ -27,14 +31,14 @@ function BarTooltip({ id, value, indexValue }) {
 function lineSeriesForVisibility(data) {
   return [{
     id: 'Quality Score',
-    data: (data || []).map((d) => ({ x: d.date || '-', y: Number(d.score ?? d.value ?? 0) })),
+    data: toArray(data).map((d) => ({ x: d.date || '-', y: Number(d.score ?? d.value ?? 0) })),
   }];
 }
 
 function lineSeriesForRankings(rows) {
   return [{
     id: 'Avg Rank',
-    data: (rows || []).slice(0, 12).map((r, i) => ({
+    data: toArray(rows).slice(0, 12).map((r, i) => ({
       x: r.prompt_text?.slice(0, 20) + (r.prompt_text?.length > 20 ? '\u2026' : '') || `P${i + 1}`,
       y: Number(r.avg_rank ?? 0),
     })),
@@ -48,12 +52,23 @@ const TAB_CONFIG = [
 ];
 
 export default function PerformancePanel({ mode, onModeChange, dashboard, promptAnalysisRows }) {
-  const visibilitySeries = lineSeriesForVisibility(dashboard?.quality_score_trend || dashboard?.visibility_trend || []);
+  const visibilitySeries = lineSeriesForVisibility(
+    Array.isArray(dashboard?.quality_score_trend)
+      ? dashboard.quality_score_trend
+      : dashboard?.visibility_trend,
+  );
   const rankingSeries = lineSeriesForRankings(promptAnalysisRows);
-  const engineRows = (dashboard?.competitors || []).slice(0, 10).map((row) => ({
-    brand: row.brand || 'Unknown',
-    visibility: Number(row.visibility_pct ?? 0),
-  }));
+  const engineRows = (
+    toArray(dashboard?.engine_visibility).length > 0
+      ? toArray(dashboard?.engine_visibility).slice(0, 10).map((row) => ({
+          brand: String(row.engine || 'Unknown').toUpperCase(),
+          visibility: Number(row.visibility_pct ?? 0),
+        }))
+      : toArray(dashboard?.competitors).slice(0, 10).map((row) => ({
+          brand: row.brand || 'Unknown',
+          visibility: Number(row.visibility_pct ?? 0),
+        }))
+  );
 
   return (
     <motion.div

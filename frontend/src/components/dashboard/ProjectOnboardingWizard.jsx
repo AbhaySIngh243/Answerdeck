@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
@@ -87,6 +87,52 @@ const SEARCH_PROVIDERS = [
   { id: 'none', label: 'No grounding', description: 'Use raw engine responses without search context.' },
 ];
 
+function normalizeStringList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      return normalizeStringList(parsed);
+    } catch {
+      return [trimmed];
+    }
+  }
+  return [];
+}
+
+function normalizeObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function dedupeTrimmed(values, maxItems = 8) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(values) ? values : []) {
+    const text = String(raw || '').trim();
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
 function defaultFormState(project) {
   const onboarding = project?.onboarding || {};
   const steps = onboarding?.steps || {};
@@ -94,6 +140,18 @@ function defaultFormState(project) {
   // Legacy projects stored seed_prompts under step "2"; prefer new step "3".
   const legacySeedPrompts = steps?.['2']?.seed_prompts || [];
   const step3SeedPrompts = steps?.['3']?.seed_prompts || legacySeedPrompts;
+  const step1Competitors = normalizeStringList(steps?.['1']?.competitors || project?.competitors);
+  const step2Competitors = normalizeStringList(steps?.['2']?.competitors || project?.competitors);
+  const step3Prompts = normalizeStringList(step3SeedPrompts);
+  const step3PromptStages = normalizeObject(steps?.['3']?.prompt_stages);
+  const step4Engines = normalizeStringList(
+    steps?.['4']?.target_engines || steps?.['3']?.target_engines || [
+      'chatgpt',
+      'claude',
+      'perplexity',
+      'deepseek',
+    ],
+  );
 
   return {
     step: Math.min(TOTAL_STEPS, Number(onboarding?.current_step || 1) || 1),
@@ -102,24 +160,19 @@ function defaultFormState(project) {
       domain: steps?.['1']?.domain || project?.website_url || '',
       industry: steps?.['1']?.industry || project?.category || '',
       region: steps?.['1']?.region || project?.region || 'Global',
-      competitors: steps?.['1']?.competitors || project?.competitors || [],
+      competitors: step1Competitors,
     },
     step2: {
-      competitors: steps?.['2']?.competitors || project?.competitors || [],
-      competitor_notes: steps?.['2']?.competitor_notes || {},
+      competitors: step2Competitors,
+      competitor_notes: normalizeObject(steps?.['2']?.competitor_notes),
     },
     step3: {
-      seed_prompts: step3SeedPrompts,
-      prompt_stages: steps?.['3']?.prompt_stages || {},
+      seed_prompts: step3Prompts,
+      prompt_stages: step3PromptStages,
       funnel_stage: steps?.['3']?.funnel_stage || steps?.['2']?.funnel_stage || 'awareness',
     },
     step4: {
-      target_engines: steps?.['4']?.target_engines || steps?.['3']?.target_engines || [
-        'chatgpt',
-        'claude',
-        'perplexity',
-        'deepseek',
-      ],
+      target_engines: step4Engines,
       search_provider: steps?.['4']?.search_provider || 'auto',
     },
     step5: { acknowledged: Boolean(steps?.['5']?.acknowledged) },
@@ -219,8 +272,6 @@ function promptQualityScore(prompt, brandName) {
 export default function ProjectOnboardingWizard() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const renderSeqRef = useRef(0);
-  renderSeqRef.current += 1;
   const [form, setForm] = useState(null);
   const [suggestedPrompts, setSuggestedPrompts] = useState([]);
   const [suggestedCompetitors, setSuggestedCompetitors] = useState([]);
@@ -242,29 +293,6 @@ export default function ProjectOnboardingWizard() {
     queryFn: () => api.getEngines(),
   });
 
-  // #region agent log
-  fetch('http://127.0.0.1:7891/ingest/ee334ea7-00e3-458a-a414-ee9f64eb340f', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '08d755' },
-    body: JSON.stringify({
-      sessionId: '08d755',
-      runId: 'pre-fix',
-      hypothesisId: 'A',
-      location: 'ProjectOnboardingWizard.jsx:afterQueries',
-      message: 'wizard render',
-      data: {
-        seq: renderSeqRef.current,
-        id: id || null,
-        isLoading,
-        formIsNull: form == null,
-        currentStep,
-        willEarlyReturn: isLoading || !form,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-
   const availableEngines = useMemo(
     () => (enginesData?.available_engines || []).filter((e) => e.enabled),
     [enginesData],
@@ -278,69 +306,7 @@ export default function ProjectOnboardingWizard() {
     mutationFn: ({ step, data }) => api.updateOnboardingStep(id, { step, data }),
     onSuccess: (payload) => {
       const nextStep = Number(payload?.project?.onboarding_current_step || currentStep + 1);
-      // #region agent log
-      fetch('http://127.0.0.1:7891/ingest/ee334ea7-00e3-458a-a414-ee9f64eb340f', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '08d755' },
-        body: JSON.stringify({
-          sessionId: '08d755',
-          runId: 'pre-fix',
-          hypothesisId: 'B',
-          location: 'ProjectOnboardingWizard.jsx:saveStep.onSuccess',
-          message: 'onboarding step saved',
-          data: {
-            id: id || null,
-            rawNext: payload?.project?.onboarding_current_step,
-            parsedNextStep: nextStep,
-            currentStepBefore: currentStep,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
-      setForm((prev) => {
-        // #region agent log
-        fetch('http://127.0.0.1:7891/ingest/ee334ea7-00e3-458a-a414-ee9f64eb340f', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '08d755' },
-          body: JSON.stringify({
-            sessionId: '08d755',
-            runId: 'pre-fix',
-            hypothesisId: 'D',
-            location: 'ProjectOnboardingWizard.jsx:setForm.updater',
-            message: 'merging next onboarding step',
-            data: {
-              prevIsNull: prev == null,
-              prevKeys: prev && typeof prev === 'object' ? Object.keys(prev) : [],
-              nextStep: Math.min(TOTAL_STEPS, nextStep),
-            },
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
-        return { ...prev, step: Math.min(TOTAL_STEPS, nextStep) };
-      });
-    },
-    onError: (err) => {
-      // #region agent log
-      fetch('http://127.0.0.1:7891/ingest/ee334ea7-00e3-458a-a414-ee9f64eb340f', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '08d755' },
-        body: JSON.stringify({
-          sessionId: '08d755',
-          runId: 'pre-fix',
-          hypothesisId: 'C',
-          location: 'ProjectOnboardingWizard.jsx:saveStep.onError',
-          message: 'onboarding step save failed',
-          data: {
-            id: id || null,
-            errMessage: err?.message || String(err),
-            errStatus: err?.status,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
+      setForm((prev) => ({ ...prev, step: Math.min(TOTAL_STEPS, nextStep) }));
     },
   });
 
@@ -381,7 +347,30 @@ export default function ProjectOnboardingWizard() {
     mutationFn: () => api.getOnboardingSuggestions(id, buildSuggestionContext()),
     onSuccess: (payload) => {
       setSuggestedPrompts(payload?.suggested_prompts || []);
-      setSuggestedCompetitors(payload?.suggested_competitors || []);
+      const incomingCompetitors = dedupeTrimmed(payload?.suggested_competitors || [], 8);
+      setSuggestedCompetitors(incomingCompetitors);
+
+      // Auto-fill competitor tags only when empty (user preference: don't overwrite).
+      setForm((prev) => {
+        if (!prev) return prev;
+        const currentIndustry = String(prev.step1?.industry || '').trim();
+        const suggestedIndustry = String(payload?.suggested_industry || '').trim();
+        const shouldApplyIndustry = !currentIndustry && suggestedIndustry;
+
+        const current = Array.isArray(prev.step1?.competitors) ? prev.step1.competitors : [];
+        const shouldApplyCompetitors = current.length === 0 && incomingCompetitors.length > 0;
+        if (!shouldApplyIndustry && !shouldApplyCompetitors) return prev;
+
+        const next = { ...prev };
+        if (shouldApplyIndustry) {
+          next.step1 = { ...next.step1, industry: suggestedIndustry };
+        }
+        if (shouldApplyCompetitors) {
+          next.step1 = { ...next.step1, competitors: incomingCompetitors };
+          next.step2 = { ...next.step2, competitors: incomingCompetitors };
+        }
+        return next;
+      });
     },
   });
 
@@ -543,42 +532,20 @@ export default function ProjectOnboardingWizard() {
     }
   }
 
-  const assistantContext = useMemo(
-    () => {
-      // #region agent log
-      fetch('http://127.0.0.1:7891/ingest/ee334ea7-00e3-458a-a414-ee9f64eb340f', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '08d755' },
-        body: JSON.stringify({
-          sessionId: '08d755',
-          runId: 'post-fix',
-          hypothesisId: 'A',
-          location: 'ProjectOnboardingWizard.jsx:assistantContext.useMemo',
-          message: 'assistantContext computing (now before early return)',
-          data: {
-            seq: renderSeqRef.current,
-            currentStep,
-            formIsNull: form == null,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
-      return {
+  const assistantContext = form
+    ? {
         step: currentStep,
-        brand_name: form?.step1?.brand_name || '',
-        domain: form?.step1?.domain || '',
-        industry: form?.step1?.industry || '',
-        region: form?.step1?.region || '',
-        competitors: form?.step1?.competitors || [],
-        seed_prompts: form?.step3?.seed_prompts || [],
-        funnel_stage: form?.step3?.funnel_stage || 'awareness',
-        target_engines: form?.step4?.target_engines || [],
-        search_provider: form?.step4?.search_provider || 'auto',
-      };
-    },
-    [form, currentStep],
-  );
+        brand_name: form.step1.brand_name,
+        domain: form.step1.domain,
+        industry: form.step1.industry,
+        region: form.step1.region,
+        competitors: form.step1.competitors,
+        seed_prompts: form.step3.seed_prompts,
+        funnel_stage: form.step3.funnel_stage,
+        target_engines: form.step4.target_engines,
+        search_provider: form.step4.search_provider,
+      }
+    : {};
 
   if (isLoading || !form) {
     return (
@@ -660,17 +627,17 @@ export default function ProjectOnboardingWizard() {
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-slate-700">Industry *</label>
-                <Select
+                <Input
+                  list="answerdeck-industries"
                   value={form.step1.industry}
                   onChange={(e) => updateField('step1', 'industry', e.target.value)}
-                >
-                  <option value="">Select industry</option>
+                  placeholder="Start typing (e.g. SaaS / Software)"
+                />
+                <datalist id="answerdeck-industries">
                   {INDUSTRIES.map((ind) => (
-                    <option key={ind} value={ind}>
-                      {ind}
-                    </option>
+                    <option key={ind} value={ind} />
                   ))}
-                </Select>
+                </datalist>
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-slate-700">Region *</label>

@@ -62,6 +62,7 @@ const ProjectsView = () => {
     placeholderData: cacheLoaded.length > 0 ? cacheLoaded : undefined,
     staleTime: 30_000,
   });
+  const safeProjects = Array.isArray(projects) ? projects : [];
 
   const { data: billing } = useQuery({
     queryKey: ['billing', 'me'],
@@ -74,9 +75,9 @@ const ProjectsView = () => {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify(projects || []));
+      window.localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify(safeProjects));
     } catch { /* ignore */ }
-  }, [projects]);
+  }, [safeProjects]);
 
   const createProjectMutation = useMutation({
     mutationFn: api.createProject,
@@ -91,7 +92,7 @@ const ProjectsView = () => {
     },
   });
 
-  const atProjectLimit = projects.length >= maxProjects;
+  const atProjectLimit = safeProjects.length >= maxProjects;
 
   const deleteProjectMutation = useMutation({
     mutationFn: api.deleteProject,
@@ -109,7 +110,7 @@ const ProjectsView = () => {
 
   const updateField = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
   const createDisabled = createProjectMutation.isPending || !form.name.trim();
-  const shouldShowInitialLoading = isLoading && projects.length === 0;
+  const shouldShowInitialLoading = isLoading && safeProjects.length === 0;
 
   if (shouldShowInitialLoading) {
     return (
@@ -126,26 +127,12 @@ const ProjectsView = () => {
   }
 
   const isTimeout = String(error?.message || '').toLowerCase().includes('timed out');
-  const hasProjects = projects.length > 0;
+  const hasProjects = safeProjects.length > 0;
 
-  const errorBanner = error && !hasProjects ? (
-    <div className="glass-card-v2 space-y-2 border-amber-200/60 bg-amber-50/60 p-4 text-sm text-amber-800">
-      <div className="font-semibold">{isTimeout ? 'Taking longer than usual…' : 'Could not load projects.'}</div>
-      <div className="text-xs text-amber-700">{isTimeout ? 'Still trying in the background. Retrying…' : error.message}</div>
-      <button type="button" onClick={() => refetch()} className="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-50">
-        {isFetching ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-        Retry now
-      </button>
-    </div>
-  ) : error && hasProjects ? (
-    <div className="glass-card-v2 flex items-center gap-2 border-amber-200/60 bg-amber-50/60 px-4 py-2.5 text-xs font-medium text-amber-800">
-      <span>{isTimeout ? 'Refresh is taking longer than usual — showing cached projects.' : 'Refresh failed — showing cached projects.'}</span>
-      <button type="button" onClick={() => refetch()} className="ml-auto inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[10px] font-semibold text-amber-800 hover:bg-amber-50">
-        {isFetching ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-        Retry
-      </button>
-    </div>
-  ) : null;
+  // Intentionally suppress user-visible error/timeout banners on the projects page.
+  // The view still uses cached placeholder data and react-query refetch/retry.
+  // eslint-disable-next-line no-unused-vars
+  const errorBanner = null;
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
@@ -156,7 +143,7 @@ const ProjectsView = () => {
           <p className="mt-1 text-sm text-slate-400">Monitor, analyze, and improve your brand visibility across AI answers.</p>
         </div>
         <div className="flex items-center gap-3">
-          <Badge variant="secondary" className="text-xs">{projects.length}/{maxProjects} projects</Badge>
+          <Badge variant="secondary" className="text-xs">{safeProjects.length}/{maxProjects} projects</Badge>
           <Button onClick={() => !atProjectLimit && setShowCreateModal(true)} disabled={atProjectLimit}>
             <Plus className="h-4 w-4" />
             {atProjectLimit ? 'Limit reached' : 'New Project'}
@@ -167,7 +154,7 @@ const ProjectsView = () => {
       {errorBanner}
 
       {/* Empty state */}
-      {projects.length === 0 ? (
+      {safeProjects.length === 0 ? (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -184,7 +171,7 @@ const ProjectsView = () => {
         </motion.div>
       ) : (
         <motion.div variants={container} initial="hidden" animate="visible" className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-          {projects.map((project) => {
+          {safeProjects.map((project) => {
             const competitors = Array.isArray(project.competitors) ? project.competitors : [];
             const domain = getDomainFromWebsiteUrl(project.website_url);
             const projectRoute = project.context_ready ? `/dashboard/project/${project.id}` : `/dashboard/project/${project.id}/onboarding`;

@@ -623,8 +623,7 @@ def _build_suggestion_user_prompt(
     site_context: str,
     theme_hint: str,
 ) -> str:
-    return f"""You are an AI visibility strategist.
-The brand below is for context only: generate exactly 3 high-intent user search prompts that do NOT include the brand name or obvious variants.
+    return f"""Generate exactly 3 real search-style prompts a buyer might type. Do not use the brand name (it's context only).
 
 Website-derived context (may be partial if fetch failed):
 {site_context}
@@ -669,8 +668,8 @@ def generate_competitor_suggestions(project: dict[str, Any], max_items: int = 6)
     if existing:
         existing_clause = f"\nAlready known competitors (do not repeat): {', '.join(existing[:8])}"
 
-    prompt = f"""You are a competitive intelligence analyst.
-Given the brand and website context below, return a JSON array of {max_items} direct competitor brand names.
+    prompt = f"""List {max_items} real competitor brand names in the same market. JSON array of strings only.
+Given the brand and site context:
 
 Brand: {project_name}
 Category: {category}
@@ -703,6 +702,42 @@ Return ONLY a valid JSON array of strings, e.g. ["Competitor A", "Competitor B"]
     except Exception:
         pass
     return []
+
+
+def suggest_industry_label(project: dict[str, Any]) -> str:
+    """
+    Best-effort industry inference for onboarding.
+    Preference:
+    - Keep existing category if provided
+    - Otherwise infer from website snapshot via a short LLM classification
+    """
+    category = _clean_text(project.get("category") or "", limit=80).strip()
+    if category:
+        return category
+
+    snapshot = _collect_site_snapshot(project.get("website_url") or "")
+    site_context = _build_site_context_for_llm(snapshot)
+    if not site_context:
+        return ""
+
+    prompt = f"""From the text below, reply with a short industry label only (2–5 words, plain English).
+No quotes, no explanation, no list.
+
+Website context:
+{site_context}
+
+Return ONLY the label text."""
+
+    try:
+        raw = chat("chatgpt", prompt, temperature=0.1)
+        label = _clean_text(raw, limit=80).strip()
+        label = re.sub(r"^[-*\u2022\s]+", "", label).strip()
+        # Guardrails: avoid empty / overly verbose outputs.
+        if not label or len(label.split()) > 8:
+            return ""
+        return label
+    except Exception:
+        return ""
 
 
 def generate_project_prompt_suggestions(project: dict[str, Any], max_prompts: int = 10) -> dict[str, Any]:

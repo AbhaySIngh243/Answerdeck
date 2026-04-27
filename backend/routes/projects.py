@@ -20,7 +20,11 @@ from pydantic import ValidationError as PydanticValidationError
 from exceptions import NotFoundError, ValidationError
 from auth import require_auth
 from billing.entitlements import get_limits
-from engine.prompt_suggestions import generate_competitor_suggestions, generate_project_prompt_suggestions
+from engine.prompt_suggestions import (
+    generate_competitor_suggestions,
+    generate_project_prompt_suggestions,
+    suggest_industry_label,
+)
 from engine.onboarding_assistant import generate_assistant_payload
 
 projects_bp = Blueprint("projects", __name__)
@@ -430,11 +434,16 @@ def onboarding_suggestions(project_id):
     if not ai_competitors:
         ai_competitors = generate_competitor_suggestions(project_ctx, max_items=6)
 
+    # Best-effort: infer from website when possible; fallback to category.
+    # (Frontend only applies when Industry is currently empty.)
+    suggested_industry = suggest_industry_label(project_ctx) or ""
+
     return jsonify(
         {
             "suggested_prompts": prompt_payload.get("prompts", []),
             "prompt_source": prompt_payload.get("source", "unknown"),
             "suggested_competitors": ai_competitors,
+            "suggested_industry": suggested_industry,
         }
     )
 

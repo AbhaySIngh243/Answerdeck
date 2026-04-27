@@ -74,12 +74,22 @@ def _ensure_runtime_schema(engine):
         inspector = inspect(engine)
         if "projects" not in inspector.get_table_names():
             return
-        columns = {col["name"] for col in inspector.get_columns("projects")}
-        statements = []
-        if "onboarding_data" not in columns:
+        statements: list[str] = []
+
+        project_columns = {col["name"] for col in inspector.get_columns("projects")}
+        if "onboarding_data" not in project_columns:
             statements.append("ALTER TABLE projects ADD COLUMN onboarding_data TEXT DEFAULT '{}'")
-        if "onboarding_completed" not in columns:
+        if "onboarding_completed" not in project_columns:
             statements.append("ALTER TABLE projects ADD COLUMN onboarding_completed BOOLEAN DEFAULT FALSE")
+
+        # analysis_jobs additive columns (rebuilt.md)
+        if "analysis_jobs" in inspector.get_table_names():
+            job_columns = {col["name"] for col in inspector.get_columns("analysis_jobs")}
+            if "synthesis_json" not in job_columns:
+                statements.append("ALTER TABLE analysis_jobs ADD COLUMN synthesis_json TEXT DEFAULT ''")
+            if "drift_json" not in job_columns:
+                statements.append("ALTER TABLE analysis_jobs ADD COLUMN drift_json TEXT DEFAULT ''")
+
         if not statements:
             return
         with engine.begin() as conn:

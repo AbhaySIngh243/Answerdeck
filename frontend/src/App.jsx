@@ -26,9 +26,7 @@ const queryClient = new QueryClient({
     queries: {
       refetchOnWindowFocus: false,
       retry: (failureCount, error) => {
-        const message = String(error?.message || '').toLowerCase();
         if (error?.status === 401 || error?.status === 403 || error?.status === 404) return false;
-        if (message.includes('timed out') || message.includes('network error')) return false;
         return failureCount < 3;
       },
       retryDelay: (attempt) => Math.min(3000 * Math.pow(2, attempt), 15000),

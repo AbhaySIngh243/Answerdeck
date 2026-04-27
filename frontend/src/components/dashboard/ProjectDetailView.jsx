@@ -60,6 +60,10 @@ function isHttpUrl(value) {
   return /^https?:\/\/[^\s]+$/i.test(String(value || '').trim());
 }
 
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 const DRAFT_TARGET_LABELS = {
   research: 'Suggested from research',
   audit: 'From audit',
@@ -184,7 +188,7 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
           {playbookLoading && !playbook ? (
             <div className="flex flex-col items-center gap-2.5 py-10">
               <Loader2 className="h-6 w-6 animate-spin text-brand-primary/40" />
-              <p className="text-xs text-slate-400">Researching this action…</p>
+              <p className="text-xs text-slate-400">Loading steps…</p>
             </div>
           ) : playbook ? (
             <div className="space-y-4 p-5">
@@ -197,7 +201,7 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
               <div>
                 <p className={`${lbl} mb-2`}>Steps</p>
                 <ol className="space-y-2.5">
-                  {(playbook.steps || []).map((step, si) => (
+                  {toArray(playbook.steps).map((step, si) => (
                     <li key={si} className="rounded-xl border border-slate-100 bg-white p-3.5">
                       <div className="flex items-start gap-2.5">
                         <span className="mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-lg bg-brand-primary text-[10px] font-semibold text-white">{si + 1}</span>
@@ -215,22 +219,22 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
                   ))}
                 </ol>
               </div>
-              {(playbook.quick_wins || []).length > 0 && (
+              {toArray(playbook.quick_wins).length > 0 && (
                 <div>
                   <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-600"><Zap className="h-3 w-3" /> Quick wins</p>
-                  <div className="space-y-2">{playbook.quick_wins.map((qw, qi) => (<div key={qi} className="rounded-xl bg-emerald-50 border border-emerald-100 px-3.5 py-2.5"><p className="mb-0.5 text-xs font-medium text-emerald-700">{qw.title}</p><p className="text-xs leading-relaxed text-emerald-600/70">{qw.detail}</p></div>))}</div>
+                  <div className="space-y-2">{toArray(playbook.quick_wins).map((qw, qi) => (<div key={qi} className="rounded-xl bg-emerald-50 border border-emerald-100 px-3.5 py-2.5"><p className="mb-0.5 text-xs font-medium text-emerald-700">{qw.title}</p><p className="text-xs leading-relaxed text-emerald-600/70">{qw.detail}</p></div>))}</div>
                 </div>
               )}
-              {(playbook.common_mistakes || []).length > 0 && (
+              {toArray(playbook.common_mistakes).length > 0 && (
                 <div>
                   <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-500"><ShieldAlert className="h-3 w-3" /> Avoid</p>
-                  <div className="space-y-2">{playbook.common_mistakes.map((cm, ci) => (<div key={ci} className="rounded-xl bg-red-50 border border-red-100 px-3.5 py-2.5"><p className="mb-0.5 text-xs font-medium text-red-600">{cm.title}</p><p className="text-xs leading-relaxed text-red-500/70">{cm.detail}</p></div>))}</div>
+                  <div className="space-y-2">{toArray(playbook.common_mistakes).map((cm, ci) => (<div key={ci} className="rounded-xl bg-red-50 border border-red-100 px-3.5 py-2.5"><p className="mb-0.5 text-xs font-medium text-red-600">{cm.title}</p><p className="text-xs leading-relaxed text-red-500/70">{cm.detail}</p></div>))}</div>
                 </div>
               )}
-              {(playbook.tools_mentioned || []).length > 0 && (
+              {toArray(playbook.tools_mentioned).length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-3">
                   <span className="text-[10px] font-medium text-slate-400">Tools:</span>
-                  {playbook.tools_mentioned.map((tool) => (<span key={tool} className="rounded-lg border border-slate-100 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600">{tool}</span>))}
+                  {toArray(playbook.tools_mentioned).map((tool) => (<span key={tool} className="rounded-lg border border-slate-100 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600">{tool}</span>))}
                 </div>
               )}
             </div>
@@ -264,9 +268,26 @@ const ProjectDetailView = () => {
       const [project, prompts, dashboard, engines] = await Promise.all([
         api.getProject(id), api.getPrompts(id), api.getProjectDashboard(id), api.getEngines(),
       ]);
-      return { project, prompts, dashboard, enabledEngines: engines.enabled_engines || [], availableEngines: engines.available_engines || [], searchLayer: engines.search_layer || {} };
+      return {
+        project,
+        prompts,
+        dashboard,
+        enabledEngines: toArray(engines.enabled_engines),
+        availableEngines: toArray(engines.available_engines),
+        searchLayer: engines.search_layer || {},
+      };
     },
   });
+
+  // Warm the same heavy payload the Opportunities tab uses so switching tabs feels instant.
+  useEffect(() => {
+    if (!id || !projectData?.project) return;
+    queryClient.prefetchQuery({
+      queryKey: ['deep-analysis', id],
+      queryFn: () => api.getDeepAnalysis(id),
+      staleTime: 60_000,
+    });
+  }, [id, projectData?.project, queryClient]);
 
   const { data: billing } = useQuery({
     queryKey: ['billing', 'me'],
@@ -287,12 +308,11 @@ const ProjectDetailView = () => {
   const { data: deepAnalysis, isLoading: deepAnalysisLoading } = useQuery({ queryKey: ['deep-analysis', id], queryFn: () => api.getDeepAnalysis(id), enabled: Boolean(id) && needsDeepAnalysis, staleTime: 60_000 });
   const { data: sourcesIntel, isLoading: sourcesIntelLoading } = useQuery({ queryKey: ['sources-intelligence', id], queryFn: () => api.getSourcesIntelligence(id), enabled: Boolean(id), staleTime: 60_000 });
   const { data: competitorIntel, isLoading: competitorIntelLoading } = useQuery({ queryKey: ['competitor-intelligence', id], queryFn: () => api.getCompetitorIntelligence(id), enabled: Boolean(id), staleTime: 60_000 });
-  const { data: reportData } = useQuery({ queryKey: ['prompt-report', selectedPromptId], queryFn: () => api.getPromptResults(selectedPromptId), enabled: Boolean(selectedPromptId) });
   const { data: promptDetailData, isLoading: promptDetailLoading } = useQuery({ queryKey: ['prompt-detail', selectedPromptId], queryFn: () => api.getPromptDetail(selectedPromptId), enabled: Boolean(selectedPromptId) });
 
   const mergedSourcesRows = useMemo(() => {
     const fromPrompt = selectedPromptId && Array.isArray(promptDetailData?.sources) && promptDetailData.sources.length > 0 ? promptDetailData.sources : null;
-    const raw = (fromPrompt ?? sourcesIntel?.domains) || [];
+    const raw = toArray(fromPrompt ?? sourcesIntel?.domains);
     const normalized = raw.slice(0, 20).map((row) => {
       const linkObjs = Array.isArray(row.links) ? row.links : [];
       const normalizedLinks = linkObjs.map((l) => { if (typeof l === 'string') return { url: l.trim(), title: '' }; if (!l || typeof l !== 'object') return null; const url = String(l.url || '').trim(); if (!url || !isHttpUrl(url)) return null; return { url, title: String(l.title || '').trim() }; }).filter(Boolean);
@@ -311,7 +331,24 @@ const ProjectDetailView = () => {
     [projectData?.dashboard?.context_state, deepAnalysis?.context_state, sourcesIntel?.context_state]
   );
 
-  const competitorDisplayRows = useMemo(() => competitorIntel?.rows || [], [competitorIntel?.rows]);
+  const competitorDisplayRows = useMemo(() => {
+    const rows = toArray(competitorIntel?.rows).map((r) => ({
+      ...r,
+      __vis: Number(r?.visibility_pct ?? r?.visibility ?? 0) || 0,
+    }));
+    rows.sort((a, b) => {
+      const diff = Number(b.__vis) - Number(a.__vis);
+      if (diff !== 0) return diff;
+      return String(a?.brand ?? '').localeCompare(String(b?.brand ?? ''));
+    });
+    return rows;
+  }, [competitorIntel?.rows]);
+
+  const competitorTopRows = useMemo(() => competitorDisplayRows.slice(0, 20), [competitorDisplayRows]);
+  const competitorMaxVis = useMemo(
+    () => Math.max(...competitorTopRows.map((r) => Number(r?.__vis ?? r?.visibility_pct ?? r?.visibility ?? 0) || 0), 1),
+    [competitorTopRows]
+  );
   const { data: intelSummary, isLoading: intelSummaryLoading } = useQuery({ queryKey: ['intel-summary', id], queryFn: () => api.getIntelSummary(id), enabled: Boolean(id) && activeSection === 'dashboard' && !selectedPromptId });
   const { data: globalAudit, isLoading: globalAuditLoading } = useQuery({ queryKey: ['global-audit', id], queryFn: () => api.getGlobalAudit(id), enabled: Boolean(id) && activeSection === 'dashboard' && !selectedPromptId });
 
@@ -320,20 +357,20 @@ const ProjectDetailView = () => {
   }, []);
 
   const modelIdToName = useMemo(() => {
-    const engines = projectData?.availableEngines || [];
+    const engines = toArray(projectData?.availableEngines);
     return Object.fromEntries(engines.map((e) => [e.id, e.name]));
   }, [projectData?.availableEngines]);
 
   const coverageSnapshot = useMemo(() => {
     if (!projectData?.dashboard || !projectData?.project) return null;
     const d = projectData.dashboard;
-    const proms = projectData.prompts || [];
-    const rankings = d.prompt_rankings || [];
+    const proms = toArray(projectData.prompts);
+    const rankings = toArray(d.prompt_rankings);
     const total = Math.max(proms.length, rankings.length, 1);
     const withRank = rankings.filter((r) => r.avg_rank != null).length;
     const vis = d.visibility_pct_current;
     const share = vis != null && Number.isFinite(Number(vis)) ? `${Math.round(Number(vis))}%` : '—';
-    const competitors = d.competitors || [];
+    const competitors = toArray(d.competitors);
     const focus = (projectData.project.name || '').toLowerCase().trim();
     const sorted = [...competitors].sort((a, b) => (Number(b.visibility_pct ?? b.visibility ?? 0)) - (Number(a.visibility_pct ?? a.visibility ?? 0)));
     let topPos = '—';
@@ -341,9 +378,9 @@ const ProjectDetailView = () => {
     if (idx >= 0) topPos = `#${idx + 1}`;
     else if (sorted.length) topPos = 'Not ranked';
     return {
-      queriesLine: `${withRank} / ${total} queries where you rank`,
-      shareLine: `${share} share of AI mentions`,
-      topCompetitorLine: `${topPos} your position vs competitors`,
+      queriesLine: `You have a rank on ${withRank} of ${total} prompts`,
+      shareLine: `Your brand appears in about ${share} of model answers (by runs we measured)`,
+      topCompetitorLine: `By visibility among competitors, you are ${topPos}`,
     };
   }, [projectData]);
 
@@ -358,9 +395,9 @@ const ProjectDetailView = () => {
       const first = s.split(/(?<=[.!?])\s+/)[0];
       happening = (first && first.length <= 280 ? first : s.slice(0, 220)).trim();
     }
-    const fromRoadmap = (intelSummary.strategic_roadmap || []).map((step) => String(step.action || '').trim()).filter(Boolean);
+    const fromRoadmap = toArray(intelSummary.strategic_roadmap).map((step) => String(step.action || '').trim()).filter(Boolean);
     const fromBullets = Array.isArray(intelSummary.executive_bullets) ? intelSummary.executive_bullets.slice(1).map((b) => String(b).trim()).filter(Boolean) : [];
-    const fromQueries = (intelSummary.top_priority_prompts || []).map((p) => String(p).trim()).filter(Boolean);
+    const fromQueries = toArray(intelSummary.top_priority_prompts).map((p) => String(p).trim()).filter(Boolean);
     const seen = new Set();
     const priorities = [];
     for (const t of [...fromRoadmap, ...fromBullets, ...fromQueries]) {
@@ -370,7 +407,7 @@ const ProjectDetailView = () => {
       priorities.push(t);
       if (priorities.length >= 5) break;
     }
-    const losing = (intelSummary.competitive_threats || []).map((t) => String(t).trim()).filter(Boolean);
+    const losing = toArray(intelSummary.competitive_threats).map((t) => String(t).trim()).filter(Boolean);
     return { happening, priorities, losing };
   }, [intelSummary]);
 
@@ -393,15 +430,15 @@ const ProjectDetailView = () => {
   const exportDashboardCSV = useCallback(() => {
     const proj = projectData?.project;
     const dash = projectData?.dashboard;
-    const proms = projectData?.prompts ?? [];
-    const engines = projectData?.enabledEngines ?? [];
+    const proms = toArray(projectData?.prompts);
+    const engines = toArray(projectData?.enabledEngines);
     if (!proj) return;
     const rows = [['Section', 'Field', 'Value']];
     rows.push(['Overview', 'Project', proj.name], ['Overview', 'Category', proj.category || ''], ['Overview', 'Region', proj.region || ''], ['Overview', 'Visibility', String(dash?.current_visibility_score ?? '')], ['Overview', 'Prompts', String(proms.length)], ['Overview', 'Engines', engines.map((e) => e.name).join(', ')], ['Overview', 'Date range', `${dateFrom} – ${dateTo}`]);
-    (dash?.visibility_trend || []).forEach((t) => rows.push(['Visibility Trend', t.date, String(t.score)]));
-    (dash?.competitors || []).forEach((c) => rows.push(['Competitor', c.brand, String(c.visibility_score ?? '')]));
-    (promptAnalysis?.rows || []).forEach((r) => rows.push(['Prompt', r.prompt_text, `vis=${r.visibility} rank=${r.avg_rank ?? '-'} sentiment=${r.sentiment}`]));
-    if (intelSummary) { rows.push(['Intel', 'Health', intelSummary.overall_health || ''], ['Intel', 'Summary', intelSummary.executive_summary || '']); (intelSummary.competitive_threats || []).forEach((t) => rows.push(['Intel', 'Threat', t])); (intelSummary.top_priority_prompts || []).forEach((p) => rows.push(['Intel', 'Priority', p])); }
+    toArray(dash?.visibility_trend).forEach((t) => rows.push(['Visibility Trend', t.date, String(t.score)]));
+    toArray(dash?.competitors).forEach((c) => rows.push(['Competitor', c.brand, String(c.visibility_score ?? '')]));
+    toArray(promptAnalysis?.rows).forEach((r) => rows.push(['Prompt', r.prompt_text, `vis=${r.visibility} rank=${r.avg_rank ?? '-'} sentiment=${r.sentiment}`]));
+    if (intelSummary) { rows.push(['Intel', 'Health', intelSummary.overall_health || ''], ['Intel', 'Summary', intelSummary.executive_summary || '']); toArray(intelSummary.competitive_threats).forEach((t) => rows.push(['Intel', 'Threat', t])); toArray(intelSummary.top_priority_prompts).forEach((p) => rows.push(['Intel', 'Priority', p])); }
     const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -444,7 +481,7 @@ const ProjectDetailView = () => {
   const pollJobStatus = async (jobId, promptId) => {
     try {
       const data = await api.getJobStatus(jobId);
-      if (data.status === 'completed' || data.status === 'failed') { setRunningPrompts((prev) => ({ ...prev, [promptId]: false })); refreshAll(); queryClient.invalidateQueries({ queryKey: ['prompt-detail', promptId] }); queryClient.invalidateQueries({ queryKey: ['prompt-report', promptId] }); return; }
+      if (data.status === 'completed' || data.status === 'failed') { setRunningPrompts((prev) => ({ ...prev, [promptId]: false })); refreshAll(); queryClient.invalidateQueries({ queryKey: ['prompt-detail', promptId] }); return; }
       setTimeout(() => pollJobStatus(jobId, promptId), 2500);
     } catch { setRunningPrompts((prev) => ({ ...prev, [promptId]: false })); }
   };
@@ -471,11 +508,11 @@ const ProjectDetailView = () => {
     let query = target.query;
     const contentType = target.contentType || 'Article';
     switch (target.source) {
-      case 'research': directive = applyExecOptionsToDirective(`Use ${target.domain || 'the top cited source'} as an evidence-backed citation target. Write an AI-retrieval-first answer page for this intent: "${target.query}". Include: clear section headings, concise factual claims aligned to the citation framing, and a strong next-step recommendation for brand ${project.name}.`); break;
-      case 'audit': directive = applyExecOptionsToDirective(`Turn this audit fix into an AI-retrieval-first content draft for brand ${project.name}. Root cause: ${target.auditRootCause}. Solution: ${target.auditSolution}. Include structured headings, explicit intent coverage, and a clear next-step recommendation.`); break;
-      case 'citation': directive = applyExecOptionsToDirective(`Write an AI-retrieval-first fix for brand ${project.name}. Use ${target.domain || 'the top citation domain'} as a citation target. Anchor the content to the intent "${target.query}". Include: clear headings, explicit answers, and next-step positioning guidance.`); break;
-      case 'path': directive = applyExecOptionsToDirective(`Write an AI-retrieval-first solution for brand ${project.name}. ${target.pathRec} Focus on: exact intent coverage, structured headings, and clear next steps that increase likelihood of appearing in AI recommendations.`); query = target.pathRec; break;
-      case 'custom': directive = applyExecOptionsToDirective(`Write an AI-retrieval-first ${contentType} for brand ${project.name} based on this brief from the user:\n\n${target.customBrief}\n\nFollow the brief closely; use clear headings and entity-rich language suited for AI retrieval.`); query = target.headline || target.customBrief.slice(0, 200); break;
+      case 'research': directive = applyExecOptionsToDirective(`Draft a page for ${project.name} that answers this search: "${target.query}". Cite or mirror the kind of facts used on ${target.domain || 'the top cited source'}. Use clear headings, real facts, and a short "what to do next" for the reader.`); break;
+      case 'audit': directive = applyExecOptionsToDirective(`Draft content for ${project.name} that fixes this issue. Problem: ${target.auditRootCause}. Fix: ${target.auditSolution}. Use headings; say what to change in plain terms; end with one next step.`); break;
+      case 'citation': directive = applyExecOptionsToDirective(`Draft for ${project.name} on topic: "${target.query}". Reference the style of content on ${target.domain || 'the top cited site'}. Clear headings, direct answers, one next step for the reader.`); break;
+      case 'path': directive = applyExecOptionsToDirective(`Draft for ${project.name}. ${target.pathRec} Use headings, match the search intent, and add clear next steps.`); query = target.pathRec; break;
+      case 'custom': directive = applyExecOptionsToDirective(`Write a ${contentType} for ${project.name} using this brief:\n\n${target.customBrief}\n\nFollow the brief. Short sections, plain words, one call to action at the end.`); query = target.headline || target.customBrief.slice(0, 200); break;
       default: return;
     }
     setIsExecuting(true); setExecError(null); setExecContent(null);
@@ -578,10 +615,10 @@ const ProjectDetailView = () => {
             {activeSection === 'dashboard' && (
               <motion.div key="dashboard" {...sectionMotion} className="space-y-5">
                 <OverviewKpiGrid dashboard={dashboard} prompts={prompts} enabledEngines={enabledEngines} runAllMutation={runAllMutation} projectId={id} />
-                <PerformancePanel mode={dashChartMode} onModeChange={setDashChartMode} dashboard={dashboard} promptAnalysisRows={promptAnalysis?.rows || []} />
+                <PerformancePanel mode={dashChartMode} onModeChange={setDashChartMode} dashboard={dashboard} promptAnalysisRows={toArray(promptAnalysis?.rows)} />
                 <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.3fr_1fr]">
-                  <PromptPerformanceTable loading={promptAnalysisLoading} rows={promptAnalysis?.rows || []} onViewAll={() => setActiveSection('prompts')} />
-                  <CompetitorSnapshot competitors={dashboard?.competitors || []} onViewAll={() => setActiveSection('competitors')} />
+                  <PromptPerformanceTable loading={promptAnalysisLoading} rows={toArray(promptAnalysis?.rows)} onViewAll={() => setActiveSection('prompts')} />
+                  <CompetitorSnapshot competitors={toArray(dashboard?.competitors)} onViewAll={() => setActiveSection('competitors')} />
                 </div>
 
                 {!selectedPromptId && (
@@ -596,31 +633,31 @@ const ProjectDetailView = () => {
                         <div className="flex flex-wrap items-start justify-between gap-4 px-6 py-5">
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
-                              <h2 className="text-base font-semibold tracking-tight text-slate-900">Executive summary</h2>
+                              <h2 className="text-base font-semibold tracking-tight text-slate-900">Summary</h2>
                               <DataBadge type="ai" />
                             </div>
-                            <p className="mt-0.5 text-sm text-slate-500">Quick snapshot of your AI visibility</p>
+                            <p className="mt-0.5 text-sm text-slate-500">From your data, not a generic brief</p>
                           </div>
                           <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${intelSummary.overall_health === 'Strong' ? 'bg-emerald-50 text-emerald-700' : intelSummary.overall_health === 'Critical' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{intelSummary.overall_health}</span>
                         </div>
                         <div className="grid grid-cols-1 gap-0 lg:grid-cols-[1.35fr_1fr] lg:gap-0">
                           <div className="space-y-6 px-6 pb-6 lg:pr-8">
                             <div>
-                              <p className={`${lbl} mb-2`}>What&apos;s happening</p>
+                              <p className={`${lbl} mb-2`}>In short</p>
                               <p className="text-sm font-medium leading-snug text-slate-800">{dashboardIntelLayout.happening || '—'}</p>
                             </div>
                             <div>
-                              <p className={`${lbl} mb-2`}>Top priorities</p>
+                              <p className={`${lbl} mb-2`}>Do these first</p>
                               <ul className="space-y-2">
-                                {(dashboardIntelLayout.priorities.length ? dashboardIntelLayout.priorities : ['Run analyses on your prompts to generate priorities.']).map((line, idx) => (
+                                {(dashboardIntelLayout.priorities.length ? dashboardIntelLayout.priorities : ['Run your prompts to get a short list here.']).map((line, idx) => (
                                   <li key={idx} className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{line}</li>
                                 ))}
                               </ul>
                             </div>
                             <div>
-                              <p className={`${lbl} mb-2`}>Where you&apos;re losing</p>
+                              <p className={`${lbl} mb-2`}>Risks</p>
                               <ul className="list-disc space-y-1.5 pl-4 text-sm text-slate-600">
-                                {(dashboardIntelLayout.losing.length ? dashboardIntelLayout.losing : ['Insufficient data—complete prompt runs for competitive signals.']).map((line, idx) => (
+                                {(dashboardIntelLayout.losing.length ? dashboardIntelLayout.losing : ['Run more analyses to see competitor gaps here.']).map((line, idx) => (
                                   <li key={idx}>{line}</li>
                                 ))}
                               </ul>
@@ -628,17 +665,17 @@ const ProjectDetailView = () => {
                           </div>
                           <div className="space-y-5 border-t border-slate-100/80 px-6 py-6 lg:border-l lg:border-t-0 lg:pt-6">
                             <div>
-                              <p className={`${lbl} mb-2`}>Priority queries</p>
+                              <p className={`${lbl} mb-2`}>Prompts to watch</p>
                               <div className="space-y-2">
-                                {(intelSummary.top_priority_prompts || []).length === 0 && <p className="text-sm text-slate-500">None flagged yet.</p>}
-                                {(intelSummary.top_priority_prompts || []).map((q, idx) => (
+                                {toArray(intelSummary.top_priority_prompts).length === 0 && <p className="text-sm text-slate-500">None yet. Run analysis first.</p>}
+                                {toArray(intelSummary.top_priority_prompts).map((q, idx) => (
                                   <div key={idx} className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{q}</div>
                                 ))}
                               </div>
                             </div>
                             {coverageSnapshot && (
                               <div>
-                                <p className={`${lbl} mb-2`}>Coverage snapshot</p>
+                                <p className={`${lbl} mb-2`}>Coverage</p>
                                 <div className="space-y-2">
                                   <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.queriesLine}</div>
                                   <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.shareLine}</div>
@@ -656,10 +693,10 @@ const ProjectDetailView = () => {
                       <div className="glass-card-v2 overflow-hidden">
                         <div className="px-6 py-5">
                           <div className="flex flex-wrap items-center gap-2">
-                            <h2 className="text-base font-semibold tracking-tight text-slate-900">Project audit</h2>
+                            <h2 className="text-base font-semibold tracking-tight text-slate-900">Recurring issues</h2>
                             <DataBadge type="ai" />
                           </div>
-                          <p className="mt-0.5 text-sm text-slate-500">Patterns across your prompt portfolio</p>
+                          <p className="mt-0.5 text-sm text-slate-500">Problems that show up in more than one prompt</p>
                         </div>
                         <div className="space-y-4 px-6 pb-6">
                           {globalAudit.map((item, idx) => {
@@ -693,7 +730,7 @@ const ProjectDetailView = () => {
                   <div className="flex items-center justify-between border-b border-slate-100/80 px-6 py-4">
                     <div className="flex items-center gap-2.5">
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-primary/10 text-brand-primary"><Search className="h-4 w-4" /></div>
-                      <div><h2 className="text-sm font-semibold text-slate-800">Prompts Analysis</h2><p className="text-[11px] text-slate-400">Visibility is share of runs where your brand appears in the model answer text (not whether your domain is in citation URLs).</p></div>
+                      <div><h2 className="text-sm font-semibold text-slate-800">Prompts</h2><p className="text-[11px] text-slate-400">Visibility = how often your brand is named in the answer text. Link citations are tracked separately on Sources.</p></div>
                     </div>
                     <div className="flex items-center gap-2">
                       <Link
@@ -736,7 +773,7 @@ const ProjectDetailView = () => {
                       <thead><tr className="border-b border-slate-100/80 text-slate-400">{['Prompt', 'Answer vis.', 'Quality', 'Sentiment', 'Avg Rank', 'Models', 'Actions'].map((h) => <th key={h} className="px-5 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider">{h}</th>)}</tr></thead>
                       <tbody className="divide-y divide-slate-50">
                         {promptAnalysisLoading ? Array.from({ length: 6 }).map((_, idx) => (<tr key={`sk-${idx}`}><td className="px-5 py-3"><div className="h-3 w-52 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-5 w-14 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-12 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-12 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-10 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-28 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-6 w-24 animate-pulse rounded bg-slate-100" /></td></tr>))
-                          : (promptAnalysis?.rows || []).map((row, idx) => (
+                          : toArray(promptAnalysis?.rows).map((row, idx) => (
                             <tr key={`${row.prompt_id}-${idx}`} className="transition-colors hover:bg-slate-50/50">
                               <td className="max-w-[300px] px-5 py-3">
                                 <button type="button" onClick={() => openPromptDeepIntel(row.prompt_id)} className="block w-full truncate text-left text-sm font-medium text-slate-800 hover:text-brand-primary">{row.prompt_text}</button>
@@ -745,7 +782,7 @@ const ProjectDetailView = () => {
                               <td className="px-5 py-3 font-medium tabular-nums text-slate-500">{row.quality_score ?? '-'}</td>
                               <td className="px-5 py-3 text-xs font-medium capitalize text-slate-500">{row.sentiment}</td>
                               <td className="px-5 py-3 font-medium tabular-nums text-slate-500">{row.avg_rank ?? '-'}</td>
-                              <td className="max-w-[200px] px-5 py-3 text-xs text-slate-600">{(row.models || []).map((m) => modelIdToName[m] || m).join(', ') || '—'}</td>
+                              <td className="max-w-[200px] px-5 py-3 text-xs text-slate-600">{toArray(row.models).map((m) => modelIdToName[m] || m).join(', ') || '—'}</td>
                               <td className="px-5 py-3">
                                 <div className="flex items-center gap-1.5">
                                   <Button size="sm" onClick={() => runPromptMutation.mutate(row.prompt_id)} disabled={runningPrompts[row.prompt_id]}>{runningPrompts[row.prompt_id] ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}{runningPrompts[row.prompt_id] ? 'Running' : 'Run'}</Button>
@@ -755,7 +792,7 @@ const ProjectDetailView = () => {
                               </td>
                             </tr>
                           ))}
-                        {!promptAnalysisLoading && (promptAnalysis?.rows || []).length === 0 && (
+                        {!promptAnalysisLoading && toArray(promptAnalysis?.rows).length === 0 && (
                           <tr>
                             <td colSpan={7} className="py-10 text-center text-sm text-slate-400">
                               <p>No prompts yet. Add one above, or</p>
@@ -780,55 +817,107 @@ const ProjectDetailView = () => {
             {activeSection === 'competitors' && (
               <motion.div key="competitors" {...sectionMotion}>
                 <div className="glass-card-v2 overflow-hidden">
-                  <div className="flex items-center gap-2.5 border-b border-slate-100/80 px-6 py-4">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600"><Users className="h-4 w-4" /></div>
-                    <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Competitor Analysis</p><DataBadge type="measured" /></div><p className="text-[11px] text-slate-400">Rankings from brand mentions in model answers across engines (separate from citation URLs).</p></div>
+                  <div className="flex items-center justify-between border-b border-slate-100/80 px-6 py-4">
+                    <div className="flex items-center gap-2.5">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600"><Users className="h-4 w-4" /></div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-semibold text-slate-800">Competitor Analysis</p>
+                          <DataBadge type="measured" />
+                        </div>
+                        <p className="text-[11px] text-slate-400">How often each brand is named in model answers, per engine. Not the same as who got a link in citations.</p>
+                      </div>
+                    </div>
+                    <span className="text-[11px] tabular-nums text-slate-400">{competitorDisplayRows.length} brands</span>
                   </div>
-                  <div className="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2 lg:grid-cols-3">
-                    {competitorIntelLoading && competitorDisplayRows.length === 0
-                      ? Array.from({ length: 6 }).map((_, idx) => (<div key={idx} className="glass-card-v2 animate-pulse p-5"><div className="mb-4 h-4 w-28 rounded bg-slate-100" /><div className="space-y-3">{Array.from({ length: 4 }).map((__, j) => <div key={j} className="flex items-center justify-between"><div className="h-3 w-16 rounded bg-slate-100" /><div className="h-3 w-10 rounded bg-slate-100" /></div>)}</div></div>))
-                      : competitorDisplayRows.slice(0, 20).map((item, idx) => {
-                        const vis = item.visibility_pct ?? item.visibility ?? 0;
-                        const visColor = vis > 60 ? 'bg-emerald-500' : vis > 30 ? 'bg-brand-primary' : 'bg-amber-400';
-                        return (
-                          <motion.div key={item.brand} whileHover={{ y: -3, transition: { duration: 0.2 } }} className={`glass-card-v2 overflow-hidden transition-shadow hover:shadow-[0_8px_32px_rgba(15,23,42,0.08)] ${item.is_focus ? 'ring-1 ring-brand-primary/25' : item.is_target_competitor ? 'ring-1 ring-amber-300/40' : ''}`}>
-                            {item.is_focus && <div className="h-0.5 bg-gradient-to-r from-brand-primary to-blue-400" />}
-                            {item.is_target_competitor && !item.is_focus && <div className="h-0.5 bg-gradient-to-r from-amber-400 to-amber-300" />}
-                            <div className="p-5">
-                              <div className="mb-4 flex items-center justify-between">
-                                <div className="flex items-center gap-2.5">
-                                  <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold ${idx < 3 ? 'bg-amber-400/15 text-amber-600' : 'bg-slate-100 text-slate-500'}`}>
-                                    {idx < 3 ? <Crown className="h-3.5 w-3.5" /> : idx + 1}
-                                  </span>
-                                  <span className={`text-sm font-bold ${item.is_focus ? 'text-brand-primary' : 'text-slate-800'}`}>{item.brand}</span>
-                                </div>
-                                {item.is_focus && <span className="rounded-full bg-brand-primary/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-brand-primary">You</span>}
-                                {item.is_target_competitor && <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-600">Target</span>}
-                              </div>
 
-                              <div className="mb-4">
-                                <div className="mb-1.5 flex items-center justify-between">
-                                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Visibility</span>
-                                  <span className="text-sm font-bold tabular-nums text-slate-800">{vis}%</span>
-                                </div>
-                                <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                                  <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(100, vis)}%` }} transition={{ duration: 0.8, delay: idx * 0.05 }} className={`h-full rounded-full ${visColor}`} />
-                                </div>
-                              </div>
-
-                              <div className="grid grid-cols-3 gap-3 border-t border-slate-100/80 pt-3">
-                                {[{ l: 'AI Share', v: `${item.ai_share}%` }, { l: 'Quality', v: item.quality_score != null ? `${item.quality_score}%` : '-' }, { l: 'Avg Rank', v: item.avg_rank != null ? `#${item.avg_rank}` : '-' }].map((s) => (
-                                  <div key={s.l} className="text-center">
-                                    <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">{s.l}</p>
-                                    <p className="mt-0.5 text-sm font-bold tabular-nums text-slate-700">{s.v}</p>
+                  {competitorIntelLoading && competitorDisplayRows.length === 0 ? (
+                    <div className="divide-y divide-slate-50">
+                      {Array.from({ length: 6 }).map((_, idx) => (
+                        <div key={idx} className="flex animate-pulse items-center gap-4 px-6 py-4">
+                          <div className="h-3 w-4 rounded bg-slate-100" />
+                          <div className="h-3 w-28 rounded bg-slate-100" />
+                          <div className="ml-auto flex items-center gap-8">
+                            <div className="h-1.5 w-32 rounded-full bg-slate-100" />
+                            <div className="h-3 w-10 rounded bg-slate-100" />
+                            <div className="h-3 w-10 rounded bg-slate-100" />
+                            <div className="h-3 w-10 rounded bg-slate-100" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : competitorDisplayRows.length === 0 ? (
+                    <div className="flex flex-col items-center py-16 text-center">
+                      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-50 text-slate-300"><Target className="h-5 w-5" /></div>
+                      <p className="text-sm font-medium text-slate-400">No competitor data yet</p>
+                      <p className="mt-0.5 text-xs text-slate-400">Run an analysis to populate this view</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="border-b border-slate-100/80 bg-slate-50/50">
+                            <th className="w-10 px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400">#</th>
+                            <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400">Brand</th>
+                            <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400">Visibility</th>
+                            <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-400">AI Share</th>
+                            <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-400">Quality</th>
+                            <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-400">Avg Rank</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {competitorTopRows.map((item, idx) => {
+                            const vis = item.__vis ?? item.visibility_pct ?? item.visibility ?? 0;
+                            const barPct = Math.min(100, (Number(vis) / competitorMaxVis) * 100);
+                            const isFocus = item.is_focus;
+                            const isTarget = item.is_target_competitor;
+                            return (
+                              <motion.tr
+                                key={item.brand || idx}
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                transition={{ delay: idx * 0.03 }}
+                                className={`group transition-colors hover:bg-slate-50/60 ${isFocus ? 'bg-brand-primary/[0.03]' : ''}`}
+                              >
+                                <td className="px-6 py-3.5">
+                                  <span className="text-[11px] font-semibold tabular-nums text-slate-400">{idx + 1}</span>
+                                </td>
+                                <td className="px-4 py-3.5">
+                                  <div className="flex items-center gap-2.5">
+                                    <span className={`text-sm font-semibold ${isFocus ? 'text-brand-primary' : 'text-slate-800'}`}>{item.brand}</span>
+                                    {isFocus && <span className="rounded-md bg-brand-primary/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-brand-primary">You</span>}
+                                    {isTarget && <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">Target</span>}
                                   </div>
-                                ))}
-                              </div>
-                            </div>
-                          </motion.div>
-                        );
-                      })}
-                  </div>
+                                </td>
+                                <td className="px-4 py-3.5">
+                                  <div className="flex items-center gap-3">
+                                    <div className="h-1.5 w-32 overflow-hidden rounded-full bg-slate-100">
+                                      <motion.div
+                                        initial={{ width: 0 }}
+                                        animate={{ width: `${barPct}%` }}
+                                        transition={{ duration: 0.6, delay: idx * 0.04, ease: 'easeOut' }}
+                                        className={`h-full rounded-full ${isFocus ? 'bg-brand-primary' : 'bg-slate-300'}`}
+                                      />
+                                    </div>
+                                    <span className={`min-w-[2.75rem] text-right text-xs font-semibold tabular-nums ${isFocus ? 'text-brand-primary' : 'text-slate-700'}`}>{vis}%</span>
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3.5 text-right">
+                                  <span className="text-xs font-semibold tabular-nums text-slate-700">{item.ai_share != null ? `${item.ai_share}%` : <span className="text-slate-300">—</span>}</span>
+                                </td>
+                                <td className="px-4 py-3.5 text-right">
+                                  <span className="text-xs font-semibold tabular-nums text-slate-700">{item.quality_score != null ? `${item.quality_score}%` : <span className="text-slate-300">—</span>}</span>
+                                </td>
+                                <td className="px-6 py-3.5 text-right">
+                                  <span className="text-xs font-semibold tabular-nums text-slate-700">{item.avg_rank != null ? `#${item.avg_rank}` : <span className="text-slate-300">—</span>}</span>
+                                </td>
+                              </motion.tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </motion.div>
             )}
@@ -840,7 +929,7 @@ const ProjectDetailView = () => {
                   <div className="flex items-center justify-between border-b border-slate-100/80 px-6 py-4">
                     <div className="flex items-center gap-2.5">
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-600"><Globe className="h-4 w-4" /></div>
-                      <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Research Sources</p><DataBadge type="measured" /></div><p className="text-[11px] text-slate-400">Domains and URLs from model responses. “Site in citations” on the overview counts when your project website host appears here.</p></div>
+                      <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Sources</p><DataBadge type="measured" /></div><p className="text-[11px] text-slate-400">Sites and links the models cited. “Site in citations” on the overview is when your own site’s host shows up here.</p></div>
                     </div>
                   </div>
                   <div className="p-6">
@@ -876,7 +965,7 @@ const ProjectDetailView = () => {
                           {mergedSourcesRows.map((item) => {
                             const displayName = item.label || item.domain;
                             const aliases = item.mergedDomains || [displayName];
-                            const links = item.links || [];
+                            const links = toArray(item.links);
                             const shownLinks = links.slice(0, 50);
                             const listKey = aliases.slice().sort().join('|') || displayName;
                             return (
@@ -910,7 +999,7 @@ const ProjectDetailView = () => {
                   <div className="flex items-center justify-between gap-4 border-b border-slate-100/80 px-6 py-4">
                     <div className="flex items-center gap-2.5">
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-500/10 text-violet-600"><Zap className="h-4 w-4" /></div>
-                      <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Content Studio</p><DataBadge type="ai" /></div><p className="text-[11px] text-slate-400">Generate AI-optimized content drafts</p></div>
+                      <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Content Studio</p><DataBadge type="ai" /></div><p className="text-[11px] text-slate-400">Drafts and rewrites to edit and publish yourself</p></div>
                     </div>
                   </div>
 
@@ -974,10 +1063,10 @@ const ProjectDetailView = () => {
                       </div>
 
                       {/* Suggestions */}
-                      {(dashboard?.recommendations?.missing_from_prompts || []).length > 0 && !effectiveDraftTarget && (
+                      {toArray(dashboard?.recommendations?.missing_from_prompts).length > 0 && !effectiveDraftTarget && (
                         <div className="mt-5 border-t border-slate-100/80 pt-5">
                           <p className={`${lbl} mb-2`}>Suggestions from your data</p>
-                          <div className="space-y-2">{(dashboard?.recommendations?.missing_from_prompts || []).slice(0, 3).map((rec, i) => (
+                          <div className="space-y-2">{toArray(dashboard?.recommendations?.missing_from_prompts).slice(0, 3).map((rec, i) => (
                             <button key={i} type="button" onClick={() => { const t = { source: 'path', headline: rec.length > 88 ? `${rec.slice(0, 88)}...` : rec, query: rec, pathRec: rec, contentType: customBriefType }; setExecDraftTarget(t); }} className="group flex w-full items-center gap-3 rounded-xl border border-slate-200/60 bg-white/60 p-3 text-left transition-all hover:border-brand-primary/30">
                               <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-400 transition-colors group-hover:bg-brand-primary/10 group-hover:text-brand-primary"><Lightbulb className="h-3.5 w-3.5" /></div>
                               <p className="min-w-0 truncate text-xs font-medium text-slate-700 group-hover:text-brand-primary">{rec}</p>
@@ -1044,26 +1133,26 @@ const ProjectDetailView = () => {
                     <div className="glass-card-v2 overflow-hidden">
                       <div className="flex items-center gap-2.5 border-b border-slate-100/80 px-6 py-4">
                         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600"><Sparkles className="h-4 w-4" /></div>
-                        <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Strategic Action Plan</p><DataBadge type="ai" /></div><p className="text-[11px] text-slate-400">Expand any item for a step-by-step execution playbook</p></div>
+                        <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Action plan</p><DataBadge type="ai" /></div><p className="text-[11px] text-slate-400">Open an item to see steps you can do this week</p></div>
                       </div>
-                      <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">{(deepAnalysis?.action_plan || []).map((item, idx) => <ActionPlanCard key={idx} item={item} projectId={id} onGenerateDraft={(action) => { const pathDetail = action.detail || (Array.isArray(action.action_plan) ? action.action_plan.join(' ') : action.title); const t = { source: 'path', headline: action.title, query: (action.trigger_signal || pathDetail || action.title).slice(0, 200), pathRec: pathDetail || action.title, contentType: 'Article' }; setExecDraftTarget(t); setActiveSection('execute'); }} />)}</div>
+                      <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">{toArray(deepAnalysis?.action_plan).map((item, idx) => <ActionPlanCard key={idx} item={item} projectId={id} onGenerateDraft={(action) => { const pathDetail = action.detail || (Array.isArray(action.action_plan) ? action.action_plan.join(' ') : action.title); const t = { source: 'path', headline: action.title, query: (action.trigger_signal || pathDetail || action.title).slice(0, 200), pathRec: pathDetail || action.title, contentType: 'Article' }; setExecDraftTarget(t); setActiveSection('execute'); }} />)}</div>
                     </div>
                     {deepAnalysis?.search_intel?.enabled && (
                       <div className="glass-card-v2 p-6">
                         <h3 className="mb-2 text-lg font-bold text-slate-900">Pinpointed Retrieval Points</h3>
                         <p className="mb-4 text-sm text-slate-500">Specific threads, videos, and articles used as primary data sources by LLMs.</p>
                         <div className="mb-6 space-y-3">
-                          {(deepAnalysis?.search_intel?.retrieval_points || []).map((item, idx) => (
+                          {toArray(deepAnalysis?.search_intel?.retrieval_points).map((item, idx) => (
                             <div key={idx} className="glass-inset flex items-center justify-between gap-4 rounded-xl border border-brand-primary/15 bg-brand-primary/5 p-3.5">
                               <div className="min-w-0"><p className="mb-0.5 text-xs font-bold uppercase text-brand-primary">{item.domain} &middot; Cited for &quot;{item.query}&quot;</p><p className="truncate text-sm font-semibold text-slate-900">{item.title}</p></div>
                               <a href={item.url} target="_blank" rel="noreferrer" className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-bold text-white transition-all hover:shadow-md">View <ExternalLink className="h-3 w-3" /></a>
                             </div>
                           ))}
-                          {(deepAnalysis?.search_intel?.retrieval_points || []).length === 0 && <p className="px-2 text-xs italic text-slate-500">Run a fresh analysis to identify specific deep links.</p>}
+                          {toArray(deepAnalysis?.search_intel?.retrieval_points).length === 0 && <p className="px-2 text-xs italic text-slate-500">Run a fresh analysis to identify specific deep links.</p>}
                         </div>
                         <h3 className="mb-2 text-lg font-bold text-slate-900">High-Impact Retrieval Domains</h3>
                         <p className="mb-4 text-sm text-slate-500">Domains frequently used by search-enabled LLMs for your niche.</p>
-                        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">{(deepAnalysis?.search_intel?.domains || []).map((item) => (<div key={item.domain} className="glass-card-v2 flex items-center justify-between p-3.5"><span className="text-sm font-medium text-slate-900">{item.domain}</span><span className="rounded-full bg-brand-primary/10 px-2.5 py-0.5 text-xs font-bold text-brand-primary">{item.count} citations</span></div>))}</div>
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">{toArray(deepAnalysis?.search_intel?.domains).map((item) => (<div key={item.domain} className="glass-card-v2 flex items-center justify-between p-3.5"><span className="text-sm font-medium text-slate-900">{item.domain}</span><span className="rounded-full bg-brand-primary/10 px-2.5 py-0.5 text-xs font-bold text-brand-primary">{item.count} citations</span></div>))}</div>
                       </div>
                     )}
                   </>
@@ -1088,15 +1177,83 @@ const ProjectDetailView = () => {
             <button type="button" onClick={() => setSelectedPromptId(null)} className="rounded-xl p-2 text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600" aria-label="Close"><Plus className="h-5 w-5 rotate-45" /></button>
           </div>
 
-          {promptDetailLoading ? <div className="flex items-center justify-center py-20"><Loader2 className="h-10 w-10 animate-spin text-brand-primary opacity-20" /></div>
-            : !promptDetailData ? <p className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 p-12 text-center text-sm text-slate-500">No detail found for this prompt.</p>
-            : (
+          {runningPrompts?.[selectedPromptId] ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
+              <Loader2 className="h-10 w-10 animate-spin text-brand-primary opacity-30" />
+              <p className="text-sm font-semibold text-slate-700">Analysis running…</p>
+              <p className="text-xs font-medium text-slate-500">Meeting endpoint as the analysis completes.</p>
+              <div className="w-full max-w-md pt-2">
+                <div className="relative h-10">
+                  <div className="absolute left-0 right-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-slate-200" />
+                  <div className="answerdeck-runner absolute top-1/2 -translate-y-1/2">
+                    <svg width="26" height="18" viewBox="0 0 52 36" fill="none" xmlns="http://www.w3.org/2000/svg" className="text-brand-primary">
+                      <circle cx="38" cy="10" r="5" stroke="currentColor" strokeWidth="3" />
+                      <path d="M36 15 L28 22 L20 20" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M28 22 L32 32" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                      <path d="M26 24 L18 34" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                      <path d="M30 20 L40 22" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                    </svg>
+                  </div>
+                </div>
+              </div>
+              <style>{`
+                @keyframes answerdeckRunnerMove {
+                  0% { transform: translateX(-8%) translateY(-50%); opacity: 0.0; }
+                  8% { opacity: 1; }
+                  92% { opacity: 1; }
+                  100% { transform: translateX(108%) translateY(-50%); opacity: 0.0; }
+                }
+                .answerdeck-runner {
+                  left: 0;
+                  animation: answerdeckRunnerMove 2.2s linear infinite;
+                  will-change: transform, opacity;
+                }
+              `}</style>
+              <p className="max-w-md text-xs text-slate-500">
+                We’ll show the full audit and sources once everything is generated and verified.
+              </p>
+            </div>
+          ) : promptDetailLoading ? (
+            <div className="flex items-center justify-center py-20"><Loader2 className="h-10 w-10 animate-spin text-brand-primary opacity-20" /></div>
+          ) : !promptDetailData ? (
+            <p className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 p-12 text-center text-sm text-slate-500">No detail found for this prompt.</p>
+          ) : (
               <div className="space-y-10">
+                <div className="glass-card-v2 p-6">
+                  <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                    <h5 className="flex items-center gap-2 text-xs font-semibold text-slate-700"><FileText className="h-4 w-4 text-slate-500" /> Raw LLM responses</h5>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-500">{toArray(promptDetailData.raw_responses).length} models</span>
+                  </div>
+                  {toArray(promptDetailData.raw_responses).length === 0 ? (
+                    <p className="text-sm text-slate-500">No raw model responses are available yet.</p>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                      {toArray(promptDetailData.raw_responses).map((response) => (
+                        <details key={response.id || response.engine} className="glass-inset group overflow-hidden rounded-xl">
+                          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+                            <span className="truncate text-sm font-semibold text-slate-900">{modelIdToName[response.engine] || response.engine}</span>
+                            <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
+                          </summary>
+                          <div className="border-t border-slate-200/60 px-4 py-4">
+                            <p className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-lg bg-white/70 p-4 text-xs leading-relaxed text-slate-700">{response.response_text}</p>
+                            {toArray(response.sources).length > 0 && (
+                              <div className="mt-3 flex flex-wrap gap-1.5">
+                                {toArray(response.sources).slice(0, 6).map((source) => (
+                                  <a key={source} href={source} target="_blank" rel="noreferrer" className="max-w-full truncate rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-medium text-brand-primary hover:underline">{source}</a>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_1.2fr]">
                   <div className="space-y-6">
                     <div className="glass-card-v2 p-6">
                       <h5 className={`mb-6 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500`}><BarChart2 className="h-4 w-4" /> Market Share & Positioning</h5>
-                      <div className="space-y-4">{(promptDetailData.brand_ranking || []).slice(0, 6).map((item) => (<div key={item.name} className={`flex items-center justify-between rounded-xl p-3 transition-all ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'bg-brand-primary/8 border border-brand-primary/20' : 'hover:bg-slate-50'}`}><span className={`font-bold ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'text-brand-primary' : 'text-slate-900'}`}>{item.name}</span><div className="flex items-center gap-4"><span className="text-[10px] font-bold uppercase text-slate-500">{item.mentions} Citations</span><span className={`text-sm font-bold tabular-nums ${item.avg_rank === 1 ? 'text-yellow-400' : 'text-slate-500'}`}>#{item.avg_rank ?? '-'}</span></div></div>))}</div>
+                      <div className="space-y-4">{toArray(promptDetailData.brand_ranking).slice(0, 6).map((item) => (<div key={item.name} className={`flex items-center justify-between rounded-xl p-3 transition-all ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'bg-brand-primary/8 border border-brand-primary/20' : 'hover:bg-slate-50'}`}><span className={`font-bold ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'text-brand-primary' : 'text-slate-900'}`}>{item.name}</span><div className="flex items-center gap-4"><span className="text-[10px] font-bold uppercase text-slate-500">{item.mentions} Citations</span><span className={`text-sm font-bold tabular-nums ${item.avg_rank === 1 ? 'text-yellow-400' : 'text-slate-500'}`}>#{item.avg_rank ?? '-'}</span></div></div>))}</div>
                     </div>
                     <div className="glass-card-v2 p-6">
                       <h5 className="mb-5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400"><TrendingUp className="h-4 w-4" /> Sentiment Profile</h5>
@@ -1117,10 +1274,10 @@ const ProjectDetailView = () => {
                     </div>
                   </div>
                   <div className="glass-card-v2 p-6">
-                    <h5 className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-700"><CheckCircle2 className="h-4 w-4 text-slate-500" /> Strategic audit</h5>
+                    <h5 className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-700"><CheckCircle2 className="h-4 w-4 text-slate-500" /> Project check</h5>
                     <div className="space-y-4">
-                      {(promptDetailData.audit || []).length === 0 && <p className="text-sm text-slate-500">No analysis yet. Run this prompt to generate audit findings.</p>}
-                      {(promptDetailData.audit || []).map((item, idx) => (
+                      {toArray(promptDetailData.audit).length === 0 && <p className="text-sm text-slate-500">No audit findings yet. Run this prompt to generate audit results.</p>}
+                      {toArray(promptDetailData.audit).map((item, idx) => (
                         <div key={idx} className="glass-inset rounded-xl p-4">
                           <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
                             <h6 className="text-sm font-semibold text-slate-900">{item.issue || item.title}</h6>
@@ -1149,11 +1306,16 @@ const ProjectDetailView = () => {
                 <div className="glass-card-v2 p-6">
                   <h5 className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-700"><PlayCircle className="h-5 w-5 text-slate-500" /> Recommended execution steps</h5>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-                    {(promptDetailData.recommended_actions || []).map((item, idx) => (
+                    {toArray(promptDetailData.recommended_actions).map((item, idx) => (
                       <div key={idx} className="glass-inset flex flex-col justify-between rounded-xl p-5">
                         <div>
                           <h6 className="mb-2 text-sm font-semibold text-slate-900">{item.title}</h6>
                           <p className="text-xs leading-relaxed text-slate-600">{renderTextWithLinks(item.detail)}</p>
+                          {toArray(item.action_plan).length > 0 && (
+                            <ul className="mt-2.5 list-disc space-y-1 pl-5 text-xs leading-relaxed text-slate-700">
+                              {toArray(item.action_plan).slice(0, 4).map((step) => <li key={step}>{renderTextWithLinks(step)}</li>)}
+                            </ul>
+                          )}
                         </div>
                         {item.link && <a href={item.link} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-brand-primary hover:underline">Open link <ExternalLink className="h-3 w-3" /></a>}
                       </div>
@@ -1162,11 +1324,7 @@ const ProjectDetailView = () => {
                 </div>
                 <div className="glass-card-v2 p-8">
                   <h5 className="mb-8 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500"><FileText className="h-4 w-4" /> Cited Sources & Knowledge Points</h5>
-                  <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">{(promptDetailData.sources || []).slice(0, 30).map((source) => (<details key={source.domain} className="glass-card-v2 group h-fit overflow-hidden transition-all hover:border-brand-primary/20"><summary className="flex cursor-pointer list-none items-center justify-between px-5 py-4 hover:bg-slate-50"><span className="flex items-center gap-3"><img src={`https://www.google.com/s2/favicons?domain=${source.domain.split(' ')[0]}&sz=32`} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" className="h-4 w-4 opacity-40 grayscale transition-all group-hover:opacity-100 group-hover:grayscale-0" onError={(e) => { e.target.style.display = 'none'; }} /><span className={`truncate text-sm font-bold max-w-[140px] ${source.domain.includes('(Target Content)') ? 'text-brand-primary' : 'text-slate-900'}`}>{source.domain}</span></span><span className="rounded-full border border-slate-200/60 px-2.5 py-1 text-[10px] font-bold text-slate-500 transition-all group-hover:border-brand-primary/20 group-hover:text-brand-primary">{source.mentions || 0} Hits</span></summary><ul className="space-y-4 border-t border-slate-200/60 bg-slate-50/50 px-5 pb-5 pt-3">{(source.links || []).map((linkObj, lIdx) => (<li key={(linkObj.url || '') + lIdx} className="group/link flex flex-col gap-2">{linkObj.title && <span className="text-[11px] font-bold leading-snug text-slate-700 transition-colors group-hover/link:text-brand-primary">{linkObj.title}</span>}<div className="flex items-center gap-2 overflow-hidden rounded-xl border border-slate-200/60 bg-white p-2.5"><ExternalLink className="h-3 w-3 shrink-0 text-slate-500" /><a href={linkObj.url} target="_blank" rel="noreferrer" className="truncate text-[10px] font-bold text-slate-500 hover:text-brand-primary" title={linkObj.url}>{linkObj.url}</a></div></li>))}</ul></details>))}</div>
-                </div>
-                <div className="glass-card-v2 p-8">
-                  <h5 className="mb-8 border-b border-slate-200/60 pb-4 text-[10px] font-bold uppercase tracking-[0.3em] text-slate-500">Synthetic Intelligence Drifts (Raw Logs)</h5>
-                  <div className="grid grid-cols-1 gap-12 md:grid-cols-2">{(reportData?.responses || []).filter((r) => r.engine !== 'perplexity_research').slice(0, 10).map((response) => (<div key={response.id} className="group relative"><div className="absolute -left-6 top-0 h-full w-[2px] bg-slate-200 transition-colors group-hover:bg-brand-primary" /><p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500 group-hover:text-brand-primary">{response.engine}</p><p className="glass-card-v2 whitespace-pre-wrap p-6 text-xs font-bold italic leading-relaxed text-slate-500">&quot;{response.response_text}&quot;</p></div>))}</div>
+                  <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">{toArray(promptDetailData.sources).slice(0, 30).map((source) => (<details key={source.domain} className="glass-card-v2 group h-fit overflow-hidden transition-all hover:border-brand-primary/20"><summary className="flex cursor-pointer list-none items-center justify-between px-5 py-4 hover:bg-slate-50"><span className="flex items-center gap-3"><img src={`https://www.google.com/s2/favicons?domain=${source.domain.split(' ')[0]}&sz=32`} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" className="h-4 w-4 opacity-40 grayscale transition-all group-hover:opacity-100 group-hover:grayscale-0" onError={(e) => { e.target.style.display = 'none'; }} /><span className={`truncate text-sm font-bold max-w-[140px] ${source.domain.includes('(Target Content)') ? 'text-brand-primary' : 'text-slate-900'}`}>{source.domain}</span></span><span className="rounded-full border border-slate-200/60 px-2.5 py-1 text-[10px] font-bold text-slate-500 transition-all group-hover:border-brand-primary/20 group-hover:text-brand-primary">{source.mentions || 0} Hits</span></summary><ul className="space-y-4 border-t border-slate-200/60 bg-slate-50/50 px-5 pb-5 pt-3">{toArray(source.links).map((linkObj, lIdx) => (<li key={(linkObj.url || '') + lIdx} className="group/link flex flex-col gap-2">{linkObj.title && <span className="text-[11px] font-bold leading-snug text-slate-700 transition-colors group-hover/link:text-brand-primary">{linkObj.title}</span>}<div className="flex items-center gap-2 overflow-hidden rounded-xl border border-slate-200/60 bg-white p-2.5"><ExternalLink className="h-3 w-3 shrink-0 text-slate-500" /><a href={linkObj.url} target="_blank" rel="noreferrer" className="truncate text-[10px] font-bold text-slate-500 hover:text-brand-primary" title={linkObj.url}>{linkObj.url}</a></div></li>))}</ul></details>))}</div>
                 </div>
               </div>
             )}
@@ -1225,7 +1383,7 @@ function ImprovePromptModal({ promptId, originalText, projectName, industry, onC
             <Wand2 className="h-4 w-4 text-brand-primary" />
             <div>
               <p className="text-sm font-semibold text-slate-800">Improve this prompt</p>
-              <p className="text-[11px] text-slate-400">AI rewrite tuned for LLM visibility tracking.</p>
+              <p className="text-[11px] text-slate-400">A tighter version of your prompt for testing (same idea, cleaner words).</p>
             </div>
           </div>
           <button type="button" onClick={onClose} className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">

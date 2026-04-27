@@ -530,19 +530,15 @@ def chat(
         return f"[{cfg.get('display_name', engine)} error: {exc}]"
 
 
-def query_engines(
-    query: str,
-    selected_models: list[str] | None = None,
-    search_provider_override: str | None = None,
-) -> dict[str, Any]:
-    """Query all enabled LLM engines with an optional search grounding pre-layer.
-
-    Returns ``{"responses": {engine: text}, "search_context": {...}}`` so
-    callers can access the search grounding data that was injected into prompts.
-    """
+def _build_engine_user_prompt(
+    query_variant: str,
+    intent_context: Any | None,
+    brand_context: Any | None,
+) -> str:
+    """Build the user message (with optional system-style prefix) for one variant."""
     if RANKLORE_EXTERNAL_PARITY_MODE:
-        full_prompt = query
-    else:
+        return query_variant
+    if intent_context is None:
         system_prompt = (
             "Answer the question as a neutral recommendation assistant.\n"
             "Provide a ranked list of brands/products where possible.\n"
@@ -550,20 +546,53 @@ def query_engines(
             "If the question is region-specific (for example includes 'in India'), ground recommendations in that region.\n"
             "Always include a final section exactly named 'Sources:' and list direct URLs (one URL per bullet)."
         )
-        full_prompt = f"{system_prompt}\n\nQuestion: {query}"
+        return f"{system_prompt}\n\nQuestion: {query_variant}"
+    buyer_stage = getattr(intent_context, "buyer_stage", None) or "consideration"
+    category = getattr(intent_context, "category_signal", None) or ""
+    if brand_context is not None:
+        cat = str(getattr(brand_context, "category", "") or "").strip()
+        if cat:
+            category = category or cat
+    region = getattr(intent_context, "region_signal", None) or ""
+    if brand_context is not None:
+        reg = str(getattr(brand_context, "region", "") or "").strip()
+        if reg:
+            region = region or reg
+    system_prefix = (
+        f"You are a {buyer_stage} buyer researching {category or 'this category'} in {region or 'your region'}.\n"
+        "A user typed this into your search bar. Answer exactly as you would to that real user.\n"
+        "Provide a ranked list of options where relevant. Be specific about WHY each brand is or is not recommended.\n"
+        "Cite sources, review sites, or documentation when you know them.\n"
+        "Always include a final section exactly named 'Sources:' and list direct URLs (one URL per bullet)."
+    )
+    return f"{system_prefix}\n\nQuestion: {query_variant}"
+
+
+def query_engines(
+    query: str,
+    selected_models: list[str] | None = None,
+    search_provider_override: str | None = None,
+    intent_context: Any | None = None,
+    brand_context: Any | None = None,
+) -> dict[str, Any]:
+    """Query all enabled LLM engines with optional search grounding and intent variants.
+
+    Returns ``responses`` (direct variant per engine), ``variant_responses``, and
+    ``search_context``. ``responses`` uses only the direct variant for backward compatibility.
+    """
+    variants: list[tuple[str, str]] = [("direct", query)]
+    if intent_context is not None:
+        pv = getattr(intent_context, "prompt_variants", None) or []
+        if len(pv) >= 3 and len({str(pv[0]).strip(), str(pv[1]).strip(), str(pv[2]).strip()}) == 3:
+            variants = [
+                ("direct", str(pv[0]).strip()),
+                ("comparative", str(pv[1]).strip()),
+                ("use_case", str(pv[2]).strip()),
+            ]
 
     grounding = _build_search_grounding_context(query, search_provider_override=search_provider_override)
     grounding_block = grounding.get("block", "")
     grounding_urls = grounding.get("urls", []) or []
-    if grounding_block:
-        full_prompt = (
-            f"{full_prompt}\n\n"
-            "CRITICAL INSTRUCTION: The following are real-time web search results. "
-            "You MUST incorporate the specific brands, products, and facts from these "
-            "results into your answer. Do NOT ignore them. When web results and your "
-            "knowledge conflict, prefer the web results as they reflect current market data.\n\n"
-            f"{grounding_block}"
-        )
 
     search_context: dict[str, Any] = {
         "ok": grounding.get("ok", False),
@@ -575,34 +604,76 @@ def query_engines(
 
     enabled_engines = list(get_enabled_engines(selected_models).keys())
     if not enabled_engines:
-        return {"responses": {}, "search_context": search_context}
-
-    max_workers = max(1, int(os.getenv("RANKLORE_ENGINE_CONCURRENCY", str(len(enabled_engines)))))
-    max_workers = min(max_workers, len(enabled_engines))
-
-    results: dict[str, str] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_to_engine = {
-            pool.submit(chat, engine_name, full_prompt): engine_name
-            for engine_name in enabled_engines
+        return {
+            "responses": {},
+            "variant_responses": {},
+            "search_context": search_context,
+            "intent_context": intent_context.__dict__ if intent_context is not None else {},
         }
-        for future in as_completed(future_to_engine):
-            engine_name = future_to_engine[future]
-            try:
-                text = future.result()
-                if text and not text.startswith("[") and grounding_urls:
-                    if not _extract_urls_from_text(text):
-                        text = f"{text}{_format_sources_tail(grounding_urls)}"
-                results[engine_name] = text
-            except Exception as exc:
-                results[engine_name] = f"[{engine_name} error: {exc}]"
+
+    def _one_call(engine_name: str, variant_key: str, variant_text: str) -> tuple[str, str, str]:
+        base = _build_engine_user_prompt(variant_text, intent_context, brand_context)
+        full_prompt = base
+        if grounding_block:
+            full_prompt = (
+                f"{full_prompt}\n\n"
+                "CRITICAL INSTRUCTION: The following are real-time web search results. "
+                "You MUST incorporate the specific brands, products, and facts from these "
+                "results into your answer. Do NOT ignore them. When web results and your "
+                "knowledge conflict, prefer the web results as they reflect current market data.\n\n"
+                f"{grounding_block}"
+            )
+        try:
+            text = chat(engine_name, full_prompt)
+            if text and not text.startswith("[") and grounding_urls:
+                if not _extract_urls_from_text(text):
+                    text = f"{text}{_format_sources_tail(grounding_urls)}"
+            return engine_name, variant_key, text
+        except Exception as exc:
+            return engine_name, variant_key, f"[{engine_name} error: {exc}]"
+
+    pair_count = len(enabled_engines) * len(variants)
+    max_workers = max(1, int(os.getenv("RANKLORE_ENGINE_CONCURRENCY", str(pair_count))))
+    max_workers = min(max_workers, pair_count)
+
+    variant_responses: dict[str, dict[str, str | None]] = {
+        e: {"direct": None, "comparative": None, "use_case": None} for e in enabled_engines
+    }
+    results_flat: dict[tuple[str, str], str] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = []
+        for engine_name in enabled_engines:
+            for variant_key, variant_text in variants:
+                futures.append(pool.submit(_one_call, engine_name, variant_key, variant_text))
+        for future in as_completed(futures):
+            engine_name, variant_key, text = future.result()
+            results_flat[(engine_name, variant_key)] = text
+            if engine_name in variant_responses and variant_key in variant_responses[engine_name]:
+                variant_responses[engine_name][variant_key] = text  # type: ignore[index]
 
     ordered_results: dict[str, str] = {}
     for engine_name in enabled_engines:
-        if engine_name in results:
-            ordered_results[engine_name] = results[engine_name]
+        direct_text = results_flat.get((engine_name, "direct")) or ""
+        if not direct_text and variants:
+            direct_text = results_flat.get((engine_name, variants[0][0])) or ""
+        if not direct_text:
+            for vk, _vt in variants:
+                direct_text = results_flat.get((engine_name, vk)) or ""
+                if direct_text:
+                    break
+        ordered_results[engine_name] = direct_text
 
-    return {"responses": ordered_results, "search_context": search_context}
+    intent_payload: dict[str, Any] = {}
+    if intent_context is not None:
+        ic = intent_context.__dict__ if hasattr(intent_context, "__dict__") else {}
+        intent_payload = dict(ic) if isinstance(ic, dict) else {}
+
+    return {
+        "responses": ordered_results,
+        "variant_responses": variant_responses,
+        "search_context": search_context,
+        "intent_context": intent_payload,
+    }
 
 
 def get_api_status() -> dict[str, bool]:

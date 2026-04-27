@@ -29,6 +29,7 @@ const DashboardLayout = () => {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
+  const [backendReady, setBackendReady] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   /** Prevents duplicate subscribe/checkout when React Strict Mode runs effects twice in dev. */
   const razorpayInFlightRef = useRef(false);
@@ -39,11 +40,11 @@ const DashboardLayout = () => {
   });
 
   useEffect(() => {
-    void warmUpBackend();
+    warmUpBackend().then((ok) => setBackendReady(ok));
   }, []);
 
   useEffect(() => {
-    if (!isSignedIn) return undefined;
+    if (!isSignedIn || !backendReady) return undefined;
     if (razorpayInFlightRef.current) return undefined;
 
     let plan;
@@ -80,7 +81,7 @@ const DashboardLayout = () => {
     return () => {
       cancelled = true;
     };
-  }, [isSignedIn, queryClient]);
+  }, [isSignedIn, backendReady, queryClient]);
 
   useEffect(() => {
     try {
@@ -185,6 +186,19 @@ const DashboardLayout = () => {
         />
 
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain">
+          {!backendReady && (
+            <div className="mx-4 mt-4 flex items-center gap-2.5 rounded-xl border border-amber-200/80 bg-amber-50/80 px-4 py-2.5 text-xs font-medium text-amber-800 backdrop-blur-sm sm:mx-6 lg:mx-8">
+              <svg
+                className="h-4 w-4 shrink-0 animate-spin text-amber-600"
+                viewBox="0 0 24 24"
+                fill="none"
+              >
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+                <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
+              </svg>
+              Waking up the server — first load may take up to a minute...
+            </div>
+          )}
           <div className="mx-auto w-full max-w-[1920px] px-4 py-6 sm:px-6 md:py-8 lg:px-8 lg:py-8">
             <Outlet />
           </div>

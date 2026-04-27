@@ -186,6 +186,15 @@ def _clip_text(value: Any, limit: int = 320) -> str:
     return text[: max(0, limit - 3)].rstrip() + "..."
 
 
+def _crisp_line(value: Any, *, max_words: int = 18, max_chars: int = 160) -> str:
+    text = _clip_text(value, max_chars)
+    text = re.split(r"(?<=[.!?])\s+", text)[0].strip()
+    words = text.split()
+    if len(words) > max_words:
+        text = " ".join(words[:max_words]).rstrip(" ,;:")
+    return text
+
+
 def _normalize_priority(value: Any, fallback: str = "medium") -> str:
     candidate = str(value or "").strip().lower()
     if candidate in {"high", "medium", "low"}:
@@ -250,10 +259,10 @@ def _sanitize_audit_items(
             continue
 
         title = _clip_text(row.get("title"), 110)
-        root_cause = _clip_text(row.get("root_cause") or row.get("detail"), 520)
-        solution = _clip_text(row.get("solution"), 620)
-        avoid = _clip_text(row.get("avoid"), 260)
-        evidence = _clip_text(row.get("evidence"), 260)
+        root_cause = _crisp_line(row.get("root_cause") or row.get("detail"), max_words=22, max_chars=180)
+        solution = _crisp_line(row.get("solution"), max_words=20, max_chars=170)
+        avoid = _crisp_line(row.get("avoid"), max_words=14, max_chars=120)
+        evidence = _crisp_line(row.get("evidence"), max_words=18, max_chars=150)
 
         if not title or not root_cause or not solution:
             continue
@@ -1260,6 +1269,8 @@ def generate_positioning_insights(
     query: str,
     analyses: dict[str, Any],
     competitors: list[dict],
+    *,
+    synthesis: Any | None = None,
 ) -> list[dict]:
     competitor_summary = "\n".join(
         f"- {c['brand']}: appears in {c['appearances']}/{c['total_models']} engines, avg rank {c['avg_rank'] if c['avg_rank'] is not None else 'unranked'}"
@@ -1271,11 +1282,21 @@ def generate_positioning_insights(
         for engine, analysis in analyses.items()
     )
 
+    synthesis_domains = []
+    synthesis_displacement = []
+    if synthesis is not None:
+        synthesis_domains = list(getattr(synthesis, "top_cited_domains", []) or [])
+        synthesis_displacement = list(getattr(synthesis, "displacement_events_all", []) or [])
+
     prompt = f"""You are an AI visibility strategist.
 1. Return ONLY valid JSON as a list of 4 to 6 objects.
 2. Each object MUST have: "category", "title", "detail", and "link".
 3. Use the specific Research Data below to provide PRECISE 'where and what' instructions.
 4. Instead of "Post an article", say "Post in this Reddit thread" or "Optimize this specific page".
+5. Every object MUST reference at least one real engine name, competitor brand, or domain from the data above.
+6. If displacement events exist, at least one object must directly address a specific displacement event with the competitor name and reason quoted.
+7. If synthesis domains exist, at least one object must name a specific domain and explain exactly what to do on that domain.
+8. Do NOT produce any object that could apply to any brand in any category — if it reads as generic, rewrite it with specifics from the data.
 
 Brand: {focus_brand}
 Query: {query}
@@ -1288,11 +1309,27 @@ Competitor summary:
 
 RESEARCH DATA (Specific Retrieval Points):
 {json.dumps(analyses.get('research_data', {}).get('sources', []))}
+
+SYNTHESIS TOP CITED DOMAINS:
+{json.dumps(synthesis_domains)}
+
+SYNTHESIS DISPLACEMENT EVENTS:
+{json.dumps([
+    {
+        "competitor_brand": (item.get("competitor_brand") if isinstance(item, dict) else getattr(item, "competitor_brand", "")),
+        "displacement_reason": (item.get("displacement_reason") if isinstance(item, dict) else getattr(item, "displacement_reason", "")),
+        "displacement_context": (item.get("displacement_context") if isinstance(item, dict) else getattr(item, "displacement_context", "")),
+        "rank_of_competitor": (item.get("rank_of_competitor") if isinstance(item, dict) else getattr(item, "rank_of_competitor", None)),
+        "rank_of_focus": (item.get("rank_of_focus") if isinstance(item, dict) else getattr(item, "rank_of_focus", None)),
+        "cited_url": (item.get("cited_url") if isinstance(item, dict) else getattr(item, "cited_url", "")),
+    }
+    for item in synthesis_displacement[:12]
+])}
 """
 
     for engine in ("chatgpt", "deepseek"):
         # We try chatgpt first for insights for cost-efficiency
-        raw = chat(engine, prompt)
+        raw = chat(engine, prompt, temperature=0.4)
         try:
             parsed = _clean_json(raw)
             if isinstance(parsed, list) and parsed:
@@ -1429,16 +1466,16 @@ def _sanitize_audit_contract(raw_items: Any, focus_brand: str, query: str, defau
         if not isinstance(row, dict):
             continue
         issue = _clip_text(row.get("issue") or row.get("title"), 110)
-        root_cause = _clip_text(row.get("root_cause") or row.get("detail"), 420)
-        evidence = _clip_text(row.get("evidence"), 220)
-        expected_impact = _clip_text(row.get("expected_impact") or row.get("impact"), 180)
+        root_cause = _crisp_line(row.get("root_cause") or row.get("detail"), max_words=20, max_chars=180)
+        evidence = _crisp_line(row.get("evidence"), max_words=32, max_chars=320)
+        expected_impact = _crisp_line(row.get("expected_impact") or row.get("impact"), max_words=16, max_chars=140)
         if not issue or not root_cause or not evidence:
             continue
         fix_steps_raw = row.get("fix_steps") or row.get("action_plan") or row.get("steps") or []
         if isinstance(fix_steps_raw, str):
-            fix_steps = [_clip_text(fix_steps_raw, 140)]
+            fix_steps = [_crisp_line(fix_steps_raw, max_words=16, max_chars=140)]
         elif isinstance(fix_steps_raw, list):
-            fix_steps = [_clip_text(item, 140) for item in fix_steps_raw if str(item or "").strip()]
+            fix_steps = [_crisp_line(item, max_words=16, max_chars=140) for item in fix_steps_raw if str(item or "").strip()]
         else:
             fix_steps = []
         fix_steps = fix_steps[:4]
@@ -1466,7 +1503,7 @@ def _sanitize_audit_contract(raw_items: Any, focus_brand: str, query: str, defau
             "title": issue,
             "solution": " ".join(fix_steps[:2]),
             "detail": root_cause,
-            "avoid": _clip_text(row.get("avoid"), 180),
+            "avoid": _crisp_line(row.get("avoid"), max_words=14, max_chars=120),
         }
         if focus_brand and focus_brand.lower() not in " ".join(fix_steps).lower():
             item["fix_steps"][0] = f"For {focus_brand}: {item['fix_steps'][0]}"
@@ -1483,21 +1520,21 @@ def _sanitize_opportunity_contract(raw_items: Any, focus_brand: str, default_pri
     for row in raw_items:
         if not isinstance(row, dict):
             continue
-        title = _clip_text(row.get("title"), 110)
-        trigger_signal = _clip_text(row.get("trigger_signal") or row.get("evidence") or row.get("detail"), 220)
-        owner_hint = _clip_text(row.get("owner_hint") or "Content + SEO", 60)
-        time_to_value = _clip_text(row.get("time_to_value") or "2-4 weeks", 40)
+        title = _clip_text(row.get("title"), 96)
+        trigger_signal = _crisp_line(row.get("trigger_signal") or row.get("evidence") or row.get("detail"), max_words=18, max_chars=160)
+        owner_hint = _clip_text(row.get("owner_hint") or "Content + SEO", 40)
+        time_to_value = _clip_text(row.get("time_to_value") or "2-4 weeks", 28)
         if not title or not trigger_signal:
             continue
         action_plan_raw = row.get("action_plan") or row.get("fix_steps") or row.get("steps") or []
         if isinstance(action_plan_raw, str):
-            action_plan = [_clip_text(action_plan_raw, 140)]
+            action_plan = [_crisp_line(action_plan_raw, max_words=14, max_chars=120)]
         elif isinstance(action_plan_raw, list):
-            action_plan = [_clip_text(item, 140) for item in action_plan_raw if str(item or "").strip()]
+            action_plan = [_crisp_line(item, max_words=14, max_chars=120) for item in action_plan_raw if str(item or "").strip()]
         else:
             action_plan = []
         if not action_plan:
-            detail = _clip_text(row.get("detail"), 280)
+            detail = _crisp_line(row.get("detail"), max_words=16, max_chars=130)
             if detail:
                 action_plan = [detail]
         if not action_plan:
@@ -1522,7 +1559,7 @@ def _sanitize_opportunity_contract(raw_items: Any, focus_brand: str, default_pri
                 "source_type": str(row.get("source_type") or "ai_generated"),
                 "confidence": float(row.get("confidence") or 0.66),
                 # Backward compatibility:
-                "detail": _clip_text(row.get("detail") or " ".join(action_plan[:2]), 320),
+                "detail": _crisp_line(row.get("detail") or " ".join(action_plan[:2]), max_words=22, max_chars=180),
             }
         )
     cleaned = _rebalance_priority_spread(cleaned)
@@ -1642,83 +1679,40 @@ def _build_detailed_audit_fallback(focus_brand: str, query: str, visibility_cont
 def generate_detailed_audit(
     focus_brand: str,
     query: str,
-    analyses: dict[str, Any],
+    analyses: dict[str, Any] | None = None,
+    *,
+    synthesis: Any | None = None,
+    known_competitors: list[str] | None = None,
 ) -> list[dict]:
-    """Generate prompt-specific audit points with anti-template safeguards."""
-    visibility_context: list[dict[str, Any]] = []
-    for engine, data in analyses.items():
-        if engine == "research_data":
-            continue
-        if not isinstance(data, dict):
-            continue
-        visibility_context.append(
-            {
-                "engine": engine,
-                "mentioned": bool(data.get("focus_brand_mentioned", False)),
-                "rank": data.get("focus_brand_rank"),
-                "sentiment": data.get("focus_brand_sentiment", "not_mentioned"),
-                "context": _clip_text(data.get("focus_brand_context", ""), 260),
-            }
-        )
+    """Generate prompt-specific audit points using the evidence-grounded pipeline."""
+    from engine.brain_pipeline import (
+        generate_detailed_audit_evidence,
+        synthesis_from_legacy_analyses,
+    )
 
-    total_engines = len(visibility_context)
-    mention_count = sum(1 for row in visibility_context if row.get("mentioned"))
-    ranks = [row.get("rank") for row in visibility_context if isinstance(row.get("rank"), int)]
-    avg_rank = round(sum(ranks) / len(ranks), 2) if ranks else None
-    negative_count = sum(1 for row in visibility_context if row.get("sentiment") == "negative")
-    default_priority = "high" if mention_count == 0 else ("medium" if (avg_rank is None or avg_rank > 4) else "low")
+    if synthesis is not None:
+        synth = synthesis
+    elif analyses is not None:
+        synth = synthesis_from_legacy_analyses(analyses)
+    else:
+        synth = synthesis_from_legacy_analyses({})
 
-    research_points = analyses.get("research_data", {}).get("sources", [])
-    brief = {
-        "query": query,
-        "focus_brand": focus_brand,
-        "engines_analyzed": total_engines,
-        "engines_with_mentions": mention_count,
-        "average_rank_when_mentioned": avg_rank,
-        "negative_mentions": negative_count,
-        "research_points": research_points[:6] if isinstance(research_points, list) else [],
-    }
+    kc = list(known_competitors or [])
+    ke = list(synth.engines_mentioning_focus) + list(synth.engines_not_mentioning_focus)
+    kd = [
+        str(d.get("domain"))
+        for d in synth.top_cited_domains
+        if isinstance(d, dict) and d.get("domain")
+    ]
 
-    prompt = f"""You are a Strategic AI Visibility Auditor.
-Brand: "{focus_brand}"
-Prompt intent: "{query}"
-
-EVIDENCE SNAPSHOT:
-{json.dumps(brief)}
-
-ENGINE CONTEXT:
-{json.dumps(visibility_context)}
-
-Return ONLY valid JSON as a list of 3-5 objects.
-Required fields per object:
-- "issue"
-- "root_cause"
-- "evidence"
-- "fix_steps" (array of 2-4 short bullets)
-- "expected_impact"
-- "priority" ("high" | "medium" | "low")
-- "source_type" ("ai_generated" or "measured")
-- "confidence" (0.0 to 1.0)
-
-Strict rules:
-1. Every point must be specific to this prompt intent, not generic advice.
-2. Do not repeat root-cause wording across items.
-3. Each evidence must reference at least one anchor from input: engine/model/domain/mention/rank/prompt/citation.
-4. Keep language tactical and concise; no fluff.
-5. Keep fix_steps actionable this week."""
-
-    corrected_prompt = f"{prompt}\n\nPrevious output failed schema/quality checks. Regenerate strictly with required fields."
-    for idx, req in enumerate([prompt, corrected_prompt]):
-        raw = chat("chatgpt", req, temperature=0.35 if idx == 0 else 0.2)
-        try:
-            parsed = _clean_json(raw)
-            cleaned = _sanitize_audit_contract(parsed, focus_brand, query, default_priority=default_priority)
-            if len(cleaned) >= 3:
-                return cleaned
-        except Exception:
-            continue
-
-    return _build_detailed_audit_fallback(focus_brand, query, visibility_context)
+    return generate_detailed_audit_evidence(
+        focus_brand,
+        query,
+        synth,
+        known_competitors=kc,
+        known_engines=ke,
+        known_domains=kd,
+    )
 
 
 def _build_action_plan_fallback(
@@ -1846,6 +1840,7 @@ def generate_strategic_action_plan(
     llm_rows: list[dict],
     upload_targets: list[dict],
     search_intel: dict[str, Any] | None = None,
+    synthesis: dict[str, Any] | None = None,
 ) -> list[dict]:
     """Generate non-repetitive opportunities based on real project evidence."""
     context = {
@@ -1859,30 +1854,31 @@ def generate_strategic_action_plan(
             "domains": ((search_intel or {}).get("domains", []) if isinstance(search_intel, dict) else [])[:8],
             "retrieval_points": ((search_intel or {}).get("retrieval_points", []) if isinstance(search_intel, dict) else [])[:8],
         },
+        "synthesis": {
+            "engines_mentioning": ((synthesis or {}).get("engines_mentioning", []) if isinstance(synthesis, dict) else [])[:12],
+            "engines_not_mentioning": ((synthesis or {}).get("engines_not_mentioning", []) if isinstance(synthesis, dict) else [])[:12],
+            "top_displacement_competitors": ((synthesis or {}).get("top_displacement_competitors", []) if isinstance(synthesis, dict) else [])[:10],
+            "top_cited_domains": ((synthesis or {}).get("top_cited_domains", []) if isinstance(synthesis, dict) else [])[:10],
+            "recurring_displacement_reasons": ((synthesis or {}).get("recurring_displacement_reasons", []) if isinstance(synthesis, dict) else [])[:8],
+        },
     }
 
-    prompt = f"""You are a senior AI visibility strategist.
-Create a project opportunity action plan for brand "{focus_brand}" (project: "{project_name}").
+    prompt = f"""Build 3–6 concrete next steps for "{focus_brand}" (project "{project_name}"). Use only the JSON evidence below—no invented numbers.
 
-Use ONLY this evidence:
+EVIDENCE:
 {json.dumps(context)}
 
-Return ONLY valid JSON as a list of 3-6 objects.
-Each object must include:
-- "title"
-- "trigger_signal"
-- "action_plan" (array of 2-4 bullet lines)
-- "owner_hint"
-- "time_to_value"
+Return ONLY valid JSON: a list of 3-6 objects. Each object:
+- "title" (short)
+- "trigger_signal" (what in the data triggered this)
+- "action_plan" (2-4 short bullet strings, each under 16 words, tell what to do)
+- "owner_hint" (e.g. marketing, product, agency)
+- "time_to_value" (e.g. days or weeks)
 - "priority" ("high" | "medium" | "low")
 - "source_type" ("ai_generated" or "measured")
 - "confidence" (0.0 to 1.0)
 
-Rules:
-1. Every action must reference at least one concrete signal from the evidence (a prompt, model, retrieval domain, or citation source).
-2. Avoid generic advice and repeated wording.
-3. Priorities must reflect severity and should not all be identical.
-4. Keep each action bullet under 16 words."""
+Rules: Tie every item to a prompt, model, domain, or cite from the evidence. No vague tips. Vary priority. Plain words only, no buzzwords."""
 
     corrected_prompt = f"{prompt}\n\nPrevious output failed schema/quality checks. Regenerate strictly."
     for idx, req in enumerate([prompt, corrected_prompt]):
@@ -1952,50 +1948,48 @@ def generate_project_summary(
     top_visibility_prompts = _dedupe(top_visibility_prompts)[:6]
 
     # --- LLM-driven narrative, constrained by computed_health ---
-    prompt = f"""You are a Visionary Brand Intelligence Director.
-You MUST base your narrative and roadmap on the metric-derived visibility health below.
+    prompt = f"""You turn AI visibility numbers into a short report for a real person. Use plain, direct English.
+No marketing tone. No buzzwords (leverage, holistic, robust, unlock, ecosystem). No hype. No emojis.
+Base every sentence on the metrics below. Do not change overall_health.
 
-COMPUTED VISIBILITY HEALTH (DO NOT CHANGE):
+METRICS (do not change):
 - overall_health: "{computed_health}"
-- coverage_ratio: {coverage_ratio:.2f}
+- coverage_ratio: {coverage_ratio:.2f} (share of tracked prompts that have a rank)
 - avg_rank: {avg_rank if avg_rank is not None else "null"}
 
-PROJECT:
+PROJECT
 - name: {project_metadata.get('name')}
 - industry: {project_metadata.get('category')}
 - target_region: {project_metadata.get('region')}
 
-FOCUS BRAND:
-"{focus_brand}"
+FOCUS BRAND: "{focus_brand}"
 
-PROMPT INTENT BUCKETS:
-- Top (best-ranking) intents (avg_rank <= 3.0): {top_visibility_prompts}
-- At-risk intents (avg_rank is null or > 5.0): {low_visibility_prompts}
+PROMPT GROUPS
+- Doing well (avg_rank <= 3.0): {top_visibility_prompts}
+- Weak or not ranked (avg_rank missing or > 5.0): {low_visibility_prompts}
 
 Return ONLY valid JSON:
 {{
   "overall_health": "{computed_health}",
   "executive_bullets": [
-    "First bullet: one line, max ~120 characters, no hype, state the core visibility fact for {focus_brand}.",
-    "Second bullet: one line, max ~120 characters, name the biggest coverage or rank gap.",
-    "Third bullet: one line, max ~120 characters, the single most important next focus."
+    "Line 1, max ~120 chars: the main fact about {focus_brand} from the metrics (say the numbers in plain words).",
+    "Line 2, max ~120 chars: the biggest gap (coverage, rank, or missing ranks).",
+    "Line 3, max ~120 chars: the one next thing to do this week (specific, not generic)."
   ],
-  "executive_summary": "Optional: one plain sentence echoing bullet 1 (or leave empty string).",
+  "executive_summary": "One short sentence or empty string.",
   "strategic_roadmap": [
     {{
       "phase": "Primary Action",
-      "action": "Exactly ONE short sentence (max ~180 chars). Must mention intent coverage for {focus_brand} and match overall_health."
+      "action": "One short sentence, max ~180 chars. Name {focus_brand} and match overall_health. Mention coverage or rank, not buzzwords."
     }},
     {{
       "phase": "Next 2-4 Weeks",
-      "action": "Exactly ONE short sentence (max ~180 chars). Include one measurable check (e.g. rank, coverage, mentions)."
+      "action": "One short sentence, max ~180 chars. Name one number to watch (e.g. rank, % of prompts ranked)."
     }}
   ],
-  "competitive_threats": ["Max ~120 chars each", "Second threat, max ~120 chars"],
+  "competitive_threats": ["Max ~120 chars: plain risk for {focus_brand} from the data", "Second line, max ~120 chars"],
   "top_priority_prompts": {json.dumps(top_visibility_prompts[:2] if computed_health == 'Strong' else (low_visibility_prompts[:2] if computed_health == 'Critical' else (low_visibility_prompts[:1] + top_visibility_prompts[:1])) ) }
 }}
-
-STYLE: No marketing fluff, no numbered lists inside strings, no emojis. Crisp facts only.
 
 CRITICAL VALIDATION RULES:
 1. The "overall_health" field MUST equal "{computed_health}" exactly.
@@ -2003,7 +1997,7 @@ CRITICAL VALIDATION RULES:
 3. Do not describe recovery steps when overall_health is Strong.
 4. Do not describe maintenance/defense when overall_health is Critical.
 5. strategic_roadmap[0].action MUST include at least one of the prompts from "top_priority_prompts" verbatim (exact text match).
-6. competitive_threats: 2 or 3 strings only; each ties to retrieval/citation or intent gaps for "{focus_brand}".
+6. competitive_threats: 2 or 3 strings only; each must tie to the metrics or prompt lists for "{focus_brand}".
 """
 
     raw = chat("chatgpt", prompt, temperature=0.25)
@@ -2016,7 +2010,7 @@ CRITICAL VALIDATION RULES:
                 parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", es) if p.strip()]
                 pad = parts if parts else [es] if es else []
                 while len(pad) < 3:
-                    pad.append("Tighten intent coverage and citation-ready content for key prompts.")
+                    pad.append("Add or fix pages that answer your tracked prompts so models can mention you.")
                 parsed["executive_bullets"] = [str(pad[i])[:220] for i in range(3)]
             return parsed
     except Exception:
@@ -2030,11 +2024,11 @@ CRITICAL VALIDATION RULES:
     return {
         "overall_health": computed_health,
         "executive_bullets": [
-            f"{focus_brand}: visibility health is {computed_health} (coverage {coverage_ratio:.0%} of prompts ranked).",
-            f"Prioritize intent coverage for: {_tp[0] if _tp else 'key prompts'}.",
-            "Align pages and FAQs to how LLMs retrieve and cite answers in your category.",
+            f"{focus_brand}: {computed_health}. {coverage_ratio:.0%} of your tracked prompts have a rank.",
+            f"Next: work on this prompt first: {_tp[0] if _tp else 'your top prompts'}.",
+            "Add or update page content that directly answers those prompts (facts, comparisons, FAQ).",
         ],
-        "executive_summary": f"Visibility health is {computed_health}; focus on ranked intent coverage and citation-ready content.",
+        "executive_summary": f"{computed_health} visibility. {coverage_ratio:.0%} of prompts ranked. Start with your weakest prompt list above.",
         "strategic_roadmap": [],
         "competitive_threats": [],
         "top_priority_prompts": _tp,
@@ -2050,28 +2044,24 @@ def generate_content_piece(
 ) -> dict[str, Any]:
     """Generate high-quality, SEO-optimized content using deepseek (reasoning focus)."""
     
-    prompt = f"""You are an Expert SEO Copywriter and Brand Strategist.
-Generate a high-impact {content_type} for the brand "{focus_brand}".
+    prompt = f"""Write a {content_type} draft for "{focus_brand}". Clear, scannable, useful to a real reader. No corporate filler, no stock phrases, no emojis.
+If the type is Article or Blog: H1, then H2/H3 sections, then a short call to action. If Reddit: sound like a person, not a press release.
+Use clear names, short paragraphs, and lists where they help. Facts over hype.
 
-CORE DIRECTIVE:
+BRIEF:
 {directive}
 
-STRATEGIC CONTEXT:
-- Target Intent: {context_data.get('query', 'N/A')}
-- Key Competitors to displace: {', '.join(context_data.get('competitors', []))}
+CONTEXT:
+- Search or topic: {context_data.get('query', 'N/A')}
+- Compare with: {', '.join(context_data.get('competitors', [])) or 'N/A'}
 - Industry: {context_data.get('industry', 'N/A')}
-
-REQUIREMENTS:
-1. If {content_type} is "Article" or "Blog": Include a catchy H1, structured H2/H3 subheadings, and a natural call-to-action. Focus on deep value and long-tail SEO.
-2. If {content_type} is "Reddit Post": Use a conversational, authentic "human" tone. Focus on community value, no corporate fluff.
-3. Optimize for AI retrieval: Use clear entities, structured lists, and factual density.
 
 Return ONLY valid JSON:
 {{
-  "title": "Proposed Title/Subject",
-  "content": "Full markdown formatted content",
+  "title": "Proposed title or subject line",
+  "content": "Full markdown body",
   "seo_tags": ["tag1", "tag2"],
-  "placement_advice": "Where and how to publish for maximum AI impact"
+  "placement_advice": "One sentence: where to publish this (e.g. your blog URL path, or subreddit) and one practical tip"
 }}"""
 
     # First attempt: requested engine.
@@ -2106,26 +2096,19 @@ Return ONLY valid JSON:
     minimal_body = (
         f"# {content_type} draft for {focus_brand}\n\n"
         f"Intent: {query}\n\n"
-        f"Directive: {directive}\n\n"
-        "## Why this matters\n"
-        "Large language models cite pages that are entity-rich, comparison-ready, "
-        "and frequently updated. This draft gives you the structure to win that "
-        "citation slot.\n\n"
-        "## Suggested structure\n"
-        "1. One-sentence summary answering the intent verbatim.\n"
-        "2. Comparison table of {focus_brand} vs {competitors_line}.\n"
-        "3. Short FAQ section targeted at the intent.\n"
-        "4. Clear next step / call to action.\n"
-    ).format(focus_brand=focus_brand, competitors_line=competitors_line)
+        f"Brief: {directive}\n\n"
+        "## Outline to fill in\n"
+        "1. Answer the intent in one sentence at the top.\n"
+        f"2. Short comparison: {focus_brand} vs {competitors_line} (table or bullets).\n"
+        "3. FAQ: 3–5 questions people actually ask.\n"
+        "4. What the reader should do next.\n"
+    )
 
     return {
         "title": f"{content_type} draft for {focus_brand}",
         "content": minimal_body,
         "seo_tags": [focus_brand, query],
-        "placement_advice": (
-            "Publish on your highest-authority domain and submit the URL to the "
-            "citation-heavy domains identified in your Sources tab."
-        ),
+        "placement_advice": "Put it on your main site, then add the live URL in Sources so you can track citations.",
         "source": "structured_fallback",
     }
 
@@ -2137,67 +2120,112 @@ def generate_action_playbook(
     industry: str = "",
     engine: str = "chatgpt",
 ) -> dict[str, Any]:
-    """Generate a deep, step-by-step execution playbook for a single action plan item."""
+    """Generate a concise playbook with crisp, executable steps."""
 
-    prompt = f"""You are a Senior AI Visibility Strategist working with a paying client: "{focus_brand}" in the "{industry or 'general'}" industry.
+    prompt = f"""You are writing a short how-to for "{focus_brand}" ({industry or 'general'}). The reader is busy. Every line must be an action or a fact—no motivation speeches.
 
-The client has this strategic action item from their AI visibility audit:
+Task (what they are trying to do):
 TITLE: {action_title}
 DETAIL: {action_detail}
 
-Produce an in-depth, step-by-step execution playbook so the client can implement this action TODAY. Think like a $500/hr consultant — be specific, not generic.
-
-REQUIREMENTS:
-1. Explain briefly WHY this matters: how LLMs (ChatGPT, Perplexity, Claude, Gemini) actually decide what to cite and recommend (the retrieval & ranking mechanics relevant to this action).
-2. Give 5-8 concrete numbered steps. Each step must have:
-   - A short imperative title (e.g. "Audit your existing FAQ schema")
-   - 2-4 sentences of detailed HOW-TO instruction (tools, exact techniques, where to click, what to write)
-   - One concrete example or template specific to the brand/industry where possible
-3. Include a "Quick Wins" section: 2-3 things they can do in under 30 minutes that will have immediate impact.
-4. Include a "Common Mistakes" section: 2-3 pitfalls to avoid with a one-line explanation each.
-5. If relevant, mention specific free/paid tools (e.g. Ahrefs, Surfer SEO, Schema.org validator, Google Search Console) and how to use them for this specific action.
-
 Return ONLY valid JSON:
 {{
-  "why_it_matters": "2-3 sentence explanation of how LLMs use this signal in their retrieval/ranking",
+  "why_it_matters": "One short sentence (max 22 words). Say why this task affects visibility, plainly.",
   "steps": [
     {{
-      "title": "Step title",
-      "detail": "Detailed how-to instruction",
-      "example": "Concrete example or template (optional, use null if not applicable)"
+      "title": "Imperative title, max 8 words",
+      "detail": "One sentence, max 20 words",
+      "example": "Optional short example, max 16 words or null"
     }}
   ],
   "quick_wins": [
-    {{ "title": "Quick win title", "detail": "What to do in under 30 min" }}
+    {{ "title": "Quick win title", "detail": "One sentence, max 16 words" }}
   ],
   "common_mistakes": [
-    {{ "title": "Mistake title", "detail": "Why it's bad and what to do instead" }}
+    {{ "title": "Mistake title", "detail": "One sentence, max 16 words" }}
   ],
   "tools_mentioned": ["Tool Name 1", "Tool Name 2"]
-}}"""
+}}
+
+Rules: No fluff. 4-6 steps. Each step is something they can do today."""
+
+    def _sanitize_playbook(payload: dict[str, Any]) -> dict[str, Any]:
+        why = _crisp_line(payload.get("why_it_matters"), max_words=22, max_chars=180)
+
+        steps_raw = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+        steps: list[dict[str, Any]] = []
+        for row in steps_raw:
+            if not isinstance(row, dict):
+                continue
+            title = _clip_text(row.get("title"), 58)
+            detail = _crisp_line(row.get("detail"), max_words=20, max_chars=150)
+            example_val = row.get("example")
+            example = _crisp_line(example_val, max_words=16, max_chars=120) if example_val else None
+            if not title or not detail:
+                continue
+            steps.append({"title": title, "detail": detail, "example": example})
+        if not steps:
+            steps = [
+                {
+                    "title": "Ship one intent page",
+                    "detail": _crisp_line(
+                        f"Publish one page for '{action_title}' with direct answer, proof points, and comparison block.",
+                        max_words=20,
+                        max_chars=150,
+                    ),
+                    "example": None,
+                }
+            ]
+
+        def _clean_pairs(rows: Any) -> list[dict[str, str]]:
+            if not isinstance(rows, list):
+                return []
+            out: list[dict[str, str]] = []
+            for row in rows[:3]:
+                if not isinstance(row, dict):
+                    continue
+                t = _clip_text(row.get("title"), 56)
+                d = _crisp_line(row.get("detail"), max_words=16, max_chars=120)
+                if t and d:
+                    out.append({"title": t, "detail": d})
+            return out
+
+        quick_wins = _clean_pairs(payload.get("quick_wins"))
+        common_mistakes = _clean_pairs(payload.get("common_mistakes"))
+        tools = payload.get("tools_mentioned") if isinstance(payload.get("tools_mentioned"), list) else []
+        tools = [_clip_text(t, 40) for t in tools if str(t or "").strip()][:6]
+
+        return {
+            "why_it_matters": why or "Models pull from pages that answer the question in plain words, with proof.",
+            "steps": steps[:6],
+            "quick_wins": quick_wins[:3],
+            "common_mistakes": common_mistakes[:3],
+            "tools_mentioned": tools,
+        }
 
     raw = chat(engine, prompt)
     try:
         parsed = _clean_json(raw)
         if isinstance(parsed, dict) and "steps" in parsed:
-            return parsed
+            return _sanitize_playbook(parsed)
     except Exception:
         pass
 
-    return {
-        "why_it_matters": "LLMs prioritize structured, entity-rich content from authoritative sources when generating recommendations.",
-        "steps": [
-            {
-                "title": "Review the action detail above",
-                "detail": f"Start by understanding the specific recommendation: {action_detail[:200]}",
-                "example": None,
-            }
-        ],
-        "quick_wins": [],
-        "common_mistakes": [],
-        "tools_mentioned": [],
-    }
-
+    return _sanitize_playbook(
+        {
+            "why_it_matters": "Clear pages with headings and proof get mentioned more in AI answers.",
+            "steps": [
+                {
+                    "title": "Review action scope",
+                    "detail": f"Translate '{action_title}' into one page update and one distribution action this week.",
+                    "example": None,
+                }
+            ],
+            "quick_wins": [],
+            "common_mistakes": [],
+            "tools_mentioned": [],
+        }
+    )
 
 def generate_global_audit(
     focus_brand: str,
@@ -2235,29 +2263,23 @@ def generate_global_audit(
     ]
     default_priority = "high" if high_priority_count >= 4 else ("medium" if high_priority_count else "low")
 
-    prompt = f"""You are a Lead Brand Intelligence Auditor.
-Synthesize project-wide visibility patterns for "{focus_brand}".
+    prompt = f"""Summarize what is going wrong and what to do for "{focus_brand}" across all tracked prompts. Plain language. No sales tone, no buzzwords, no emojis.
 
-INPUT (prompt-level audit evidence):
+INPUT (per-prompt audit lines):
 {json.dumps(flattened_context[:40])}
 
-RECURRING THEMES:
+REPEATED THEMES:
 {json.dumps(recurring)}
 
-Return ONLY valid JSON as a list of 4-6 objects.
-Each object must include:
-- "title" (short headline, max ~12 words)
-- "root_cause" (1-2 short sentences, max ~220 characters total; no fluff)
-- "solution" (1-2 short sentences, max ~220 characters; concrete next steps only)
+Return ONLY valid JSON: a list of 4-6 objects. Each object:
+- "title" (short, max ~12 words)
+- "root_cause" (1-2 short sentences, max ~220 characters; what is actually broken)
+- "solution" (1-2 short sentences, max ~220 characters; what to do next, concrete)
 - "avoid" (one short phrase, max ~100 characters)
 - "priority" ("high" | "medium" | "low")
-- "evidence" (reference at least one recurring prompt pattern from input)
+- "evidence" (tie to a pattern from the input, in plain words)
 
-Rules:
-1. Focus on repeated patterns, not isolated one-off issues.
-2. Do not reuse the same wording across multiple items.
-3. No marketing language, no bullet characters inside string values, no emojis.
-4. Do not assign the same priority to every item."""
+Rules: Repeat patterns only. Vary the wording. Do not mark everything the same priority."""
 
     raw = chat("chatgpt", prompt, temperature=0.35)
     try:
@@ -2277,10 +2299,10 @@ Rules:
     if high_priority_count:
         fallback.append(
             {
-                "title": "High-severity issues recurring across prompts",
-                "root_cause": f"{high_priority_count} high-priority gaps repeat across the tracked prompt set, indicating systemic coverage weaknesses.",
-                "solution": "Build a shared intent-cluster roadmap: map each prompt to a canonical page, add supporting FAQs, and track mention-rate and average-rank improvements weekly.",
-                "avoid": "Avoid fixing prompts in isolation without a shared topic architecture.",
+                "title": "Same serious gaps show up in many prompts",
+                "root_cause": f"{high_priority_count} high-priority issues repeat—not one-off flukes.",
+                "solution": "Map each main prompt to one page, add a short FAQ on that page, and recheck mention rate and average rank after updates.",
+                "avoid": "Tweaking one page at random for each prompt without a simple map.",
                 "priority": "high",
             }
         )
@@ -2289,20 +2311,20 @@ Rules:
         top_theme = recurring[0]["title"]
         fallback.append(
             {
-                "title": f"Recurring failure pattern: {top_theme}",
-                "root_cause": f'The theme "{top_theme}" appears repeatedly, signaling repeated structural blind spots in how content is framed for retrieval.',
-                "solution": "Create a reusable content template for this theme (entity-first intro, comparison table, proof block, FAQ) and roll it out to all affected prompt pages.",
-                "avoid": "Avoid inconsistent templates that force each page to reinvent structure.",
+                "title": f"Keeps coming up: {top_theme}",
+                "root_cause": f'"{top_theme}" shows up more than once—content or structure is off for that angle.',
+                "solution": "Use one simple layout for that angle (short intro, comparison, proof, FAQ) on every page that should rank for it.",
+                "avoid": "Starting from scratch on every page so nothing matches.",
                 "priority": "medium",
             }
         )
 
     fallback.append(
         {
-            "title": "Portfolio-level retrieval governance is missing",
-            "root_cause": f"{focus_brand} lacks a coordinated refresh and distribution cadence across prompts and citation channels.",
-            "solution": "Run a biweekly governance cycle: refresh top-decay pages, expand citation-domain coverage, and prune outdated claims that reduce trust in LLM summaries.",
-            "avoid": "Avoid ad hoc updates with no measurable KPI targets.",
+            "title": "No steady plan to update and promote content",
+            "root_cause": f"Updates to pages and links for {focus_brand} are not on a simple repeat schedule, so some prompts drift behind.",
+            "solution": "Pick a day twice a month: update the 2–3 pages that map to your worst prompts, fix outdated facts, and resubmit or share the URLs where it helps.",
+            "avoid": "One-off edits with no follow-up and no re-check of rank or mentions.",
             "priority": "medium",
         }
     )

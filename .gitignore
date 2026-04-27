@@ -28,3 +28,6 @@ frontend/build/
 .vscode/
 .idea/
 .codex/
+
+# Ignore local debug logs
+debug-*.log

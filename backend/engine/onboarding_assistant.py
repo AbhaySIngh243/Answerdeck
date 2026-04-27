@@ -97,28 +97,28 @@ def generate_assistant_payload(step: int, context: dict, question: str = "") -> 
         else ""
     )
 
-    prompt = f"""You are an AI visibility strategist guiding a user through project setup.
+    prompt = f"""You are helping someone set up an AI visibility project. Be direct. Short sentences. No filler.
 
 CURRENT STEP: {step} — {focus['title']}
-STEP GOAL: {focus['focus']}
+WHAT TO HELP WITH: {focus['focus']}
 
 USER CONTEXT (may be partial):
 {json.dumps(safe_context, default=str)[:1600]}
 {question_clause}
 Return ONLY valid JSON matching exactly this schema:
 {{
-  "tip": "One crisp sentence, max 140 characters, actionable for THIS step and THIS user.",
-  "common_mistakes": ["Up to 3 short strings (<= 110 chars each) specific to this step."],
-  "recommended_action": "One imperative sentence telling the user what to do next right now.",
-  "examples": ["0-3 short, realistic example strings if the step benefits from examples; otherwise []."],
+  "tip": "One sentence, max 140 characters, specific to this user and this step.",
+  "common_mistakes": ["Up to 3 short lines (<= 110 chars), real mistakes people make here."],
+  "recommended_action": "One clear command: what to do next, right now.",
+  "examples": ["0-3 examples if useful; otherwise []"],
   "confidence": 0.0-1.0
 }}
 
 Rules:
-- Be specific to the user's brand/industry when context is available.
-- Never include the literal brand name in example prompts when step == 3.
-- No emojis, no marketing fluff, no hedging like "you might consider".
-- If the user has a question, the tip must answer it directly."""
+- Use the user's industry or site when you know it.
+- On step 3, never put the brand name inside example prompts.
+- No emojis, no sales tone, no "you might consider" or "it may be worth".
+- If the user asked a question, answer it in the tip first."""
 
     try:
         raw = chat("chatgpt", prompt, temperature=0.2)
@@ -179,25 +179,20 @@ def rewrite_prompt(
             "source": "fallback",
         }
 
-    system = f"""You are a Generative Engine Optimization (GEO) prompt engineer.
-Rewrite the user's tracking prompt so it performs better as a real user query for
-AI visibility research.
+    system = f"""Rewrite the tracking prompt so it sounds like a real person typing into Google or an AI—short and natural, not a brochure line.
 
-Hard rules:
-- Keep the intent of the original prompt.
-- Prompts MUST be 5-12 words.
-- Prompts MUST NOT include the brand name "{brand or 'N/A'}" or an obvious variant.
-- Prompts must read like a natural user query (no "best of 2026 list ranked") .
-- Prefer discovery/recommendation/constraint phrasing by funnel stage.
-- No emojis, no marketing fluff, no hedging.
+Rules:
+- Same meaning as the original.
+- 5-12 words only.
+- Do not use the brand name "{brand or 'N/A'}" or a close variant.
+- No fake "best 2026 ranked list" phrasing, no emojis, no marketing filler.
 
-Funnel stage hint: {stage or 'any'}
-Industry hint: {ind or 'general'}
+Funnel: {stage or 'any'}. Category: {ind or 'general'}.
 
 Return ONLY valid JSON:
 {{
   "rewritten_prompt": "string, 5-12 words",
-  "reasoning": "one sentence, max 160 chars, explaining why the new version is stronger",
+  "reasoning": "one sentence, max 160 chars, plain English—what you fixed",
   "alternative_angles": ["0-3 alternate prompt strings (5-12 words each)"],
   "quality_score": 0-100
 }}
@@ -224,7 +219,7 @@ Original prompt: "{original}"
         quality = max(0, min(100, int(round(quality))))
         return {
             "rewritten_prompt": rewritten[:160],
-            "reasoning": str(parsed.get("reasoning") or "").strip()[:220] or "Improved clarity and intent.",
+            "reasoning": str(parsed.get("reasoning") or "").strip()[:220] or "Clearer wording for the same search intent.",
             "alternative_angles": [a[:160] for a in cleaned_alts],
             "quality_score": quality,
             "source": "ai_generated",
@@ -233,7 +228,7 @@ Original prompt: "{original}"
         log.info("prompt rewrite fallback: %s", exc)
         return {
             "rewritten_prompt": original,
-            "reasoning": "AI rewrite unavailable; keeping original prompt.",
+            "reasoning": "Could not run rewrite. Kept your original text.",
             "alternative_angles": [],
             "quality_score": 55,
             "source": "fallback",

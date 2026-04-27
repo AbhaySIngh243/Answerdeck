@@ -7,49 +7,29 @@ const LONG_REQUEST_TIMEOUT_MS = Number(
   import.meta.env.VITE_API_LONG_TIMEOUT_MS || 180000,
 );
 
-/** Default request timeout for regular API reads/writes. */
+function apiBaseLooksLocal() {
+  try {
+    const { hostname } = new URL(API_BASE_URL);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+/** Local: 60s. Production default 60s too (hosted APIs often cold-start; override with VITE_API_TIMEOUT_MS). */
 const DEFAULT_REQUEST_TIMEOUT_MS = Number(
   import.meta.env.VITE_API_TIMEOUT_MS || 60000,
 );
 
 function timeoutHintMessage(timeoutMs) {
-  // Keep user-facing messaging neutral (avoid exposing infrastructure details).
-  // Also keep the substring "timed out" for UI heuristics (e.g., cached fallback banners).
-  const seconds = Math.max(1, Math.round(timeoutMs / 1000));
-  return `Request timed out after ${seconds}s. Please retry.`;
+  if (apiBaseLooksLocal()) {
+    return `Request timed out after ${timeoutMs}ms. For local dev: confirm the backend is running (e.g. python app.py in backend/), then retry. Slow LLM work uses a longer limit — set VITE_API_LONG_TIMEOUT_MS in frontend/.env if needed (default ${LONG_REQUEST_TIMEOUT_MS}ms for those routes).`;
+  }
+  return `Request timed out after ${timeoutMs}ms. Check VITE_API_BASE_URL, CORS on the server, and that the API host is up.`;
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function toPublicRequestError(err, { timeoutMs }) {
-  const status = err?.status;
-  const msg = String(err?.message || '');
-
-  // Abort/timeouts
-  if (err?.name === 'AbortError') return new Error(timeoutHintMessage(timeoutMs));
-  if (msg.toLowerCase().includes('timed out')) return new Error(timeoutHintMessage(timeoutMs));
-
-  // Network-ish errors
-  const isNetwork =
-    msg.includes('Failed to fetch') ||
-    msg.includes('NetworkError') ||
-    msg.includes('Load failed');
-  if (isNetwork) return new Error('Network error. Please check your connection and retry.');
-
-  // Auth errors are already user-friendly.
-  if (status === 401) return err;
-
-  // Server errors: keep generic.
-  if (typeof status === 'number' && status >= 500) {
-    return new Error('Something went wrong. Please retry in a moment.');
-  }
-
-  // Rate limiting.
-  if (status === 429) return new Error('Too many requests. Please retry shortly.');
-
-  return err;
 }
 
 function buildHelpfulError({ url, response, payload, isJson }) {
@@ -117,7 +97,11 @@ function buildHelpfulError({ url, response, payload, isJson }) {
 
 async function getAuthHeader() {
   const token = await getAuthToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  if (token) return { Authorization: `Bearer ${token}` };
+  // Clerk occasionally returns null briefly after load/navigation.
+  // A single forced refresh prevents "missing auth header" races.
+  const refreshed = await getAuthToken(true);
+  return refreshed ? { Authorization: `Bearer ${refreshed}` } : {};
 }
 
 async function request(path, options = {}) {
@@ -132,9 +116,10 @@ async function request(path, options = {}) {
 
   const url = `${API_BASE_URL}${path}`;
   const timeoutMs = Number(options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
-  // React Query already handles retries for most reads; avoid stacking retry loops here.
-  const defaultRetries = 0;
-  const retries = Number(options.retries ?? defaultRetries);
+  const defaultRetries = method === 'GET' ? 2 : 1;
+  const retriesRaw = options.retries ?? defaultRetries;
+  const parsedRetries = Number(retriesRaw);
+  const retries = Number.isFinite(parsedRetries) ? parsedRetries : defaultRetries;
 
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -161,20 +146,19 @@ async function request(path, options = {}) {
 
       return payload;
     } catch (err) {
-      const publicErr = toPublicRequestError(err, { timeoutMs });
+      const isAbort = err?.name === 'AbortError';
       const isNetwork =
-        publicErr?.message?.toLowerCase?.().includes('timed out') ||
-        publicErr?.message?.includes('Network error') ||
+        isAbort ||
         err?.message?.includes('Failed to fetch') ||
         err?.message?.includes('NetworkError') ||
-        err?.message?.includes('Load failed') ||
-        err?.name === 'AbortError';
+        err?.message?.includes('Load failed');
 
-      lastErr = publicErr;
+      lastErr = isAbort ? new Error(timeoutHintMessage(timeoutMs)) : err;
 
       const status = err?.status;
       const shouldRetry =
         isNetwork || (typeof status === 'number' && status >= 500);
+
       if (!shouldRetry || attempt === retries) break;
 
       const backoff = Math.min(2000 * Math.pow(2, attempt), 10000);

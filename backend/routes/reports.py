@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 
 from flask import Blueprint, Response as FlaskResponse, g, jsonify, request
 
+from sqlalchemy import func
+
 from auth import require_auth
 from engine.analyzer import (
     calculate_visibility_score,
@@ -25,9 +27,11 @@ from engine.analyzer import (
     is_spurious_brand_mention,
     _looks_like_spec_phrase,
 )
+from engine.brain_pipeline import DisplacementEvent, EvidenceSynthesis
+from engine.execution_steps import build_crisp_execution_steps
 from engine.perplexity_search import is_perplexity_search_enabled, search_web
 from exceptions import NotFoundError
-from models import Mention, Project, Prompt, Response, VisibilityMetric, db
+from models import AnalysisJob, Mention, Project, Prompt, Response, VisibilityMetric, db
 
 reports_bp = Blueprint("reports", __name__)
 
@@ -107,6 +111,28 @@ def _cache_set(key: str, value: Any) -> None:
                 _report_cache.pop(k, None)
 
 
+def _get_or_build_deep_analysis_payload(project_id: int) -> dict:
+    """
+    Deep analysis and prompt-analysis tables share the same expensive payload.
+    Cache once under deep-analysis:{id} so dashboard + prompts tab do not rebuild twice.
+    """
+    cache_key = f"deep-analysis:{project_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    payload = _build_deep_analysis_payload(project_id)
+    _cache_set(cache_key, payload)
+    return payload
+
+
+def invalidate_project_report_caches(project_id: int) -> None:
+    """Invalidate in-process report caches after new analysis data is persisted."""
+    keys = (f"deep-analysis:{project_id}", f"dashboard:{project_id}")
+    with _report_cache_lock:
+        for k in keys:
+            _report_cache.pop(k, None)
+
+
 def _looks_like_channel_noise(brand: str, context: str = "") -> bool:
     label = (brand or "").strip().lower()
     if not label:
@@ -146,6 +172,132 @@ def _parse_sources(raw: str) -> list[str]:
         return data if isinstance(data, list) else []
     except Exception:
         return []
+
+
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _to_displacement_event(item: Any) -> DisplacementEvent | None:
+    if not isinstance(item, dict):
+        return None
+    brand = str(item.get("competitor_brand") or "").strip()
+    if not brand:
+        return None
+    cited = str(item.get("cited_url") or "").strip()
+    return DisplacementEvent(
+        competitor_brand=brand,
+        displacement_context=str(item.get("displacement_context") or ""),
+        displacement_reason=str(item.get("displacement_reason") or ""),
+        rank_of_competitor=item.get("rank_of_competitor") if isinstance(item.get("rank_of_competitor"), int) else None,
+        rank_of_focus=item.get("rank_of_focus") if isinstance(item.get("rank_of_focus"), int) else None,
+        cited_url=cited or None,
+    )
+
+
+def _coerce_synthesis(payload: dict[str, Any]) -> EvidenceSynthesis | None:
+    if not isinstance(payload, dict) or not payload:
+        return None
+    engines_mentioning = payload.get("engines_mentioning_focus", payload.get("engines_mentioning", []))
+    engines_not_mentioning = payload.get("engines_not_mentioning_focus", payload.get("engines_not_mentioning", []))
+    events = []
+    for raw in payload.get("displacement_events_all", []) or []:
+        event = _to_displacement_event(raw)
+        if event is not None:
+            events.append(event)
+    return EvidenceSynthesis(
+        engines_mentioning_focus=[str(x) for x in (engines_mentioning or []) if str(x).strip()],
+        engines_not_mentioning_focus=[str(x) for x in (engines_not_mentioning or []) if str(x).strip()],
+        consensus_rank=payload.get("consensus_rank") if isinstance(payload.get("consensus_rank"), (int, float)) else None,
+        rank_variance=float(payload.get("rank_variance") or 0.0),
+        top_displacement_competitors=[x for x in (payload.get("top_displacement_competitors") or []) if isinstance(x, dict)],
+        recurring_displacement_reasons=[str(x) for x in (payload.get("recurring_displacement_reasons") or []) if str(x).strip()],
+        top_cited_domains=[x for x in (payload.get("top_cited_domains") or []) if isinstance(x, dict)],
+        citation_concentration=float(payload.get("citation_concentration") or 0.0),
+        focus_brand_dominant_framing=str(payload.get("focus_brand_dominant_framing") or "unknown"),
+        framing_consistency=float(payload.get("framing_consistency") or 0.0),
+        response_structure_distribution=dict(payload.get("response_structure_distribution") or {}),
+        displacement_events_all=events,
+        evidence_phrases_all=[str(x) for x in (payload.get("evidence_phrases_all") or []) if str(x).strip()],
+        engine_contexts=[x for x in (payload.get("engine_contexts") or []) if isinstance(x, dict)],
+    )
+
+
+def _latest_completed_job(prompt_id: int, user_id: str) -> AnalysisJob | None:
+    return (
+        AnalysisJob.query.filter_by(prompt_id=prompt_id, user_id=user_id, status="completed")
+        .order_by(AnalysisJob.completed_at.desc(), AnalysisJob.id.desc())
+        .first()
+    )
+
+
+def _build_project_synthesis_summary(project_id: int, user_id: str) -> dict[str, Any]:
+    jobs = (
+        AnalysisJob.query.filter_by(project_id=project_id, user_id=user_id, status="completed")
+        .order_by(AnalysisJob.completed_at.desc(), AnalysisJob.id.desc())
+        .all()
+    )
+    by_prompt: dict[int, AnalysisJob] = {}
+    for job in jobs:
+        if job.prompt_id not in by_prompt:
+            by_prompt[job.prompt_id] = job
+
+    engines_mentioning: set[str] = set()
+    engines_not_mentioning: set[str] = set()
+    displacement_counts: dict[str, int] = defaultdict(int)
+    domain_counts: dict[str, int] = defaultdict(int)
+    reason_counts: dict[str, int] = defaultdict(int)
+
+    for job in by_prompt.values():
+        synth = _parse_json_object(job.synthesis_json or "")
+        if not synth:
+            result = _parse_json_object(job.result_json or "")
+            synth = result.get("synthesis", {}) if isinstance(result.get("synthesis"), dict) else {}
+        if not synth:
+            continue
+        for engine in synth.get("engines_mentioning_focus", synth.get("engines_mentioning", [])) or []:
+            engines_mentioning.add(str(engine))
+        for engine in synth.get("engines_not_mentioning_focus", synth.get("engines_not_mentioning", [])) or []:
+            engines_not_mentioning.add(str(engine))
+        for row in synth.get("top_displacement_competitors", []) or []:
+            if not isinstance(row, dict):
+                continue
+            brand = str(row.get("brand") or "").strip()
+            if not brand:
+                continue
+            displacement_counts[brand] += int(row.get("count") or 1)
+        for row in synth.get("top_cited_domains", []) or []:
+            if not isinstance(row, dict):
+                continue
+            domain = str(row.get("domain") or "").strip()
+            if not domain:
+                continue
+            domain_counts[domain] += int(row.get("count") or 1)
+        for reason in synth.get("recurring_displacement_reasons", []) or []:
+            cleaned = str(reason or "").strip()
+            if cleaned:
+                reason_counts[cleaned] += 1
+
+    return {
+        "engines_mentioning": sorted(engines_mentioning),
+        "engines_not_mentioning": sorted(engines_not_mentioning),
+        "top_displacement_competitors": [
+            {"brand": brand, "count": count}
+            for brand, count in sorted(displacement_counts.items(), key=lambda item: item[1], reverse=True)[:8]
+        ],
+        "top_cited_domains": [
+            {"domain": domain, "count": count}
+            for domain, count in sorted(domain_counts.items(), key=lambda item: item[1], reverse=True)[:8]
+        ],
+        "recurring_displacement_reasons": [
+            reason
+            for reason, _count in sorted(reason_counts.items(), key=lambda item: item[1], reverse=True)[:8]
+        ],
+    }
 
 
 def _domain_from_url(url: str) -> str:
@@ -234,11 +386,29 @@ def _build_platform_visibility_detail(
     page_hint = f"Target page/context: '{page_title}'. " if page_title else ""
     return (
         f"{reason_fragment}"
-        f"Why it matters: LLMs use cited domains like {domain} as evidence when recommending options. "
-        f"Execution: publish or update an intent-matched page for '{query}' on {domain}, include concrete proof points "
-        f"(pricing, specs, outcomes, comparisons), and mention {focus_brand} naturally in decision-focused sections. "
+        f"Why: answers often pull from sites like {domain} when they cite sources. "
+        f"What to do: add or update a page that matches '{query}' on {domain} (or your own site) with clear facts, prices or specs, and a short comparison. Work {focus_brand} in where it helps the reader. "
         f"{page_hint}"
-        "Goal: increase the chance that model answers surface your brand for this exact intent."
+        "Aim: get your brand into answers for this search."
+    )
+
+
+def _build_crisp_execution_steps(
+    *,
+    focus_brand: str,
+    query: str,
+    domain: str,
+    project_website_url: str = "",
+    competitors: list[str] | None = None,
+    citation_count: int | None = None,
+) -> list[str]:
+    return build_crisp_execution_steps(
+        focus_brand=focus_brand,
+        query=query,
+        domain=domain,
+        project_website_url=project_website_url,
+        competitors=competitors,
+        citation_count=citation_count,
     )
 
 
@@ -374,6 +544,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             "competitors": [],
             "audit": [{"title": "No analysis yet", "detail": "Run analysis for this prompt to generate detailed audit findings."}],
             "recommended_actions": [],
+            "raw_responses": [],
         }
 
     # Respect the prompt's selected_models so we only show engines that were actually run.
@@ -388,6 +559,17 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             continue
         if response.engine not in latest_by_engine:
             latest_by_engine[response.engine] = response
+
+    raw_responses = [
+        {
+            "id": response.id,
+            "engine": engine,
+            "response_text": response.response_text,
+            "sources": _parse_sources(response.sources),
+            "timestamp": response.timestamp,
+        }
+        for engine, response in sorted(latest_by_engine.items(), key=lambda item: item[0].lower())
+    ]
 
     competitor_scores: dict[str, dict] = defaultdict(lambda: {"mentions": 0, "ranks": []})
     sentiment = {"positive": 0, "neutral": 0, "negative": 0, "not_mentioned": 0}
@@ -505,7 +687,30 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     audit_cache_key = f"audit:{prompt_id}:{latest_ts}"
     audit = _cache_get(audit_cache_key)
     if audit is None:
-        audit = generate_detailed_audit(focus_brand, prompt.prompt_text, analyses)
+        latest_job = _latest_completed_job(prompt_id, g.user.id)
+        persisted_audit: list[dict[str, Any]] = []
+        synthesis_obj: EvidenceSynthesis | None = None
+        if latest_job:
+            result_payload = _parse_json_object(latest_job.result_json or "")
+            raw_audit = result_payload.get("audit", [])
+            if isinstance(raw_audit, list):
+                persisted_audit = [row for row in raw_audit if isinstance(row, dict)]
+            synthesis_payload = _parse_json_object(latest_job.synthesis_json or "")
+            if not synthesis_payload and isinstance(result_payload.get("synthesis"), dict):
+                synthesis_payload = result_payload.get("synthesis", {})
+            synthesis_obj = _coerce_synthesis(synthesis_payload)
+        if persisted_audit:
+            audit = persisted_audit[:5]
+        elif synthesis_obj is not None:
+            audit = generate_detailed_audit(
+                focus_brand,
+                prompt.prompt_text,
+                None,
+                synthesis=synthesis_obj,
+                known_competitors=project.get_competitors_list() if project else [],
+            )
+        else:
+            audit = generate_detailed_audit(focus_brand, prompt.prompt_text, analyses)
         _cache_set(audit_cache_key, audit)
 
     recommended_actions = []
@@ -513,17 +718,16 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     # Add research-driven recommendations (from legacy research Responses).
     for src in research_sources[:10]:
         domain = str(src.get("domain") or "").strip() or "authoritative source"
-        page_title = str(src.get("title") or "").strip() or "Target Page"
-        reason = str(src.get("reason") or "").strip()
-        link = _normalize_source_url(src.get("url") or "")
+        link = _normalize_source_url(src.get("url") or "") or (f"https://{domain}" if domain and " " not in domain else "")
         recommended_actions.append({
             "title": f"Increase visibility on {domain}",
-            "detail": _build_platform_visibility_detail(
-                domain=domain,
+            "detail": f"Improve retrieval-fit content for '{prompt.prompt_text}' on {domain}.",
+            "action_plan": _build_crisp_execution_steps(
                 focus_brand=focus_brand,
                 query=prompt.prompt_text,
-                page_title=page_title,
-                reason=reason,
+                domain=domain,
+                project_website_url=project.website_url if project else "",
+                competitors=project.get_competitors_list() if project else [],
             ),
             "link": link,
         })
@@ -537,10 +741,13 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             links = sorted(source_links.get(domain, set()))
             recommended_actions.append({
                 "title": f"Increase visibility on {domain}",
-                "detail": _build_platform_visibility_detail(
-                    domain=domain,
+                "detail": f"Close citation and mention gaps for '{prompt.prompt_text}' using {domain}.",
+                "action_plan": _build_crisp_execution_steps(
                     focus_brand=focus_brand,
                     query=prompt.prompt_text,
+                    domain=domain,
+                    project_website_url=project.website_url if project else "",
+                    competitors=project.get_competitors_list() if project else [],
                     citation_count=count,
                 ),
                 "link": links[0] if links else f"https://{domain}",
@@ -549,12 +756,12 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     if len(recommended_actions) < 2:
         recommended_actions.append({
             "title": "Publish a dedicated visibility page",
-            "detail": (
-                f"Create an intent-specific page for '{prompt.prompt_text}' with structured sections "
-                "(best options, pricing tiers, comparison table, buying recommendations, and proof points for "
-                f"{focus_brand}). Distribute and internally link it so LLM crawlers can retrieve it as a primary "
-                "citation source for this decision intent."
-            ),
+            "detail": f"Create one decision-ready page for '{prompt.prompt_text}' and push it into citation channels.",
+            "action_plan": [
+                f"Ship a dedicated page for '{prompt.prompt_text}' with direct answer + comparison table.",
+                f"Add FAQ/schema and explicit proof blocks for {focus_brand}.",
+                "Submit to high-citation domains and retest this prompt across engines.",
+            ],
             "link": project.website_url if project and project.website_url else "",
         })
     
@@ -668,6 +875,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         "competitors": brand_ranking[:10],
         "audit": audit,
         "recommended_actions": recommended_actions,
+        "raw_responses": raw_responses,
     }
 
 
@@ -737,7 +945,6 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
     steps = onboarding.get("steps", {}) if isinstance(onboarding, dict) else {}
     step4 = steps.get("4", {}) if isinstance(steps.get("4"), dict) else {}
     alias_map = step4.get("competitor_aliases", {}) if isinstance(step4, dict) else {}
-    mode = str(step4.get("competitor_mode") or "include").strip().lower()
     alias_reverse: dict[str, str] = {}
     if isinstance(alias_map, dict):
         for canonical, aliases in alias_map.items():
@@ -829,12 +1036,7 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
             ordered.append((kl, label))
 
     rows: list[dict] = []
-    include_filter = {c.lower() for c in configured}
     for key_lower, brand_label in ordered:
-        if mode == "include" and include_filter and key_lower not in include_filter and key_lower != focus_lower:
-            continue
-        if mode == "exclude" and key_lower in include_filter and key_lower != focus_lower:
-            continue
         row = grouped[key_lower]
         mention_rate = row["mentions"] / total_responses
         rank_bonus = 0.0
@@ -870,7 +1072,25 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
             item["brand"].lower(),
         )
     )
-    return rows[:10]
+
+    focus_rows = [row for row in rows if row.get("is_focus")]
+    configured_rows = [row for row in rows if row.get("is_target_competitor")]
+    discovered_rows = [
+        row
+        for row in rows
+        if not row.get("is_focus") and not row.get("is_target_competitor")
+    ]
+
+    merged: list[dict] = []
+    seen_brands: set[str] = set()
+    for row in focus_rows + configured_rows + discovered_rows[:10]:
+        brand_key = str(row.get("brand") or "").strip().lower()
+        if not brand_key or brand_key in seen_brands:
+            continue
+        seen_brands.add(brand_key)
+        merged.append(row)
+
+    return merged[:20]
 
 
 def _project_website_host(website_url: str) -> str:
@@ -954,6 +1174,63 @@ def _compute_project_visibility_pct(project_id: int) -> float:
     return round((mention_count / len(latest_responses)) * 100, 1)
 
 
+def _build_engine_focus_visibility(project_id: int) -> list[dict[str, Any]]:
+    """Target-brand visibility matrix by engine from latest prompt runs."""
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    if not prompts:
+        return []
+
+    latest_responses: list[Response] = []
+    for prompt in prompts:
+        latest_responses.extend(_latest_responses_by_prompt(prompt.id))
+
+    response_ids = [r.id for r in latest_responses]
+    focus_mentions_by_response: dict[int, Mention] = {}
+    if response_ids:
+        for mention in Mention.query.filter(
+            Mention.response_id.in_(response_ids),
+            Mention.is_focus.is_(True),
+        ).all():
+            focus_mentions_by_response[mention.response_id] = mention
+
+    by_engine: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"responses": 0, "mentions": 0, "ranks": []}
+    )
+    for response in latest_responses:
+        if not _is_analysis_engine(response.engine):
+            continue
+        bucket = by_engine[response.engine]
+        bucket["responses"] += 1
+        focus_mention = focus_mentions_by_response.get(response.id)
+        if focus_mention is not None:
+            bucket["mentions"] += 1
+            if isinstance(focus_mention.rank, int):
+                bucket["ranks"].append(float(focus_mention.rank))
+
+    rows: list[dict[str, Any]] = []
+    for engine, bucket in by_engine.items():
+        responses = int(bucket["responses"] or 0)
+        mentions = int(bucket["mentions"] or 0)
+        visibility_pct = round((mentions / responses) * 100, 1) if responses else 0.0
+        avg_rank = (
+            round(sum(bucket["ranks"]) / len(bucket["ranks"]), 2)
+            if bucket["ranks"]
+            else None
+        )
+        rows.append(
+            {
+                "engine": engine,
+                "visibility_pct": visibility_pct,
+                "avg_rank": avg_rank,
+                "responses": responses,
+                "mentions": mentions,
+            }
+        )
+
+    rows.sort(key=lambda item: (-float(item["visibility_pct"]), str(item["engine"])))
+    return rows
+
+
 def _collect_competitor_sources(project_id: int) -> list[str]:
     prompt_ids = [p.id for p in Prompt.query.filter_by(project_id=project_id).all()]
     if not prompt_ids:
@@ -1000,6 +1277,7 @@ def _build_dashboard_payload(project_id: int) -> dict:
 
     prompt_rankings = _build_prompt_rankings(project_id)
     competitors = _build_competitor_visibility(project_id)
+    engine_visibility = _build_engine_focus_visibility(project_id)
     competitor_sources = _collect_competitor_sources(project_id)
     recommendations = generate_recommendations(project.name, prompt_rankings, competitor_sources)
     context_state = _project_context_state(project)
@@ -1027,6 +1305,7 @@ def _build_dashboard_payload(project_id: int) -> dict:
         "official_site_responses_total": official_site_stats["official_site_responses_total"],
         "prompt_rankings": prompt_rankings,
         "competitors": competitors,
+        "engine_visibility": engine_visibility,
         "recommendations": recommendations,
         "context_state": context_state,
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1227,6 +1506,7 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
         ]
         search_intel["queries"] = query_rows
 
+    project_synthesis = _build_project_synthesis_summary(project_id, project.user_id)
     action_plan = generate_strategic_action_plan(
         focus_brand=project.name,
         project_name=project.name,
@@ -1234,6 +1514,7 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
         llm_rows=llm_rows,
         upload_targets=upload_targets,
         search_intel=search_intel,
+        synthesis=project_synthesis,
     )
     context_state = _project_context_state(project)
 
@@ -1255,7 +1536,13 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
 @require_auth
 def get_dashboard_metrics(project_id):
     _get_project_for_user(project_id)
-    return jsonify(_build_dashboard_payload(project_id))
+    cache_key = f"dashboard:{project_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+    payload = _build_dashboard_payload(project_id)
+    _cache_set(cache_key, payload)
+    return jsonify(payload)
 
 
 @reports_bp.route("/project/<int:project_id>/intel-summary", methods=["GET"])
@@ -1271,7 +1558,7 @@ def get_project_intel_summary(project_id):
         return jsonify(
             {
                 "overall_health": "No data",
-                "executive_summary": "No prompt analyses have completed yet. Run analysis to generate an evidence-backed summary.",
+                "executive_summary": "No prompt runs yet. Run analysis to see a summary from your data.",
                 "strategic_roadmap": [],
                 "competitive_threats": [],
                 "top_priority_prompts": [],
@@ -1377,7 +1664,8 @@ def execute_project_action(project_id):
 @require_auth
 def get_deep_analysis(project_id):
     _get_project_for_user(project_id)
-    return jsonify(_build_deep_analysis_payload(project_id))
+    payload = _get_or_build_deep_analysis_payload(project_id)
+    return jsonify(payload)
 
 
 @reports_bp.route("/project/<int:project_id>/export.csv", methods=["GET"])
@@ -1495,7 +1783,7 @@ def export_project_pdf(project_id):
 @require_auth
 def prompt_analysis_table(project_id):
     _get_project_for_user(project_id)
-    payload = _build_deep_analysis_payload(project_id)
+    payload = _get_or_build_deep_analysis_payload(project_id)
     rows = []
     for prompt_row in payload["prompt_matrix"]:
         engines = prompt_row.get("engines", {})
@@ -1626,9 +1914,9 @@ def sources_intelligence(project_id):
             {
                 "domain": domain,
                 "source_class": source_class,
-                "why_it_matters": f"LLMs repeatedly retrieve {domain} as supporting evidence for your tracked prompts.",
-                "evidence": f"Cited {row.get('source_mentions', 0)} times with {row.get('brand_mentions', 0)} brand mentions.",
-                "action": f"Improve representation on {domain} with comparison-ready facts and citation-friendly snippets.",
+                "why_it_matters": f"Model answers keep citing {domain} for your topics.",
+                "evidence": f"Cited {row.get('source_mentions', 0)} time(s); your brand {row.get('brand_mentions', 0)} time(s) in that context.",
+                "action": f"Put clear, factual copy about your product on {domain} or earn a mention (comparison, spec list, or quote).",
                 "priority": "high" if row.get("source_mentions", 0) >= 4 else ("medium" if row.get("source_mentions", 0) >= 2 else "low"),
                 "confidence": 0.86,
                 "source_count": int(row.get("source_mentions", 0)),
@@ -1653,7 +1941,7 @@ def competitor_table(project_id):
     competitors = _build_competitor_visibility(project_id)
     total = sum(item["visibility_pct"] for item in competitors) or 1
     table = []
-    for item in competitors[:10]:
+    for item in competitors:
         table.append(
             {
                 "brand": item["brand"],
@@ -1675,21 +1963,59 @@ def competitor_table(project_id):
 @reports_bp.route("/overview", methods=["GET"])
 @require_auth
 def global_overview():
-    projects = Project.query.filter_by(user_id=g.user.id).order_by(Project.created_at.desc()).all()
-    rows = []
+    projects = (
+        Project.query.filter_by(user_id=g.user.id)
+        .order_by(Project.created_at.desc())
+        .all()
+    )
+    if not projects:
+        return jsonify({"projects": [], "count": 0})
 
+    project_ids = [p.id for p in projects]
+
+    # Avoid N+1 queries: bulk-load prompt counts + latest metric per project.
+    prompt_counts = dict(
+        db.session.query(Prompt.project_id, func.count(Prompt.id))
+        .filter(Prompt.project_id.in_(project_ids))
+        .group_by(Prompt.project_id)
+        .all()
+    )
+
+    latest_dates_subq = (
+        db.session.query(
+            VisibilityMetric.project_id.label("project_id"),
+            func.max(VisibilityMetric.date).label("max_date"),
+        )
+        .filter(VisibilityMetric.project_id.in_(project_ids))
+        .group_by(VisibilityMetric.project_id)
+        .subquery()
+    )
+
+    latest_metrics = {
+        row.project_id: {"score": row.score, "date": row.date}
+        for row in (
+            db.session.query(VisibilityMetric.project_id, VisibilityMetric.score, VisibilityMetric.date)
+            .join(
+                latest_dates_subq,
+                (VisibilityMetric.project_id == latest_dates_subq.c.project_id)
+                & (VisibilityMetric.date == latest_dates_subq.c.max_date),
+            )
+            .all()
+        )
+    }
+
+    rows = []
     for project in projects:
-        metrics = VisibilityMetric.query.filter_by(project_id=project.id).order_by(VisibilityMetric.date.asc()).all()
-        current_score = metrics[-1].score if metrics else 0
+        metric = latest_metrics.get(project.id) or {}
         rows.append(
             {
                 "project_id": project.id,
                 "name": project.name,
                 "category": project.category,
                 "region": project.region,
-                "current_score": current_score,
-                "tracked_prompts": Prompt.query.filter_by(project_id=project.id).count(),
-                "updated_at": metrics[-1].date if metrics else None,
+                "current_score": metric.get("score", 0) or 0,
+                "tracked_prompts": int(prompt_counts.get(project.id, 0) or 0),
+                "updated_at": metric.get("date"),
             }
         )
 
