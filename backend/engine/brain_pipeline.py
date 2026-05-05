@@ -59,6 +59,7 @@ class CausalSignals:
     focus_brand_evidence_phrases: list[str]
     focus_brand_cited_urls: list[str]
     competitor_displacement_events: list[DisplacementEvent]
+    competitor_framing: list[dict[str, Any]]
     cited_source_domains: list[str]
     framing_words: list[str]
     response_structure: str
@@ -97,19 +98,6 @@ class DriftReport:
     current_rank: float | None
 
 
-GENERIC_PHRASES = (
-    "publish intent pages",
-    "prioritize citation-heavy",
-    "llms generally prefer",
-    "create dedicated answer",
-    "content strategy",
-    "establish a weekly",
-    "biweekly refresh",
-    "intent coverage",
-    "citation-ready content",
-    "optimize your content",
-    "update stale claims",
-)
 RANKLORE_DEBUG = os.getenv("RANKLORE_DEBUG", "false").lower() in {"1", "true", "yes"}
 
 def _dbg(hypothesis_id: str, location: str, message: str, data: dict[str, Any] | None = None, run_id: str = "acceptance") -> None:
@@ -200,7 +188,7 @@ Rules:
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(_call)
-            return fut.result(timeout=4.0)
+            return fut.result(timeout=10.0)
     except (FuturesTimeout, Exception):
         return _safe_intent_defaults(query)
 
@@ -238,6 +226,29 @@ def _framing_words_for_aliases(response_text: str, aliases: list[str]) -> list[s
         for m in re.finditer(rf"(\w+\s+\w+)\s+{esc}", text, flags=re.IGNORECASE):
             found.add(m.group(1).strip().lower())
     return sorted(found)
+
+
+def _framing_words_from_sentence(sentence: str, brand: str) -> list[str]:
+    words: set[str] = set()
+    text = str(sentence or "")
+    if not brand:
+        return []
+    escaped = re.escape(brand.strip())
+    for match in re.finditer(rf"([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+)?)\s+{escaped}", text, flags=re.IGNORECASE):
+        for token in match.group(1).lower().split():
+            if len(token) > 2:
+                words.add(token.strip(" ,.;:"))
+    return sorted(words)[:8]
+
+
+def _sentence_for_brand(response_text: str, brand: str, limit: int = 500) -> str:
+    needle = str(brand or "").strip().lower()
+    if not needle:
+        return ""
+    for sentence in _split_sentences(response_text):
+        if needle in sentence.lower() and len(sentence) > 12:
+            return sentence.strip()[:limit]
+    return ""
 
 
 def _evidence_phrases(response_text: str, aliases: list[str], limit: int = 3) -> list[str]:
@@ -397,12 +408,51 @@ RULES:
         except Exception:
             events = []
 
+    detail_rows = details if isinstance(details, list) else []
+    for detail in detail_rows:
+        if not isinstance(detail, dict):
+            continue
+        brand_name = str(detail.get("brand") or "").strip()
+        if not brand_name:
+            continue
+        sentence = _sentence_for_brand(response_text, brand_name)
+        if sentence:
+            detail["verbatim_sentence"] = sentence[:500]
+            detail["framing_adjectives"] = ",".join(_framing_words_from_sentence(sentence, brand_name))[:200]
+            if brand_name.lower() == focus_brand.lower():
+                detail["reason_stated"] = (
+                    events[0].displacement_reason[:300]
+                    if focus_framing in {"displaced", "absent", "cautioned"} and events
+                    else sentence[:300]
+                )
+                detail["competitor_compared_to"] = events[0].competitor_brand if events else ""
+
+    competitor_framing_data: list[dict[str, Any]] = []
+    for detail in detail_rows[:5]:
+        if not isinstance(detail, dict):
+            continue
+        comp_name = str(detail.get("brand") or "").strip()
+        if not comp_name or comp_name.lower() == focus_brand.lower():
+            continue
+        sentence = str(detail.get("verbatim_sentence") or "") or _sentence_for_brand(response_text, comp_name, limit=400)
+        if sentence and len(sentence) > 20:
+            competitor_framing_data.append(
+                {
+                    "competitor_brand": comp_name,
+                    "verbatim_sentence": sentence[:400],
+                    "framing_adjectives": ",".join(_framing_words_from_sentence(sentence, comp_name))[:200],
+                    "rank_in_response": detail.get("rank"),
+                    "engine": engine_name,
+                }
+            )
+
     return CausalSignals(
         brand_analysis=brand_analysis,
         focus_brand_framing=focus_framing,
         focus_brand_evidence_phrases=evidence_phrases,
         focus_brand_cited_urls=cited_urls,
         competitor_displacement_events=events,
+        competitor_framing=competitor_framing_data,
         cited_source_domains=domains,
         framing_words=framing_words,
         response_structure=structure,
@@ -435,6 +485,7 @@ def _make_fallback_causal_signals(
         focus_brand_evidence_phrases=_evidence_phrases(response_text, focus_brand_aliases or [focus_brand]),
         focus_brand_cited_urls=list(_extract_sources(response_text)),
         competitor_displacement_events=[],
+        competitor_framing=[],
         cited_source_domains=[],
         framing_words=[],
         response_structure=structure,
@@ -579,40 +630,6 @@ def synthesize_evidence(
     )
 
 
-def _validate_audit_item(
-    item: dict[str, Any],
-    known_competitors: list[str],
-    known_engines: list[str],
-    known_domains: list[str],
-) -> bool:
-    evidence = str(item.get("evidence") or "").strip()
-    root_cause = str(item.get("root_cause") or "").strip()
-    fix_steps = item.get("fix_steps") or []
-    issue = str(item.get("issue") or "").strip()
-    if not evidence or not root_cause or len(fix_steps) < 1 or not issue:
-        return False
-    if len(evidence) < 12:
-        return False
-    # Only enforce entity grounding when we actually have entities to check against
-    all_entities = [e.lower() for e in (known_competitors + known_engines + known_domains) if e]
-    if len(all_entities) >= 3:
-        full_text = " ".join([evidence, root_cause, " ".join(str(s) for s in fix_steps), issue]).lower()
-        if not any(entity in full_text for entity in all_entities):
-            return False
-    # Only block the most obviously hard-coded phrases
-    HARD_BLOCKED = (
-        "llms generally prefer",
-        "publish intent pages",
-        "create dedicated answer pages",
-    )
-    full_text_check = " ".join([evidence, root_cause, " ".join(str(s) for s in fix_steps), issue]).lower()
-    if any(phrase in full_text_check for phrase in HARD_BLOCKED):
-        return False
-    if len(issue) > 120:
-        return False
-    return True
-
-
 def _format_displacement_events_for_prompt(events: list[DisplacementEvent], max_events: int = 5) -> str:
     lines: list[str] = []
     for i, e in enumerate(events[:max_events], 1):
@@ -730,8 +747,6 @@ STRICT RULES — ENFORCED BY VALIDATOR:
         for row in parsed:
             if not isinstance(row, dict):
                 continue
-            if not _validate_audit_item(row, known_competitors, known_engines, known_domains):
-                continue
             item = {
                 "issue": _clip_text(row.get("issue"), 80),
                 "root_cause": _clip_text(row.get("root_cause"), 420),
@@ -749,136 +764,46 @@ STRICT RULES — ENFORCED BY VALIDATOR:
             cleaned.append(item)
         return cleaned
 
+    def _audit_fallback_from_synthesis() -> list[dict[str, Any]]:
+        from engine.analyzer import _build_detailed_audit_fallback
+
+        vis: list[dict[str, Any]] = []
+        for c in synthesis.engine_contexts:
+            if not isinstance(c, dict):
+                continue
+            eng = str(c.get("engine") or "").strip()
+            if not eng:
+                continue
+            vis.append(
+                {
+                    "engine": eng,
+                    "mentioned": bool(c.get("mentioned")),
+                    "rank": c.get("rank"),
+                    "sentiment": str(c.get("sentiment") or ("not_mentioned" if not c.get("mentioned") else "neutral")),
+                }
+            )
+        if not vis:
+            for e in synthesis.engines_mentioning_focus:
+                vis.append(
+                    {"engine": str(e), "mentioned": True, "rank": None, "sentiment": "neutral"}
+                )
+            for e in synthesis.engines_not_mentioning_focus:
+                vis.append(
+                    {"engine": str(e), "mentioned": False, "rank": None, "sentiment": "not_mentioned"}
+                )
+        return _build_detailed_audit_fallback(focus_brand, query, vis)
+
     for attempt in range(2):
         try:
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                fut = pool.submit(
-                    lambda: chat("chatgpt", prompt, temperature=0.25 if attempt == 0 else 0.15)
-                )
-                raw = fut.result(timeout=8.0)
+            raw = chat("chatgpt", prompt, temperature=0.25 if attempt == 0 else 0.15)
             cleaned = _parse_and_filter(raw)
             _dbg("H6", "engine/brain_pipeline.py:generate_detailed_audit_evidence", "audit_parse", {"attempt": attempt, "kept": len(cleaned)})
-            if len(cleaned) >= 2:
+            if len(cleaned) >= 1:
                 return cleaned[:5]
         except Exception:
             pass
 
-    fallback = _build_evidence_grounded_fallback(
-        synthesis,
-        focus_brand,
-        query,
-        known_competitors=known_competitors,
-        known_engines=known_engines,
-        known_domains=known_domains,
-    )
-    if not fallback:
-        return []
-    cleaned = _sanitize_audit_contract(fallback, focus_brand, query, default_priority="medium")
-    return cleaned if cleaned else fallback[:5]
-
-
-def _build_evidence_grounded_fallback(
-    synthesis: EvidenceSynthesis,
-    focus_brand: str,
-    query: str,
-    *,
-    known_competitors: list[str],
-    known_engines: list[str],
-    known_domains: list[str],
-) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    eng_total = max(
-        1,
-        len(synthesis.engines_mentioning_focus) + len(synthesis.engines_not_mentioning_focus),
-    )
-    if synthesis.engines_not_mentioning_focus:
-        eng_name = synthesis.engines_not_mentioning_focus[0]
-        ctx = next(
-            (c for c in synthesis.engine_contexts if c.get("engine") == eng_name),
-            {},
-        )
-        quote = str(ctx.get("context") or f"No mention of {focus_brand} in {eng_name} output.")[:220]
-        items.append(
-            {
-                "issue": f"{focus_brand} invisible on {eng_name} for this query",
-                "root_cause": f"{eng_name} did not surface {focus_brand} while answering '{query[:60]}'.",
-                "evidence": quote,
-                "fix_steps": [
-                    f"Create a page that answers '{query[:80]}' with {focus_brand} named in the first sentence — target {eng_name} retrieval.",
-                    f"Add a comparison table: {focus_brand} vs top alternatives, with specs, pricing, and a verdict row.",
-                    f"Submit the updated URL for indexing and re-run this exact prompt in 14 days to measure mention rate change.",
-                ],
-                "expected_impact": "Mention rate should rise on the affected engine.",
-                "priority": "high" if len(synthesis.engines_not_mentioning_focus) >= 2 else "medium",
-                "source_type": "measured",
-                "confidence": 0.78,
-            }
-        )
-
-    if synthesis.top_displacement_competitors:
-        top = synthesis.top_displacement_competitors[0]
-        brand = str(top.get("brand") or "competitor")
-        ev = next((e for e in synthesis.displacement_events_all if e.competitor_brand == brand), None)
-        ev_text = ev.displacement_context if ev else str(top.get("reasons") or [""])[0]
-        items.append(
-            {
-                "issue": f"{brand} wins positioning vs {focus_brand}",
-                "root_cause": f"Displacement signals show {brand} preferred in measured responses for '{query[:50]}'.",
-                "evidence": ev_text[:400],
-                "fix_steps": [
-                    f"Write a direct comparison: '{focus_brand} vs {brand} for {query[:60]}' — use the exact wording engines use when they prefer {brand}.",
-                    f"Add primary-source proof: link to {focus_brand} documentation, pricing page, or case study that counters the stated displacement reason.",
-                    f"Re-run this prompt after publishing and measure whether {brand} still outranks {focus_brand}.",
-                ],
-                "expected_impact": f"Improved rank and framing vs {brand}.",
-                "priority": "high",
-                "source_type": "measured",
-                "confidence": 0.8,
-            }
-        )
-
-    if synthesis.top_cited_domains:
-        d0 = synthesis.top_cited_domains[0]["domain"]
-        items.append(
-            {
-                "issue": f"Citations concentrate on {d0}",
-                "root_cause": f"{d0} shapes how models answer '{query[:40]}' for {focus_brand}.",
-                "evidence": f"Domain {d0} cited {synthesis.top_cited_domains[0].get('count', 0)} times in engine outputs.",
-                "fix_steps": [
-                    f"Search {d0} for existing pages about '{query[:60]}' — if {focus_brand} is missing or outdated, contact the author or submit a correction.",
-                    f"Publish a {focus_brand} page that answers '{query[:80]}' verbatim, structured so {d0} can reference it as a primary source.",
-                    f"Track whether {d0} starts citing {focus_brand} in the next 3 weeks by re-running this analysis.",
-                ],
-                "expected_impact": "Citation diversity and trust signals improve.",
-                "priority": "medium",
-                "source_type": "measured",
-                "confidence": 0.72,
-            }
-        )
-
-    if not items:
-        items.append(
-            {
-                "issue": f"Mixed signals for '{query[:50]}'",
-                "root_cause": f"Engines {', '.join(known_engines[:3])} show inconsistent visibility for {focus_brand}.",
-                "evidence": " ".join(synthesis.evidence_phrases_all[:2]) or synthesis.focus_brand_dominant_framing,
-                "fix_steps": [
-                    f"Align messaging with dominant framing '{synthesis.focus_brand_dominant_framing}'",
-                    "Add structured proof for each competing claim",
-                    "Re-test prompt weekly",
-                ],
-                "expected_impact": "Lower rank variance across engines.",
-                "priority": "medium",
-                "source_type": "measured",
-                "confidence": 0.7,
-            }
-        )
-
-    validated: list[dict[str, Any]] = []
-    for it in items:
-        if _validate_audit_item(it, known_competitors, known_engines, known_domains):
-            validated.append(it)
-    return validated[:5]
+    return _audit_fallback_from_synthesis()
 
 
 def synthesis_from_legacy_analyses(analyses: dict[str, Any]) -> EvidenceSynthesis:
@@ -902,6 +827,7 @@ def synthesis_from_legacy_analyses(analyses: dict[str, Any]) -> EvidenceSynthesi
             focus_brand_evidence_phrases=[],
             focus_brand_cited_urls=[],
             competitor_displacement_events=[],
+            competitor_framing=[],
             cited_source_domains=[],
             framing_words=[],
             response_structure="prose",

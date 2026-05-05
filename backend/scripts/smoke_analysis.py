@@ -15,7 +15,10 @@ Exit code is 0 on success and 1 on any assertion failure.
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 
 # Ensure the backend package root is importable when running as a script.
@@ -23,6 +26,14 @@ HERE = Path(__file__).resolve()
 BACKEND_ROOT = HERE.parent.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+
+
+def _use_temp_sqlite() -> None:
+    temp_db = os.path.join(tempfile.gettempdir(), f"answerdeck_smoke_{uuid.uuid4().hex}.db")
+    sqlite_uri = "sqlite:///" + temp_db.replace("\\", "/")
+    os.environ["DATABASE_POOLER_URL"] = sqlite_uri
+    os.environ["DATABASE_URL"] = sqlite_uri
+    os.environ["SUPABASE_POOLER_URL"] = ""
 
 
 def test_brand_grounding() -> None:
@@ -80,9 +91,16 @@ def test_brand_grounding() -> None:
 
 def test_url_verifier_cache_only() -> None:
     """Run verify_urls with allow_network=False so we never leave localhost."""
-    from app import app  # triggers Flask app + DB init
+    _use_temp_sqlite()
+    from flask import Flask
+
+    from database import init_db
 
     from engine.url_verifier import verify_urls
+
+    _use_temp_sqlite()
+    app = Flask(__name__)
+    init_db(app)
 
     urls = ["https://example.com", "not-a-real-url", "http://localhost"]
     with app.app_context():

@@ -245,16 +245,19 @@ def razorpay_webhook():
     if not key or not secret:
         return jsonify({"error": "Razorpay not configured"}), 503
 
-    # If signature header is provided, always verify it. If no signature or no
-    # secret yet (dev bootstrap), accept the payload but do not apply it.
-    if sig and webhook_secret:
-        client = razorpay.Client(auth=(key, secret))
-        try:
-            client.utility.verify_webhook_signature(body_raw, sig, webhook_secret)
-        except Exception:
-            return jsonify({"error": "Invalid signature"}), 400
-    elif not webhook_secret:
-        return jsonify({"ok": True, "note": "webhook_secret not yet configured"}), 202
+    # Reject webhook calls when secret is not configured — never process
+    # unverifiable payloads as they could be crafted by an attacker.
+    if not webhook_secret:
+        return jsonify({"error": "Webhook secret not configured — cannot verify payload"}), 503
+
+    if not sig:
+        return jsonify({"error": "Missing X-Razorpay-Signature header"}), 400
+
+    client = razorpay.Client(auth=(key, secret))
+    try:
+        client.utility.verify_webhook_signature(body_raw, sig, webhook_secret)
+    except Exception:
+        return jsonify({"error": "Invalid signature"}), 400
 
     try:
         body = json.loads(body_raw)

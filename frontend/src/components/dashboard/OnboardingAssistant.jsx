@@ -19,7 +19,7 @@ const STEP_TITLES = {
   1: 'Brand identity',
   2: 'Competitor discovery',
   3: 'Prompt intent map',
-  4: 'Engines & grounding',
+  4: 'Brand strategy',
   5: 'Review & launch',
 };
 

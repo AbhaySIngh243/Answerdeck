@@ -179,29 +179,43 @@ def verify_urls(
             }
         return result
 
-    for url in to_probe:
-        code, status = _probe(url)
-        now = _now_iso()
-        result[url] = {"http_code": code, "status": status, "verified_at": now}
-        try:
-            row = by_url.get(url) or VerifiedUrl.query.filter_by(url=url).first()
-            if row is None:
-                db.session.add(
-                    VerifiedUrl(
-                        url=url, http_code=code, status=status, verified_at=now,
-                    )
-                )
-            else:
-                row.http_code = code
-                row.status = status
-                row.verified_at = now
-            db.session.commit()
-        except Exception as exc:
-            log.warning("persist verified_url failed for %s: %s", url, exc)
-            try:
-                db.session.rollback()
-            except Exception:
-                pass
+    if to_probe:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _probe_one(url: str) -> tuple[str, int, str]:
+            code, status = _probe(url)
+            return url, code, status
+
+        max_workers = min(12, len(to_probe))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_probe_one, url): url for url in to_probe}
+            for future in as_completed(futures):
+                try:
+                    url, code, status = future.result()
+                except Exception:
+                    url = futures[future]
+                    code, status = 0, "broken"
+                now = _now_iso()
+                result[url] = {"http_code": code, "status": status, "verified_at": now}
+                try:
+                    row = by_url.get(url) or VerifiedUrl.query.filter_by(url=url).first()
+                    if row is None:
+                        db.session.add(
+                            VerifiedUrl(
+                                url=url, http_code=code, status=status, verified_at=now,
+                            )
+                        )
+                    else:
+                        row.http_code = code
+                        row.status = status
+                        row.verified_at = now
+                    db.session.commit()
+                except Exception as exc:
+                    log.warning("persist verified_url failed for %s: %s", url, exc)
+                    try:
+                        db.session.rollback()
+                    except Exception:
+                        pass
 
     return result
 

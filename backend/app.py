@@ -26,9 +26,30 @@ def create_app() -> Flask:
     cors_origins = os.getenv("CORS_ORIGINS", "")
     if cors_origins:
         origins = [o.strip() for o in cors_origins.split(",") if o.strip()]
-        CORS(app, origins=origins)
+        CORS(
+            app,
+            resources={r"/api/*": {"origins": origins}},
+            allow_headers=["Content-Type", "Authorization"],
+            expose_headers=["x-request-id", "x-render-request-id"],
+        )
     else:
-        CORS(app)
+        # Default (when CORS_ORIGINS is not set): allow local dev and avoid
+        # blocking auth-bearing requests at the browser preflight step.
+        CORS(
+            app,
+            resources={
+                r"/api/*": {
+                    "origins": [
+                        "http://localhost:5173",
+                        "http://127.0.0.1:5173",
+                        "https://localhost:5173",
+                        "https://127.0.0.1:5173",
+                    ]
+                }
+            },
+            allow_headers=["Content-Type", "Authorization"],
+            expose_headers=["x-request-id", "x-render-request-id"],
+        )
 
     init_db(app)
 
@@ -74,7 +95,8 @@ def register_error_handlers(app: Flask) -> None:
 
     @app.errorhandler(500)
     def server_error(err):
-        return jsonify({"error": "Internal server error", "detail": str(err)}), 500
+        app.logger.exception("Internal server error: %s", err)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 app = create_app()

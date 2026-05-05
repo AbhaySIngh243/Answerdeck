@@ -38,6 +38,7 @@ import OverviewKpiGrid from './sections/OverviewKpiGrid';
 import PerformancePanel from './sections/PerformancePanel';
 import PromptPerformanceTable from './sections/PromptPerformanceTable';
 import CompetitorSnapshot from './sections/CompetitorSnapshot';
+import TopCitingSources from './sections/TopCitingSources';
 import { Button } from '../ui/button';
 
 const SECTION_IDS = [
@@ -259,11 +260,16 @@ const ProjectDetailView = () => {
   const [runningPrompts, setRunningPrompts] = useState({});
   const [selectedPromptId, setSelectedPromptId] = useState(null);
   const [activeSection, setActiveSection] = useState('dashboard');
+  const [dashChartMode, setDashChartMode] = useState('7d');
   const [improveTarget, setImproveTarget] = useState(null); // {prompt_id, prompt_text}
   const deepIntelRef = useRef(null);
 
+  // Track active polling jobs to allow cleanup and prevent memory leaks
+  const activePollsRef = useRef(new Map());
+  const MAX_POLL_ATTEMPTS = 120; // 5 minutes at 2.5s intervals
+
   const { data: projectData, isLoading, error } = useQuery({
-    queryKey: ['project-data', id],
+    queryKey: ['project-data', 'v2', id],
     queryFn: async () => {
       const [project, prompts, dashboard, engines] = await Promise.all([
         api.getProject(id), api.getPrompts(id), api.getProjectDashboard(id), api.getEngines(),
@@ -308,7 +314,12 @@ const ProjectDetailView = () => {
   const { data: deepAnalysis, isLoading: deepAnalysisLoading } = useQuery({ queryKey: ['deep-analysis', id], queryFn: () => api.getDeepAnalysis(id), enabled: Boolean(id) && needsDeepAnalysis, staleTime: 60_000 });
   const { data: sourcesIntel, isLoading: sourcesIntelLoading } = useQuery({ queryKey: ['sources-intelligence', id], queryFn: () => api.getSourcesIntelligence(id), enabled: Boolean(id), staleTime: 60_000 });
   const { data: competitorIntel, isLoading: competitorIntelLoading } = useQuery({ queryKey: ['competitor-intelligence', id], queryFn: () => api.getCompetitorIntelligence(id), enabled: Boolean(id), staleTime: 60_000 });
-  const { data: promptDetailData, isLoading: promptDetailLoading } = useQuery({ queryKey: ['prompt-detail', selectedPromptId], queryFn: () => api.getPromptDetail(selectedPromptId), enabled: Boolean(selectedPromptId) });
+  const { data: promptDetailData, isLoading: promptDetailLoading, isError: promptDetailIsError, error: promptDetailError } = useQuery({
+    queryKey: ['prompt-detail', selectedPromptId],
+    queryFn: () => api.getPromptDetail(selectedPromptId),
+    enabled: Boolean(selectedPromptId),
+    retry: 0,
+  });
 
   const mergedSourcesRows = useMemo(() => {
     const fromPrompt = selectedPromptId && Array.isArray(promptDetailData?.sources) && promptDetailData.sources.length > 0 ? promptDetailData.sources : null;
@@ -354,6 +365,19 @@ const ProjectDetailView = () => {
 
   useEffect(() => {
     setActiveSection((prev) => (prev === 'audit' ? 'dashboard' : prev));
+  }, []);
+
+  // Cleanup active polls when component unmounts
+  useEffect(() => {
+    return () => {
+      // Cancel all active polling timeouts
+      activePollsRef.current.forEach((poll) => {
+        if (poll.timeoutId) {
+          clearTimeout(poll.timeoutId);
+        }
+      });
+      activePollsRef.current.clear();
+    };
   }, []);
 
   const modelIdToName = useMemo(() => {
@@ -413,7 +437,7 @@ const ProjectDetailView = () => {
 
   const [execContent, setExecContent] = useState(null);
   const [isExecuting, setIsExecuting] = useState(false);
-  const [selectedActionModel, setSelectedActionModel] = useState('deepseek');
+  const [selectedActionModel, setSelectedActionModel] = useState('gemini');
   const [execError, setExecError] = useState(null);
   const [execIncludeFaqSchema, setExecIncludeFaqSchema] = useState(true);
   const [execIncludeComparisonTable, setExecIncludeComparisonTable] = useState(true);
@@ -421,7 +445,6 @@ const ProjectDetailView = () => {
   const [execDraftTarget, setExecDraftTarget] = useState(null);
   const [customBriefText, setCustomBriefText] = useState('');
   const [customBriefType, setCustomBriefType] = useState('Article');
-  const [dashChartMode, setDashChartMode] = useState('visibility');
 
   const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 2); return d.toISOString().slice(0, 10); });
   const [dateTo, setDateTo] = useState(() => new Date().toISOString().slice(0, 10));
@@ -459,32 +482,102 @@ const ProjectDetailView = () => {
 
   const executeActionMutation = useMutation({ mutationFn: (data) => api.executeAction(id, data), onSuccess: (res) => { setExecContent(res); setIsExecuting(false); setExecError(null); }, onError: (err) => { setIsExecuting(false); setExecError(err.message || 'Failed to generate content.'); } });
 
-  const refreshAll = () => {
-    ['project-data', 'prompt-analysis', 'deep-analysis', 'sources-intelligence', 'competitor-intelligence', 'intel-summary', 'global-audit'].forEach((key) => queryClient.invalidateQueries({ queryKey: [key, id] }));
+  const refreshAll = async () => {
+    const keys = ['project-data', 'prompts', 'prompt-analysis', 'deep-analysis', 'sources-intelligence', 'competitor-intelligence', 'intel-summary', 'global-audit'];
+    await Promise.all(keys.map((key) => queryClient.invalidateQueries({ queryKey: [key, id] })));
   };
 
   const analyzePromptMutation = useMutation({
     mutationFn: async (payload) => { const created = await api.createPrompt(id, payload); const run = await api.runPromptAnalysis(created.id, { searchProvider: effectiveSearchProvider }); return { promptId: created.id, jobId: run.job_id }; },
-    onSuccess: ({ promptId }) => { setSelectedPromptId(promptId); setRunningPrompts((prev) => ({ ...prev, [promptId]: true })); setNewPromptText(''); setNewPromptModels([]); requestAnimationFrame(() => deepIntelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })); },
+    onSuccess: ({ promptId, jobId }) => {
+      setSelectedPromptId(promptId);
+      setRunningPrompts((prev) => ({ ...prev, [promptId]: true }));
+      setNewPromptText('');
+      setNewPromptModels([]);
+      // Register and start polling for this job
+      if (jobId) {
+        activePollsRef.current.set(jobId, { timeoutId: null, promptId });
+        pollJobStatus(jobId, promptId, 1);
+      }
+      requestAnimationFrame(() => deepIntelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    },
   });
 
   const deletePromptMutation = useMutation({ mutationFn: api.deletePrompt, onSuccess: refreshAll });
   const runPromptMutation = useMutation({
     mutationFn: (promptId) => api.runPromptAnalysis(promptId, { searchProvider: effectiveSearchProvider }),
-    onSuccess: (payload, promptId) => { if (!payload?.job_id) { refreshAll(); return; } setRunningPrompts((prev) => ({ ...prev, [promptId]: true })); pollJobStatus(payload.job_id, promptId); },
+    onSuccess: (payload, promptId) => {
+      if (!payload?.job_id) { refreshAll(); return; }
+      setRunningPrompts((prev) => ({ ...prev, [promptId]: true }));
+      // Register this poll so we can clean it up later
+      activePollsRef.current.set(payload.job_id, { timeoutId: null, promptId });
+      pollJobStatus(payload.job_id, promptId, 1);
+    },
   });
   const runAllMutation = useMutation({
     mutationFn: (projectId) => api.runAllPromptAnalysis(projectId, { searchProvider: effectiveSearchProvider }),
-    onSuccess: (payload) => { const jobs = Array.isArray(payload?.results) ? payload.results : []; if (jobs.length === 0) { refreshAll(); return; } jobs.forEach((item) => { setRunningPrompts((prev) => ({ ...prev, [item.prompt_id]: true })); pollJobStatus(item.job_id, item.prompt_id); }); },
+    onSuccess: (payload) => {
+      const jobs = Array.isArray(payload?.results) ? payload.results : [];
+      if (jobs.length === 0) { refreshAll(); return; }
+      jobs.forEach((item) => {
+        setRunningPrompts((prev) => ({ ...prev, [item.prompt_id]: true }));
+        // Register this poll so we can clean it up later
+        activePollsRef.current.set(item.job_id, { timeoutId: null, promptId: item.prompt_id });
+        pollJobStatus(item.job_id, item.prompt_id, 1);
+      });
+    },
   });
 
-  const pollJobStatus = async (jobId, promptId) => {
+  const pollJobStatus = useCallback(async (jobId, promptId, attempt = 1) => {
+    // Stop if we've exceeded max attempts
+    if (attempt > MAX_POLL_ATTEMPTS) {
+      setRunningPrompts((prev) => ({ ...prev, [promptId]: false }));
+      activePollsRef.current.delete(jobId);
+      return;
+    }
+
+    // Stop if this poll was cancelled (component unmount or new poll started)
+    if (!activePollsRef.current.has(jobId)) {
+      return;
+    }
+
     try {
       const data = await api.getJobStatus(jobId);
-      if (data.status === 'completed' || data.status === 'failed') { setRunningPrompts((prev) => ({ ...prev, [promptId]: false })); refreshAll(); queryClient.invalidateQueries({ queryKey: ['prompt-detail', promptId] }); return; }
-      setTimeout(() => pollJobStatus(jobId, promptId), 2500);
-    } catch { setRunningPrompts((prev) => ({ ...prev, [promptId]: false })); }
-  };
+
+      if (data.status === 'completed') {
+        setRunningPrompts((prev) => ({ ...prev, [promptId]: false }));
+        activePollsRef.current.delete(jobId);
+        // Invalidate all relevant caches to ensure fresh data
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['project-data', id] }),
+          queryClient.invalidateQueries({ queryKey: ['prompt-analysis', id] }),
+          queryClient.invalidateQueries({ queryKey: ['prompt-detail', promptId] }),
+          queryClient.invalidateQueries({ queryKey: ['deep-analysis', id] }),
+        ]);
+        return;
+      }
+
+      if (data.status === 'failed') {
+        setRunningPrompts((prev) => ({ ...prev, [promptId]: false }));
+        activePollsRef.current.delete(jobId);
+        return;
+      }
+
+      // Still pending/running - schedule next poll
+      const timeoutId = setTimeout(() => {
+        pollJobStatus(jobId, promptId, attempt + 1);
+      }, 2500);
+
+      // Store timeout ID so we can cancel on cleanup
+      activePollsRef.current.set(jobId, { timeoutId, promptId });
+    } catch (err) {
+      // On error, stop polling for this job
+      setRunningPrompts((prev) => ({ ...prev, [promptId]: false }));
+      activePollsRef.current.delete(jobId);
+      // eslint-disable-next-line no-console
+      console.error(`Job polling error for ${jobId}:`, err);
+    }
+  }, [id, queryClient]);
 
   if (isLoading) {
     return (
@@ -614,12 +707,12 @@ const ProjectDetailView = () => {
             {/* ===== DASHBOARD TAB ===== */}
             {activeSection === 'dashboard' && (
               <motion.div key="dashboard" {...sectionMotion} className="space-y-5">
-                <OverviewKpiGrid dashboard={dashboard} prompts={prompts} enabledEngines={enabledEngines} runAllMutation={runAllMutation} projectId={id} />
-                <PerformancePanel mode={dashChartMode} onModeChange={setDashChartMode} dashboard={dashboard} promptAnalysisRows={toArray(promptAnalysis?.rows)} />
-                <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.3fr_1fr]">
-                  <PromptPerformanceTable loading={promptAnalysisLoading} rows={toArray(promptAnalysis?.rows)} onViewAll={() => setActiveSection('prompts')} />
+                <OverviewKpiGrid dashboard={dashboard} prompts={prompts} enabledEngines={enabledEngines} />
+                <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.4fr_1fr]">
+                  <PerformancePanel range={dashChartMode} onRangeChange={setDashChartMode} dashboard={dashboard} />
                   <CompetitorSnapshot competitors={toArray(dashboard?.competitors)} onViewAll={() => setActiveSection('competitors')} />
                 </div>
+                <PromptPerformanceTable loading={promptAnalysisLoading} rows={toArray(promptAnalysis?.rows)} onViewAll={() => setActiveSection('prompts')} />
 
                 {!selectedPromptId && (
                   <>
@@ -636,7 +729,6 @@ const ProjectDetailView = () => {
                               <h2 className="text-base font-semibold tracking-tight text-slate-900">Summary</h2>
                               <DataBadge type="ai" />
                             </div>
-                            <p className="mt-0.5 text-sm text-slate-500">From your data, not a generic brief</p>
                           </div>
                           <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${intelSummary.overall_health === 'Strong' ? 'bg-emerald-50 text-emerald-700' : intelSummary.overall_health === 'Critical' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{intelSummary.overall_health}</span>
                         </div>
@@ -925,70 +1017,12 @@ const ProjectDetailView = () => {
             {/* ===== SOURCES TAB ===== */}
             {activeSection === 'sources' && (
               <motion.div key="sources" {...sectionMotion}>
-                <div className="glass-card-v2 overflow-hidden">
-                  <div className="flex items-center justify-between border-b border-slate-100/80 px-6 py-4">
-                    <div className="flex items-center gap-2.5">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-600"><Globe className="h-4 w-4" /></div>
-                      <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Sources</p><DataBadge type="measured" /></div><p className="text-[11px] text-slate-400">Sites and links the models cited. “Site in citations” on the overview is when your own site’s host shows up here.</p></div>
-                    </div>
-                  </div>
-                  <div className="p-6">
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                      <p className={lbl}>Evidence-backed targets</p>
-                      <button onClick={() => { const top = mergedSourcesRows[0]; if (!top) return; const domainLabel = top.label || top.domain; const intent = intelSummary?.top_priority_prompts?.[0] || project.name; const t = { source: 'citation', headline: `${domainLabel} · ${intent}`, query: intent, contentType: 'Article', domain: domainLabel }; setExecDraftTarget(t); setActiveSection('execute'); }} disabled={mergedSourcesRows.length === 0} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200/60 bg-white/60 px-3 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:border-brand-primary hover:text-brand-primary disabled:opacity-50">Draft from Top Citation</button>
-                    </div>
-                    {strictSourceRows.length > 0 && (
-                      <div className="mb-5 grid grid-cols-1 gap-2 md:grid-cols-2">
-                        {strictSourceRows.slice(0, 4).map((row) => (
-                          <div key={`${row.domain}-${row.source_class}`} className="rounded-xl border border-slate-200/70 bg-white/70 p-3">
-                            <div className="mb-1 flex items-center justify-between gap-2">
-                              <p className="truncate text-xs font-semibold text-slate-800">{row.domain}</p>
-                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">{row.source_class}</span>
-                            </div>
-                            <p className="text-[11px] text-slate-500">{row.evidence}</p>
-                            <p className="mt-1 text-[11px] text-slate-700"><span className="font-semibold">This week:</span> {row.action}</p>
-                            <p className="mt-1 text-[10px] text-slate-400">{Math.round(Number(row.confidence || 0) * 100)}% confidence · {row.source_count || 0} citations</p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {(sourcesIntelLoading || (Boolean(selectedPromptId) && promptDetailLoading)) && mergedSourcesRows.length === 0 ? (
-                      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1.5fr_1fr]">
-                        <div className="glass-inset h-80 animate-pulse rounded-2xl p-4"><div className="mb-4 h-5 w-[55%] rounded bg-slate-100" /><div className="h-[230px] rounded-2xl border border-slate-200 bg-slate-50" /></div>
-                        <div className="dashboard-panel-scroll max-h-80 space-y-2 overflow-y-auto pr-1">{Array.from({ length: 6 }).map((_, idx) => <div key={idx} className="glass-inset animate-pulse rounded-xl p-3.5"><div className="mb-2 h-4 w-[70%] rounded bg-slate-100" /><div className="h-3 w-[85%] rounded bg-slate-100" /></div>)}</div>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] lg:gap-10">
-                        <div className="glass-inset relative min-h-[280px] min-w-0 rounded-2xl px-4 py-5 sm:px-6"><SourcesPieChart data={mergedSourcesRows} maxItems={10} /></div>
-                        <div className="dashboard-panel-scroll min-w-0 max-h-96 space-y-2 overflow-y-auto overflow-x-hidden pr-1">
-                          {mergedSourcesRows.length === 0 && <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-6 text-center text-sm text-slate-500">No citation sources in this view yet.</p>}
-                          {mergedSourcesRows.map((item) => {
-                            const displayName = item.label || item.domain;
-                            const aliases = item.mergedDomains || [displayName];
-                            const links = toArray(item.links);
-                            const shownLinks = links.slice(0, 50);
-                            const listKey = aliases.slice().sort().join('|') || displayName;
-                            return (
-                              <details key={listKey} className="glass-card-v2 min-w-0 w-full overflow-hidden transition-colors hover:border-slate-300 open:shadow-sm">
-                                <summary className="flex min-h-[2.75rem] cursor-pointer list-none items-center gap-2.5 overflow-hidden px-3.5 py-3 marker:content-none hover:bg-slate-50/80 [&::-webkit-details-marker]:hidden">
-                                  <span className={`h-2 w-2 shrink-0 rounded-full ${item.source_mentions > 3 ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                                  <span className="min-w-0 flex-1 text-left"><span className="block truncate text-sm font-semibold leading-tight text-slate-800">{displayName}</span>{aliases.length > 1 && <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">{aliases.length} labels merged</span>}</span>
-                                  <span className="inline-flex shrink-0 items-center rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold tabular-nums text-slate-600">{item.source_mentions} Mentions</span>
-                                </summary>
-                                <div className="border-t border-slate-100/80 bg-slate-50/50">
-                                  {aliases.length > 1 && <div className="px-4 py-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Grouped domains</p><ul className="mt-1.5 space-y-1 text-xs text-slate-600">{aliases.map((d) => <li key={d} className="font-medium">{d}</li>)}</ul></div>}
-                                  {links.length === 0 ? <p className="px-4 py-3 text-xs text-slate-500">No URLs recorded.</p> : (
-                                    <ul className="space-y-2 p-4">{shownLinks.map((link) => { const url = typeof link === 'string' ? link : String(link?.url || ''); if (!url || !isHttpUrl(url)) return null; const title = typeof link === 'string' ? '' : String(link?.title || ''); const domain = url.replace(/^https?:\/\//, '').split('/')[0]; return (<li key={url} className="group/link flex items-center gap-3"><div className="rounded-lg border border-slate-200/60 bg-white p-1"><img src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" className="h-3.5 w-3.5 shrink-0" onError={(e) => { e.target.style.display = 'none'; }} /></div><a href={url} target="_blank" rel="noreferrer" className="flex min-w-0 flex-1 items-center gap-1.5 text-xs font-semibold text-brand-primary hover:underline" title={url}><span className="truncate">{title || url}</span><ExternalLink className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover/link:opacity-100" /></a></li>); })}{links.length > 50 && <li className="pt-1 text-[11px] text-slate-400">Showing 50 of {links.length} URLs.</li>}</ul>
-                                  )}
-                                </div>
-                              </details>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
+                <TopCitingSources 
+                  sources={mergedSourcesRows} 
+                  totalPrompts={projectData?.dashboard?.prompt_rankings?.length || projectData?.prompts?.length || 1} 
+                  totalEngines={Object.keys(modelIdToName || {}).length || 1}
+                  focusBrand={project.name} 
+                />
               </motion.div>
             )}
 
@@ -1215,6 +1249,20 @@ const ProjectDetailView = () => {
             </div>
           ) : promptDetailLoading ? (
             <div className="flex items-center justify-center py-20"><Loader2 className="h-10 w-10 animate-spin text-brand-primary opacity-20" /></div>
+          ) : promptDetailIsError ? (
+            <div className="rounded-2xl border border-red-100 bg-red-50 p-6 text-sm text-red-700">
+              <p className="font-semibold">Prompt detail could not load.</p>
+              <p className="mt-1 text-red-600">{promptDetailError?.message || 'Please retry after the analysis finishes.'}</p>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="mt-4"
+                onClick={() => queryClient.invalidateQueries({ queryKey: ['prompt-detail', selectedPromptId] })}
+              >
+                Retry
+              </Button>
+            </div>
           ) : !promptDetailData ? (
             <p className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 p-12 text-center text-sm text-slate-500">No detail found for this prompt.</p>
           ) : (
@@ -1227,9 +1275,9 @@ const ProjectDetailView = () => {
                   {toArray(promptDetailData.raw_responses).length === 0 ? (
                     <p className="text-sm text-slate-500">No raw model responses are available yet.</p>
                   ) : (
-                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div className="columns-1 lg:columns-2 gap-4 space-y-4">
                       {toArray(promptDetailData.raw_responses).map((response) => (
-                        <details key={response.id || response.engine} className="glass-inset group overflow-hidden rounded-xl">
+                        <details key={response.id || response.engine} className="glass-inset group overflow-hidden rounded-xl break-inside-avoid inline-block w-full">
                           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
                             <span className="truncate text-sm font-semibold text-slate-900">{modelIdToName[response.engine] || response.engine}</span>
                             <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />

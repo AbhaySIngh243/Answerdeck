@@ -32,6 +32,22 @@ import OnboardingAssistant from './OnboardingAssistant';
 
 const TOTAL_STEPS = 5;
 
+const BRAND_PRIORITIES = [
+  { id: 'visibility', label: 'Brand visibility', description: 'How often is your brand mentioned vs competitors?' },
+  { id: 'positioning', label: 'Positioning strength', description: 'Is your brand positioned as a leader or alternative?' },
+  { id: 'sentiment', label: 'Sentiment & trust', description: 'Is the tone positive, neutral, or negative?' },
+  { id: 'differentiation', label: 'Differentiation', description: 'Are your unique strengths being highlighted?' },
+  { id: 'accuracy', label: 'Factual accuracy', description: 'Are facts about your brand correct?' },
+];
+
+const TONE_OPTIONS = [
+  { id: 'professional', label: 'Professional', description: 'Formal, authoritative, business-focused' },
+  { id: 'friendly', label: 'Friendly & approachable', description: 'Conversational, warm, accessible' },
+  { id: 'innovative', label: 'Innovative', description: 'Cutting-edge, bold, forward-thinking' },
+  { id: 'trustworthy', label: 'Trustworthy', description: 'Reliable, secure, proven' },
+  { id: 'playful', label: 'Playful', description: 'Fun, quirky, personality-driven' },
+];
+
 const INDUSTRIES = [
   'Technology',
   'SaaS / Software',
@@ -149,7 +165,7 @@ function defaultFormState(project) {
       'chatgpt',
       'claude',
       'perplexity',
-      'deepseek',
+      'gemini',
     ],
   );
 
@@ -174,6 +190,13 @@ function defaultFormState(project) {
     step4: {
       target_engines: step4Engines,
       search_provider: steps?.['4']?.search_provider || 'auto',
+      // New brand strategy fields
+      value_proposition: steps?.['4']?.value_proposition || '',
+      target_audience: steps?.['4']?.target_audience || '',
+      key_differentiators: normalizeStringList(steps?.['4']?.key_differentiators || []),
+      messaging_priorities: normalizeStringList(steps?.['4']?.messaging_priorities || []),
+      brand_tone: steps?.['4']?.brand_tone || '',
+      analysis_priorities: normalizeStringList(steps?.['4']?.analysis_priorities || ['visibility', 'positioning']),
     },
     step5: { acknowledged: Boolean(steps?.['5']?.acknowledged) },
   };
@@ -394,7 +417,13 @@ export default function ProjectOnboardingWizard() {
     }
     if (currentStep === 2) return form.step2.competitors.length > 0;
     if (currentStep === 3) return form.step3.seed_prompts.length > 0;
-    if (currentStep === 4) return form.step4.target_engines.length > 0;
+    if (currentStep === 4) {
+      // New step 4: require at least value proposition and analysis priorities
+      return (
+        form.step4.value_proposition.trim().length > 0 &&
+        form.step4.analysis_priorities.length > 0
+      );
+    }
     if (currentStep === 5) return true;
     return false;
   }, [form, currentStep]);
@@ -544,6 +573,11 @@ export default function ProjectOnboardingWizard() {
         funnel_stage: form.step3.funnel_stage,
         target_engines: form.step4.target_engines,
         search_provider: form.step4.search_provider,
+        value_proposition: form.step4.value_proposition,
+        target_audience: form.step4.target_audience,
+        key_differentiators: form.step4.key_differentiators,
+        brand_tone: form.step4.brand_tone,
+        analysis_priorities: form.step4.analysis_priorities,
       }
     : {};
 
@@ -575,7 +609,7 @@ export default function ProjectOnboardingWizard() {
             {currentStep === 1 && 'Tell us about your brand'}
             {currentStep === 2 && 'Confirm your direct competitors'}
             {currentStep === 3 && 'Pick the prompts we will track'}
-            {currentStep === 4 && 'Choose AI engines & search grounding'}
+            {currentStep === 4 && 'Define your brand strategy'}
             {currentStep === 5 && 'Review & launch'}
           </p>
         </div>
@@ -963,60 +997,76 @@ export default function ProjectOnboardingWizard() {
         </Card>
       )}
 
-      {/* Step 4 — Engines + grounding */}
+      {/* Step 4 — Brand strategy & analysis preferences */}
       {currentStep === 4 && (
         <Card>
           <CardHeader>
-            <CardTitle>Engines & grounding</CardTitle>
+            <CardTitle>Brand strategy & positioning</CardTitle>
             <CardDescription>
-              Every prompt is asked to each engine below. Search grounding injects live web
-              results so models cite real, verifiable pages.
+              Help us understand what makes your brand unique so our analysis can be more
+              contextual and actionable.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
+            {/* Value Proposition */}
             <div className="space-y-2">
-              <p className="text-sm font-medium text-slate-700">Engines to query *</p>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {availableEngines.map((engine) => {
-                  const selected = form.step4.target_engines.includes(engine.id);
-                  return (
-                    <label
-                      key={engine.id}
-                      className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
-                        selected
-                          ? 'border-brand-primary bg-brand-primary/5'
-                          : 'border-slate-200 hover:border-slate-300'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => toggleEngine(engine.id)}
-                        className="h-4 w-4 rounded border-slate-300 text-brand-primary accent-brand-primary"
-                      />
-                      <div>
-                        <p className="text-sm font-medium text-slate-800">{engine.name}</p>
-                        <p className="text-xs text-slate-400">{engine.model}</p>
-                      </div>
-                    </label>
-                  );
-                })}
-                {availableEngines.length === 0 && (
-                  <p className="col-span-2 text-sm text-slate-400">
-                    No engines configured. Check your API keys on the backend.
-                  </p>
-                )}
-              </div>
+              <label className="text-sm font-medium text-slate-700">
+                What is your core value proposition? *
+              </label>
+              <p className="text-xs text-slate-400">
+                In one sentence, why should customers choose you over alternatives?
+              </p>
+              <Textarea
+                value={form.step4.value_proposition}
+                onChange={(e) => updateField('step4', 'value_proposition', e.target.value)}
+                placeholder="e.g. We help mid-size teams automate complex workflows without writing code..."
+                rows={2}
+              />
             </div>
 
+            {/* Target Audience */}
             <div className="space-y-2">
-              <p className="text-sm font-medium text-slate-700">Search grounding</p>
-              <div className="space-y-1.5">
-                {SEARCH_PROVIDERS.map((provider) => {
-                  const selected = form.step4.search_provider === provider.id;
+              <label className="text-sm font-medium text-slate-700">
+                Who is your primary target audience?
+              </label>
+              <p className="text-xs text-slate-400">
+                Describe the personas, roles, or segments you most want to reach.
+              </p>
+              <Textarea
+                value={form.step4.target_audience}
+                onChange={(e) => updateField('step4', 'target_audience', e.target.value)}
+                placeholder="e.g. Operations managers at 50-500 person SaaS companies who are drowning in manual processes..."
+                rows={2}
+              />
+            </div>
+
+            {/* Key Differentiators */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">
+                Key differentiators
+                <span className="font-normal text-slate-400"> (press Enter to add)</span>
+              </label>
+              <p className="text-xs text-slate-400">
+                What specific strengths, features, or capabilities set you apart?
+              </p>
+              <TagInput
+                tags={form.step4.key_differentiators}
+                onChange={(val) => updateField('step4', 'key_differentiators', val)}
+                placeholder="e.g. 24/7 human support, SOC 2 certified, no-code setup"
+              />
+            </div>
+
+            {/* Brand Tone */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">
+                How would you describe your brand's tone of voice?
+              </label>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {TONE_OPTIONS.map((tone) => {
+                  const selected = form.step4.brand_tone === tone.id;
                   return (
                     <label
-                      key={provider.id}
+                      key={tone.id}
                       className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${
                         selected
                           ? 'border-brand-primary bg-brand-primary/5'
@@ -1025,18 +1075,77 @@ export default function ProjectOnboardingWizard() {
                     >
                       <input
                         type="radio"
-                        name="search_provider"
+                        name="brand_tone"
                         checked={selected}
-                        onChange={() => updateField('step4', 'search_provider', provider.id)}
+                        onChange={() => updateField('step4', 'brand_tone', tone.id)}
                         className="mt-0.5 h-4 w-4 border-slate-300 text-brand-primary accent-brand-primary"
                       />
                       <div>
-                        <p className="text-sm font-medium text-slate-800">{provider.label}</p>
-                        <p className="text-xs text-slate-500">{provider.description}</p>
+                        <p className="text-sm font-medium text-slate-800">{tone.label}</p>
+                        <p className="text-xs text-slate-500">{tone.description}</p>
                       </div>
                     </label>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* Analysis Priorities */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">
+                What matters most in your analysis? *
+              </label>
+              <p className="text-xs text-slate-400">
+                Select the metrics you want us to prioritize in your reports.
+              </p>
+              <div className="space-y-1.5">
+                {BRAND_PRIORITIES.map((priority) => {
+                  const selected = form.step4.analysis_priorities.includes(priority.id);
+                  return (
+                    <label
+                      key={priority.id}
+                      className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${
+                        selected
+                          ? 'border-brand-primary bg-brand-primary/5'
+                          : 'border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => {
+                          const current = form.step4.analysis_priorities;
+                          if (current.includes(priority.id)) {
+                            updateField(
+                              'step4',
+                              'analysis_priorities',
+                              current.filter((id) => id !== priority.id),
+                            );
+                          } else {
+                            updateField('step4', 'analysis_priorities', [...current, priority.id]);
+                          }
+                        }}
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-primary accent-brand-primary"
+                      />
+                      <div>
+                        <p className="text-sm font-medium text-slate-800">{priority.label}</p>
+                        <p className="text-xs text-slate-500">{priority.description}</p>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3 text-xs text-blue-900">
+              <Info className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-semibold">Why this helps</p>
+                <p>
+                  The more we understand your brand strategy, the more contextual our analysis
+                  becomes. We'll flag when your positioning is off, when key differentiators are
+                  missing, or when sentiment doesn't match your intended tone.
+                </p>
               </div>
             </div>
           </CardContent>
@@ -1091,13 +1200,14 @@ export default function ProjectOnboardingWizard() {
               </div>
               <div className="rounded-lg border border-slate-200 p-3 text-sm">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Engines & grounding
+                  Brand strategy
                 </p>
-                <p className="mt-1 text-slate-700">
-                  {form.step4.target_engines.map((e) => e.toUpperCase()).join(', ') || '—'}
+                <p className="mt-1 text-slate-700 line-clamp-2">
+                  {form.step4.value_proposition || '—'}
                 </p>
                 <p className="text-xs text-slate-500">
-                  Search: {form.step4.search_provider}
+                  {form.step4.key_differentiators.length} differentiators ·{' '}
+                  {form.step4.analysis_priorities.length} priorities
                 </p>
               </div>
             </div>

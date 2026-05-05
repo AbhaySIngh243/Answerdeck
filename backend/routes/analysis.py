@@ -4,6 +4,7 @@ import os
 import json
 import uuid
 import time
+import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
@@ -39,7 +40,19 @@ from engine.llm_clients import (
 from engine.url_verifier import verify_urls
 from exceptions import NotFoundError
 from extensions import executor
-from models import AnalysisJob, DisplacementRecord, Mention, Project, Prompt, Response, VisibilityMetric, db
+from models import (
+    AnalysisJob,
+    CompetitorFraming,
+    DisplacementRecord,
+    Mention,
+    Project,
+    ProjectInsight,
+    Prompt,
+    PromptMetric,
+    Response,
+    VisibilityMetric,
+    db,
+)
 from auth import require_auth
 from routes.reports import invalidate_project_report_caches
 
@@ -91,7 +104,9 @@ def _merge_variant_signals(engine_name: str, variant_signals: dict[str, CausalSi
     cited_domains: list[str] = []
     framing_words: list[str] = []
     displacement_events: list[DisplacementEvent] = []
+    competitor_framing: list[dict[str, Any]] = []
     seen_event_keys: set[tuple[Any, ...]] = set()
+    seen_framing_keys: set[tuple[Any, ...]] = set()
 
     mentioned_any = False
     mention_ranks: list[int] = []
@@ -147,6 +162,12 @@ def _merge_variant_signals(engine_name: str, variant_signals: dict[str, CausalSi
                 continue
             seen_event_keys.add(key)
             displacement_events.append(ev)
+        for cf in sig.competitor_framing or []:
+            key = (cf.get("competitor_brand"), cf.get("verbatim_sentence"), cf.get("engine"))
+            if key in seen_framing_keys:
+                continue
+            seen_framing_keys.add(key)
+            competitor_framing.append(cf)
 
     merged_brand_analysis = dict(primary.brand_analysis or {})
     merged_brand_analysis["all_brand_details"] = all_details
@@ -167,6 +188,7 @@ def _merge_variant_signals(engine_name: str, variant_signals: dict[str, CausalSi
         focus_brand_evidence_phrases=evidence_phrases,
         focus_brand_cited_urls=cited_urls,
         competitor_displacement_events=displacement_events,
+        competitor_framing=competitor_framing,
         cited_source_domains=cited_domains,
         framing_words=framing_words,
         response_structure=primary.response_structure,
@@ -241,6 +263,97 @@ def _active_job_counts(user_id: str) -> tuple[int, int, int, int]:
     global_running = AnalysisJob.query.filter_by(status="running").count()
     global_pending = AnalysisJob.query.filter_by(status="pending").count()
     return user_running, user_pending, global_running, global_pending
+
+
+def _maybe_trigger_cross_prompt_synthesis(project_id: int, user_id: str, app_obj=None) -> None:
+    active_prompts = Prompt.query.filter_by(project_id=project_id, user_id=user_id, is_active=True).count()
+    if active_prompts <= 0:
+        return
+    completed_jobs = (
+        AnalysisJob.query.filter_by(project_id=project_id, user_id=user_id, status="completed")
+        .with_entities(AnalysisJob.prompt_id)
+        .distinct()
+        .count()
+    )
+    if completed_jobs < active_prompts:
+        return
+    app_ref = app_obj or current_app._get_current_object()
+    executor.submit(
+        generate_project_cross_prompt_insight,
+        project_id, user_id, app_ref,
+    )
+
+
+def generate_project_cross_prompt_insight(project_id: int, user_id: str, app_obj=None) -> None:
+    def _run() -> None:
+        from engine.analyzer import _clean_json
+        from engine.llm_clients import chat
+
+        project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+        if not project:
+            return
+        all_texts: dict[str, dict[str, str]] = {}
+        prompts = Prompt.query.filter_by(project_id=project_id, user_id=user_id, is_active=True).all()
+        for prompt in prompts:
+            responses = (
+                Response.query.filter_by(prompt_id=prompt.id)
+                .order_by(Response.timestamp.desc())
+                .limit(8)
+                .all()
+            )
+            engine_texts: dict[str, str] = {}
+            for response in responses:
+                engine_name = str(response.engine or "")
+                if engine_name.endswith("_research") or engine_name in engine_texts:
+                    continue
+                engine_texts[engine_name] = response.response_text
+                if len(engine_texts) >= 4:
+                    break
+            if engine_texts:
+                all_texts[prompt.prompt_text] = engine_texts
+        if not all_texts:
+            return
+
+        context_block = "\n".join(
+            f"QUERY: {q}\n" + "\n".join(f"  {eng}: {text[:400]}" for eng, text in engines.items())
+            for q, engines in list(all_texts.items())[:8]
+        )
+        llm_prompt = f'''You are analyzing how AI engines describe {project.name} across {len(all_texts)} different buyer queries.
+{context_block}
+Find the 3 most important cross-prompt patterns. A pattern must appear in at least 2 queries.
+Rules:
+- Every pattern must name the specific engines that showed it
+- Every pattern must include a verbatim word or phrase from the data above
+- No pattern can use generic language like "improve content" or "increase visibility"
+- Pattern 1 should be the most urgent issue
+Return JSON: {{
+  "insight_text": "2-3 sentence narrative of the most important overall pattern",
+  "recurring_adjectives": ["adj1", "adj2", "adj3"],
+  "consistent_competitors": ["brand1", "brand2"],
+  "framing_pattern": "one sentence describing how engines consistently frame this brand"
+}}'''
+        try:
+            parsed = _clean_json(chat("chatgpt", llm_prompt, temperature=0.4))
+        except Exception:
+            return
+        if not isinstance(parsed, dict):
+            return
+        insight = ProjectInsight.query.filter_by(project_id=project_id).first()
+        if not insight:
+            insight = ProjectInsight(project_id=project_id, generated_at=_now_iso())
+            db.session.add(insight)
+        insight.insight_text = str(parsed.get("insight_text") or "")
+        insight.recurring_adjectives = json.dumps(parsed.get("recurring_adjectives", []))
+        insight.consistent_competitors = json.dumps(parsed.get("consistent_competitors", []))
+        insight.framing_pattern = str(parsed.get("framing_pattern") or "")
+        insight.generated_at = _now_iso()
+        db.session.commit()
+
+    if app_obj is not None:
+        with app_obj.app_context():
+            _run()
+    else:
+        _run()
 
 
 def async_run_analysis(
@@ -474,6 +587,10 @@ def async_run_analysis(
                         rank=detail.get("rank"),
                         sentiment=detail.get("sentiment", "neutral"),
                         context=detail.get("context", ""),
+                        verbatim_sentence=str(detail.get("verbatim_sentence") or "")[:500],
+                        reason_stated=str(detail.get("reason_stated") or "")[:300],
+                        competitor_compared_to=str(detail.get("competitor_compared_to") or "")[:255],
+                        framing_adjectives=str(detail.get("framing_adjectives") or "")[:200],
                     )
                     db.session.add(mention)
                     if is_focus:
@@ -520,7 +637,10 @@ def async_run_analysis(
 
             batch_ts = _now_iso()
             for eng_name, signals in causal_signals_by_engine.items():
+                top_displacer = ""
                 for event in signals.competitor_displacement_events:
+                    if not top_displacer and event.competitor_brand:
+                        top_displacer = event.competitor_brand
                     db.session.add(
                         DisplacementRecord(
                             prompt_id=prompt.id,
@@ -534,9 +654,48 @@ def async_run_analysis(
                             timestamp=batch_ts,
                         )
                     )
+                for cf in signals.competitor_framing or []:
+                    db.session.add(
+                        CompetitorFraming(
+                            prompt_id=prompt.id,
+                            engine=str(cf.get("engine") or eng_name),
+                            competitor_brand=str(cf.get("competitor_brand") or "")[:255],
+                            verbatim_sentence=str(cf.get("verbatim_sentence") or "")[:400],
+                            framing_adjectives=str(cf.get("framing_adjectives") or "")[:200],
+                            rank_in_response=cf.get("rank_in_response") if isinstance(cf.get("rank_in_response"), int) else None,
+                            timestamp=batch_ts,
+                        )
+                    )
+
+                analysis = analyses.get(eng_name, {})
+                if not top_displacer:
+                    details = analysis.get("all_brand_details") or []
+                    focus_rank = analysis.get("focus_brand_rank")
+                    for detail in details:
+                        if not isinstance(detail, dict):
+                            continue
+                        brand = str(detail.get("brand") or "").strip()
+                        rank_val = detail.get("rank")
+                        if brand and brand.lower() != focus_brand.lower() and isinstance(rank_val, int):
+                            if not isinstance(focus_rank, int) or rank_val < focus_rank:
+                                top_displacer = brand
+                                break
+                db.session.add(
+                    PromptMetric(
+                        prompt_id=prompt.id,
+                        project_id=project.id,
+                        engine=eng_name,
+                        mentioned=bool(analysis.get("focus_brand_mentioned")),
+                        rank=analysis.get("focus_brand_rank") if isinstance(analysis.get("focus_brand_rank"), int) else None,
+                        top_competitor=top_displacer,
+                        framing=signals.focus_brand_framing,
+                        dominant_adjective=(signals.framing_words[0] if signals.framing_words else ""),
+                        run_date=today,
+                        job_id=job_id,
+                    )
+                )
 
             db.session.commit()
-            invalidate_project_report_caches(project_id)
 
             engine_analyses = {
                 engine: data
@@ -613,6 +772,8 @@ def async_run_analysis(
                 job.synthesis_json = json.dumps(payload.get("synthesis") or {})
                 job.drift_json = json.dumps(payload.get("drift") or {})
                 db.session.commit()
+                invalidate_project_report_caches(project_id)
+                _maybe_trigger_cross_prompt_synthesis(project.id, user_id, app_obj)
     except Exception as exc:  # pragma: no cover - safety path
         try:
             app_obj.logger.exception("analysis job failed", exc_info=exc)
@@ -838,6 +999,10 @@ def get_results(prompt_id):
                         "rank": mention.rank,
                         "sentiment": mention.sentiment,
                         "context": mention.context,
+                        "verbatim_sentence": mention.verbatim_sentence,
+                        "reason_stated": mention.reason_stated,
+                        "competitor_compared_to": mention.competitor_compared_to,
+                        "framing_adjectives": mention.framing_adjectives,
                     }
                     for mention in mentions
                 ],

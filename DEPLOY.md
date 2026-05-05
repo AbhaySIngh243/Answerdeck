@@ -38,7 +38,7 @@ Your app creates tables automatically on first run via `db.create_all()` when **
 | `PERPLEXITY_API_KEY` | Yes | For Perplexity engine |
 | `CLAUDE_API_KEY` | Yes | For Claude engine |
 | `GEMINI_API_KEY` | No | If you use Gemini |
-| `RANKLORE_ENGINE_ORDER` | No | e.g. `chatgpt,deepseek,perplexity,claude` |
+| `RANKLORE_ENGINE_ORDER` | No | e.g. `chatgpt,gemini,perplexity,claude` |
 | `MAX_CONCURRENT_JOBS_PER_USER` | No | Defaults to `2` to avoid overload |
 
 After deploy, test: `https://<your-render-service>.onrender.com/api/health`

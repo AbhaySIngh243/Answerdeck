@@ -317,7 +317,11 @@ export const api = {
   getProjectDashboard: (projectId) => request(`/reports/project/${projectId}/dashboard`),
   getDeepAnalysis: (projectId) => request(`/reports/project/${projectId}/deep-analysis`),
   getPromptAnalysis: (projectId) => request(`/reports/project/${projectId}/prompt-analysis`),
-  getPromptDetail: (promptId) => request(`/reports/prompt/${promptId}/detail`),
+  getPromptDetail: (promptId) =>
+    request(`/reports/prompt/${promptId}/detail`, {
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      retries: 0,
+    }),
   getSourcesIntelligence: (projectId) => request(`/reports/project/${projectId}/sources`),
   getCompetitorIntelligence: (projectId) => request(`/reports/project/${projectId}/competitors`),
   getIntelSummary: (projectId) => request(`/reports/project/${projectId}/intel-summary`),

@@ -44,11 +44,11 @@ _STEP_FOCUS = {
         ),
     },
     4: {
-        "title": "Engines and search grounding",
+        "title": "Brand strategy and positioning",
         "focus": (
-            "Explain which LLM engines matter for this brand and which search grounding "
-            "(Serper vs Perplexity) fits. Flag when the user unchecks a major engine like "
-            "ChatGPT without a reason."
+            "Help the user articulate their core value proposition, target audience, and "
+            "key differentiators. Ensure they select analysis priorities that align with "
+            "their business goals. Flag vague value propositions or generic differentiators."
         ),
     },
     5: {

@@ -17,6 +17,11 @@ backend/__pycache__/
 backend/.venv/
 backend/env/
 backend/venv/
+**/.venv/
+**/venv/
+
+# Ignore local scratch copies
+backend copy/
 
 # Ignore Node specific files
 frontend/node_modules/

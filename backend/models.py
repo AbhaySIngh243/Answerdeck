@@ -99,7 +99,7 @@ class Prompt(db.Model):
 class Response(db.Model):
     __tablename__ = 'responses'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    prompt_id = db.Column(db.Integer, db.ForeignKey('prompts.id', ondelete="CASCADE"), nullable=False)
+    prompt_id = db.Column(db.Integer, db.ForeignKey('prompts.id', ondelete="CASCADE"), nullable=False, index=True)
     engine = db.Column(db.String, nullable=False)
     response_text = db.Column(db.String, nullable=False)
     sources = db.Column(db.String, default="[]")
@@ -117,6 +117,57 @@ class Mention(db.Model):
     rank = db.Column(db.Integer, nullable=True)
     sentiment = db.Column(db.String, default="neutral")
     context = db.Column(db.String, default="")
+    verbatim_sentence = db.Column(db.Text, default="")
+    reason_stated = db.Column(db.Text, default="")
+    competitor_compared_to = db.Column(db.String, default="")
+    framing_adjectives = db.Column(db.String, default="")
+
+
+class CompetitorFraming(db.Model):
+    __tablename__ = 'competitor_framings'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    prompt_id = db.Column(db.Integer, db.ForeignKey('prompts.id', ondelete='CASCADE'), nullable=False, index=True)
+    engine = db.Column(db.String, nullable=False)
+    competitor_brand = db.Column(db.String, nullable=False)
+    verbatim_sentence = db.Column(db.Text, default="")
+    framing_adjectives = db.Column(db.String, default="")
+    rank_in_response = db.Column(db.Integer, nullable=True)
+    timestamp = db.Column(db.String, nullable=False)
+
+
+class PromptMetric(db.Model):
+    __tablename__ = 'prompt_metrics'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    prompt_id = db.Column(db.Integer, db.ForeignKey('prompts.id', ondelete='CASCADE'), nullable=False, index=True)
+    project_id = db.Column(db.Integer, nullable=False, index=True)
+    engine = db.Column(db.String, nullable=False)
+    mentioned = db.Column(db.Boolean, default=False)
+    rank = db.Column(db.Integer, nullable=True)
+    top_competitor = db.Column(db.String, default="")
+    framing = db.Column(db.String, default="")
+    dominant_adjective = db.Column(db.String, default="")
+    run_date = db.Column(db.String, nullable=False)
+    job_id = db.Column(db.String, default="")
+
+
+class ProjectInsight(db.Model):
+    __tablename__ = 'project_insights'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    project_id = db.Column(db.Integer, nullable=False, unique=True, index=True)
+    insight_text = db.Column(db.Text, default="")
+    recurring_adjectives = db.Column(db.String, default="")
+    consistent_competitors = db.Column(db.String, default="")
+    framing_pattern = db.Column(db.Text, default="")
+    generated_at = db.Column(db.String, nullable=False)
+
+
+class ReportCache(db.Model):
+    __tablename__ = 'report_cache'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    cache_key = db.Column(db.String, unique=True, nullable=False, index=True)
+    payload_json = db.Column(db.Text, default="")
+    generated_at = db.Column(db.String, nullable=False)
+    expires_at = db.Column(db.String, default="")
 
 
 class VisibilityMetric(db.Model):

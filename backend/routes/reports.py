@@ -3,10 +3,8 @@ import io
 import ipaddress
 import json
 import re
-import threading
-import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,10 +14,10 @@ from sqlalchemy import func
 
 from auth import require_auth
 from engine.analyzer import (
+    _clean_json,
     calculate_visibility_score,
     generate_action_playbook,
     generate_content_piece,
-    generate_detailed_audit,
     generate_global_audit,
     generate_project_summary,
     generate_recommendations,
@@ -27,11 +25,28 @@ from engine.analyzer import (
     is_spurious_brand_mention,
     _looks_like_spec_phrase,
 )
+from engine.llm_clients import chat
 from engine.brain_pipeline import DisplacementEvent, EvidenceSynthesis
-from engine.execution_steps import build_crisp_execution_steps
+from engine.execution_steps import (
+    build_execution_cards_by_domain,
+    is_execution_cards_cache_payload,
+    resolve_execution_card_for_domain,
+)
 from engine.perplexity_search import is_perplexity_search_enabled, search_web
 from exceptions import NotFoundError
-from models import AnalysisJob, Mention, Project, Prompt, Response, VisibilityMetric, db
+from models import (
+    AnalysisJob,
+    CompetitorFraming,
+    Mention,
+    Project,
+    ProjectInsight,
+    Prompt,
+    PromptMetric,
+    ReportCache,
+    Response,
+    VisibilityMetric,
+    db,
+)
 
 reports_bp = Blueprint("reports", __name__)
 
@@ -87,28 +102,56 @@ ALLOWED_EXECUTION_MODELS = frozenset({"chatgpt", "deepseek", "perplexity", "gemi
 ALLOWED_CONTENT_TYPES = frozenset({"Article", "Blog", "Reddit Post"})
 MAX_EXECUTION_DIRECTIVE_CHARS = 6000
 
-_report_cache: dict[str, tuple[float, Any]] = {}
-_report_cache_lock = threading.Lock()
-_REPORT_CACHE_TTL = 300  # 5 minutes
-
-
 def _cache_get(key: str) -> Any | None:
-    with _report_cache_lock:
-        entry = _report_cache.get(key)
-        if entry and (time.monotonic() - entry[0]) < _REPORT_CACHE_TTL:
-            return entry[1]
-        _report_cache.pop(key, None)
+    try:
+        row = ReportCache.query.filter_by(cache_key=key).first()
+        if not row or not row.payload_json:
+            return None
+        if row.expires_at and row.expires_at < datetime.now(timezone.utc).isoformat():
+            return None
+        return json.loads(row.payload_json)
+    except Exception:
         return None
 
 
-def _cache_set(key: str, value: Any) -> None:
-    with _report_cache_lock:
-        _report_cache[key] = (time.monotonic(), value)
-        if len(_report_cache) > 500:
-            cutoff = time.monotonic() - _REPORT_CACHE_TTL
-            stale = [k for k, (ts, _) in _report_cache.items() if ts < cutoff]
-            for k in stale:
-                _report_cache.pop(k, None)
+def _cache_set(key: str, value: Any, ttl_seconds: int = 3600) -> None:
+    try:
+        row = ReportCache.query.filter_by(cache_key=key).first()
+        if not row:
+            row = ReportCache(cache_key=key, generated_at=datetime.now(timezone.utc).isoformat())
+            db.session.add(row)
+        row.payload_json = json.dumps(value)
+        row.generated_at = datetime.now(timezone.utc).isoformat()
+        row.expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
+def _cache_invalidate_project(project_id: int) -> None:
+    try:
+        # Delete specific known cache keys
+        deleted = ReportCache.query.filter(
+            ReportCache.cache_key.in_([
+                f"deep-analysis:{project_id}",
+                f"dashboard:{project_id}",
+                f"dashboard:v2:{project_id}",
+                f"sources-intelligence:{project_id}",
+                f"competitor-intelligence:{project_id}",
+                f"intel-summary:{project_id}",
+                f"global-audit:{project_id}",
+            ])
+        ).delete(synchronize_session=False)
+        # Delete any other project-related cache entries
+        deleted += ReportCache.query.filter(
+            ReportCache.cache_key.like(f"%project_{project_id}%")
+        ).delete(synchronize_session=False)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        # Log error but don't fail - analysis data is already committed
+        import logging
+        logging.getLogger(__name__).warning("Cache invalidation failed for project %s: %s", project_id, exc)
 
 
 def _get_or_build_deep_analysis_payload(project_id: int) -> dict:
@@ -126,11 +169,8 @@ def _get_or_build_deep_analysis_payload(project_id: int) -> dict:
 
 
 def invalidate_project_report_caches(project_id: int) -> None:
-    """Invalidate in-process report caches after new analysis data is persisted."""
-    keys = (f"deep-analysis:{project_id}", f"dashboard:{project_id}")
-    with _report_cache_lock:
-        for k in keys:
-            _report_cache.pop(k, None)
+    """Invalidate persisted report caches after new analysis data is written."""
+    _cache_invalidate_project(project_id)
 
 
 def _looks_like_channel_noise(brand: str, context: str = "") -> bool:
@@ -180,6 +220,115 @@ def _parse_json_object(raw: str) -> dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
+
+
+def _split_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _raw_responses_for_prompt(prompt_id: int, limit: int = 8) -> dict[str, str]:
+    raw_responses: dict[str, str] = {}
+    rows = (
+        Response.query.filter_by(prompt_id=prompt_id)
+        .order_by(Response.timestamp.desc())
+        .limit(limit * 2)
+        .all()
+    )
+    for resp in rows:
+        if not _is_analysis_engine(resp.engine):
+            continue
+        if resp.engine not in raw_responses:
+            raw_responses[resp.engine] = resp.response_text
+        if len(raw_responses) >= limit:
+            break
+    return raw_responses
+
+
+def _competitor_framings_for_prompt(prompt_id: int, limit: int = 20) -> list[dict[str, Any]]:
+    rows = (
+        CompetitorFraming.query.filter_by(prompt_id=prompt_id)
+        .order_by(CompetitorFraming.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "competitor_brand": row.competitor_brand,
+            "verbatim_sentence": row.verbatim_sentence,
+            "framing_adjectives": row.framing_adjectives,
+            "rank_in_response": row.rank_in_response,
+            "engine": row.engine,
+        }
+        for row in rows
+    ]
+
+
+def _project_raw_response_context(project_id: int, per_prompt_limit: int = 4) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    by_engine: dict[str, str] = {}
+    by_prompt: dict[str, dict[str, str]] = {}
+    for prompt in prompts:
+        engine_texts = _raw_responses_for_prompt(prompt.id, limit=per_prompt_limit)
+        if engine_texts:
+            by_prompt[prompt.prompt_text] = engine_texts
+        for engine, text in engine_texts.items():
+            by_engine.setdefault(engine, text)
+    return by_engine, by_prompt
+
+
+def _project_competitor_framings(project_id: int, limit: int = 40) -> list[dict[str, Any]]:
+    prompt_ids = [p.id for p in Prompt.query.filter_by(project_id=project_id).all()]
+    if not prompt_ids:
+        return []
+    rows = (
+        CompetitorFraming.query.filter(CompetitorFraming.prompt_id.in_(prompt_ids))
+        .order_by(CompetitorFraming.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "competitor_brand": row.competitor_brand,
+            "verbatim_sentence": row.verbatim_sentence,
+            "framing_adjectives": row.framing_adjectives,
+            "rank_in_response": row.rank_in_response,
+            "engine": row.engine,
+        }
+        for row in rows
+    ]
+
+
+def _generate_domain_insight(domain: str, focus_brand: str, query: str, engine_responses: dict[str, str]) -> dict:
+    domain_mentions = []
+    domain_lower = str(domain or "").lower()
+    for eng, text in (engine_responses or {}).items():
+        for sentence in _split_sentences(text):
+            if domain_lower and domain_lower in sentence.lower():
+                domain_mentions.append(f"{eng}: {sentence[:200]}")
+    context = (
+        "\n".join(domain_mentions[:4])
+        if domain_mentions
+        else f"{domain} appeared as a citation source across engine responses for query: {query}"
+    )
+    prompt = f'''For brand {focus_brand}, the domain {domain} appeared in AI engine results for query "{query}".
+Context: {context}
+In 1 sentence: why does {domain} matter for {focus_brand}'s AI visibility specifically?
+In 1 sentence: what exact action should {focus_brand} take on {domain} this week?
+Return JSON: {{"why_it_matters": "...", "action": "..."}}'''
+    try:
+        parsed = _clean_json(chat("chatgpt", prompt, temperature=0.3))
+        if isinstance(parsed, dict) and parsed.get("why_it_matters"):
+            return {
+                "why_it_matters": str(parsed.get("why_it_matters") or ""),
+                "action": str(parsed.get("action") or ""),
+            }
+    except Exception:
+        pass
+    return {
+        "why_it_matters": f"{domain} cited by engines for this query.",
+        "action": f"Establish {focus_brand} presence on {domain}.",
+    }
 
 
 def _to_displacement_event(item: Any) -> DisplacementEvent | None:
@@ -336,80 +485,6 @@ def _normalize_source_url(value: str) -> str:
         return parsed._replace(fragment="").geturl()
     except Exception:
         return cleaned
-
-
-def _clean_research_reason(reason: str) -> str:
-    text = str(reason or "")
-    # Remove markdown links while preserving visible anchor text.
-    text = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1", text)
-    text = re.sub(r"https?://\S+", "", text)
-    text = re.sub(r"[`*_#>\[\]{}|~]", " ", text)
-    text = re.sub(r"[✅✔️☑️•▪️◆►→]+", " ", text)
-    text = re.sub(r"\s+", " ", text).strip(" .,:;!-")
-    return text[:260].strip()
-
-
-def _reason_is_low_quality(text: str) -> bool:
-    cleaned = str(text or "").strip()
-    if len(cleaned) < 24:
-        return True
-    words = re.findall(r"[A-Za-z][A-Za-z0-9'-]*", cleaned)
-    if len(words) < 5:
-        return True
-    letters = len(re.findall(r"[A-Za-z]", cleaned))
-    if letters == 0:
-        return True
-    symbolish = len(re.findall(r"[^A-Za-z0-9\s.,:'\"()/-]", cleaned))
-    if symbolish > max(6, letters // 2):
-        return True
-    return False
-
-
-def _build_platform_visibility_detail(
-    *,
-    domain: str,
-    focus_brand: str,
-    query: str,
-    page_title: str = "",
-    reason: str = "",
-    citation_count: int | None = None,
-) -> str:
-    reason_clean = _clean_research_reason(reason)
-    reason_fragment = ""
-    if not _reason_is_low_quality(reason_clean):
-        reason_fragment = f"Signal observed: {reason_clean}. "
-    elif citation_count is not None:
-        reason_fragment = f"Signal observed: this domain was cited {citation_count} time(s) for this query. "
-    else:
-        reason_fragment = "Signal observed: this domain repeatedly appears in retrieval for this query. "
-
-    page_hint = f"Target page/context: '{page_title}'. " if page_title else ""
-    return (
-        f"{reason_fragment}"
-        f"Why: answers often pull from sites like {domain} when they cite sources. "
-        f"What to do: add or update a page that matches '{query}' on {domain} (or your own site) with clear facts, prices or specs, and a short comparison. Work {focus_brand} in where it helps the reader. "
-        f"{page_hint}"
-        "Aim: get your brand into answers for this search."
-    )
-
-
-def _build_crisp_execution_steps(
-    *,
-    focus_brand: str,
-    query: str,
-    domain: str,
-    project_website_url: str = "",
-    competitors: list[str] | None = None,
-    citation_count: int | None = None,
-) -> list[str]:
-    return build_crisp_execution_steps(
-        focus_brand=focus_brand,
-        query=query,
-        domain=domain,
-        project_website_url=project_website_url,
-        competitors=competitors,
-        citation_count=citation_count,
-    )
 
 
 def _latest_responses_by_prompt(prompt_id: int) -> list[Response]:
@@ -570,6 +645,8 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         }
         for engine, response in sorted(latest_by_engine.items(), key=lambda item: item[0].lower())
     ]
+    raw_response_texts = {engine: response.response_text for engine, response in latest_by_engine.items()}
+    competitor_framings = _competitor_framings_for_prompt(prompt_id)
 
     competitor_scores: dict[str, dict] = defaultdict(lambda: {"mentions": 0, "ranks": []})
     sentiment = {"positive": 0, "neutral": 0, "negative": 0, "not_mentioned": 0}
@@ -689,81 +766,81 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     if audit is None:
         latest_job = _latest_completed_job(prompt_id, g.user.id)
         persisted_audit: list[dict[str, Any]] = []
-        synthesis_obj: EvidenceSynthesis | None = None
         if latest_job:
             result_payload = _parse_json_object(latest_job.result_json or "")
             raw_audit = result_payload.get("audit", [])
             if isinstance(raw_audit, list):
                 persisted_audit = [row for row in raw_audit if isinstance(row, dict)]
-            synthesis_payload = _parse_json_object(latest_job.synthesis_json or "")
-            if not synthesis_payload and isinstance(result_payload.get("synthesis"), dict):
-                synthesis_payload = result_payload.get("synthesis", {})
-            synthesis_obj = _coerce_synthesis(synthesis_payload)
         if persisted_audit:
             audit = persisted_audit[:5]
-        elif synthesis_obj is not None:
-            audit = generate_detailed_audit(
-                focus_brand,
-                prompt.prompt_text,
-                None,
-                synthesis=synthesis_obj,
-                known_competitors=project.get_competitors_list() if project else [],
-            )
         else:
-            audit = generate_detailed_audit(focus_brand, prompt.prompt_text, analyses)
+            audit = [
+                {
+                    "title": "No persisted audit yet",
+                    "detail": "The raw responses are available, but detailed audit items were not saved for this run.",
+                    "priority": "medium",
+                }
+            ]
         _cache_set(audit_cache_key, audit)
 
-    recommended_actions = []
+    recommended_specs: list[dict[str, Any]] = []
 
     # Add research-driven recommendations (from legacy research Responses).
     for src in research_sources[:10]:
         domain = str(src.get("domain") or "").strip() or "authoritative source"
-        link = _normalize_source_url(src.get("url") or "") or (f"https://{domain}" if domain and " " not in domain else "")
-        recommended_actions.append({
-            "title": f"Increase visibility on {domain}",
-            "detail": f"Improve retrieval-fit content for '{prompt.prompt_text}' on {domain}.",
-            "action_plan": _build_crisp_execution_steps(
-                focus_brand=focus_brand,
-                query=prompt.prompt_text,
-                domain=domain,
-                project_website_url=project.website_url if project else "",
-                competitors=project.get_competitors_list() if project else [],
-            ),
+        link = _normalize_source_url(src.get("url") or "") or (
+            f"https://{domain}" if domain and " " not in domain else ""
+        )
+        recommended_specs.append({
+            "domain": domain,
             "link": link,
         })
-        if len(recommended_actions) >= 6:
+        if len(recommended_specs) >= 6:
             break
 
     # When no research Response exists (new analyses use the search pre-layer),
     # derive recommendations from the top cited domains in LLM responses.
-    if not recommended_actions:
+    if not recommended_specs:
         for domain, count in sorted(source_count.items(), key=lambda item: item[1], reverse=True)[:6]:
             links = sorted(source_links.get(domain, set()))
-            recommended_actions.append({
-                "title": f"Increase visibility on {domain}",
-                "detail": f"Close citation and mention gaps for '{prompt.prompt_text}' using {domain}.",
-                "action_plan": _build_crisp_execution_steps(
-                    focus_brand=focus_brand,
-                    query=prompt.prompt_text,
-                    domain=domain,
-                    project_website_url=project.website_url if project else "",
-                    competitors=project.get_competitors_list() if project else [],
-                    citation_count=count,
-                ),
+            recommended_specs.append({
+                "domain": domain,
                 "link": links[0] if links else f"https://{domain}",
             })
 
-    if len(recommended_actions) < 2:
-        recommended_actions.append({
-            "title": "Publish a dedicated visibility page",
-            "detail": f"Create one decision-ready page for '{prompt.prompt_text}' and push it into citation channels.",
-            "action_plan": [
-                f"Ship a dedicated page for '{prompt.prompt_text}' with direct answer + comparison table.",
-                f"Add FAQ/schema and explicit proof blocks for {focus_brand}.",
-                "Submit to high-citation domains and retest this prompt across engines.",
-            ],
-            "link": project.website_url if project and project.website_url else "",
-        })
+    recommended_actions: list[dict[str, Any]] = []
+    if recommended_specs:
+        site_url = project.website_url if project else ""
+        domain_sig = ":".join(sorted({(spec["domain"] or "").lower() for spec in recommended_specs}))
+        exec_cards_cache_key = f"prompt_exec_cards:v2:{prompt_id}:{latest_ts}:{domain_sig}"
+        cards_by_domain = _cache_get(exec_cards_cache_key)
+        if not is_execution_cards_cache_payload(cards_by_domain):
+            cards_by_domain = build_execution_cards_by_domain(
+                domains=[spec["domain"] for spec in recommended_specs],
+                focus_brand=focus_brand,
+                query=prompt.prompt_text,
+                project_website_url=site_url,
+                raw_engine_responses=raw_response_texts,
+                competitor_framings=competitor_framings,
+            )
+            _cache_set(exec_cards_cache_key, cards_by_domain)
+
+        for spec in recommended_specs:
+            card = resolve_execution_card_for_domain(
+                spec["domain"],
+                cards_by_domain,
+                focus_brand=focus_brand,
+                query=prompt.prompt_text,
+                project_website_url=site_url,
+                raw_engine_responses=raw_response_texts,
+                competitor_framings=competitor_framings,
+            )
+            recommended_actions.append({
+                "title": str(card.get("title") or ""),
+                "detail": str(card.get("detail") or ""),
+                "action_plan": list(card.get("steps") or []),
+                "link": spec["link"],
+            })
     
     # Merge research data into sources list
     ui_sources = []
@@ -830,39 +907,6 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             "links": mapped_links,
             "is_target": True
         })
-
-    # If citations ended up empty (intermittent provider output), fall back to live web search.
-    if not ui_sources and is_perplexity_search_enabled():
-        fallback = search_web(query=prompt.prompt_text, max_results=5, max_tokens_per_page=280)
-        if fallback.get("ok"):
-            fallback_by_domain: dict[str, dict[str, Any]] = defaultdict(
-                lambda: {"mentions": 0, "links": []}
-            )
-            for item in fallback.get("results", []):
-                url = _normalize_source_url(item.get("url") or "")
-                if not url:
-                    continue
-                domain = _domain_from_url(url) or "web"
-                bucket = fallback_by_domain[domain]
-                bucket["mentions"] += 1
-                if len(bucket["links"]) < 20:
-                    bucket["links"].append(
-                        {
-                            "url": url,
-                            "title": (item.get("title") or "").strip() or url,
-                        }
-                    )
-
-            provider = str(fallback.get("provider") or "search").replace("-", " ").title()
-            for domain, row in sorted(fallback_by_domain.items(), key=lambda kv: kv[1]["mentions"], reverse=True):
-                ui_sources.append(
-                    {
-                        "domain": f"{domain} (Live {provider} Source)",
-                        "mentions": row["mentions"],
-                        "links": row["links"],
-                        "is_target": False,
-                    }
-                )
 
     return {
         "prompt_id": prompt.id,
@@ -974,7 +1018,7 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
 
     # Canonical key = lowercased brand; preserve a human-readable label
     grouped: dict[str, dict] = defaultdict(
-        lambda: {"mentions": 0, "ranks": [], "sentiments": [], "any_focus_mention": False, "label": ""}
+        lambda: {"mentions": 0, "response_ids": set(), "ranks": [], "sentiments": [], "any_focus_mention": False, "label": ""}
     )
 
     if considered_response_ids:
@@ -991,6 +1035,7 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
             key = canonical.lower()
             g = grouped[key]
             g["mentions"] += 1
+            g["response_ids"].add(mention.response_id)
             g["any_focus_mention"] = g["any_focus_mention"] or bool(mention.is_focus)
             g["sentiments"].append(mention.sentiment or "neutral")
             if mention.rank is not None:
@@ -1038,7 +1083,7 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
     rows: list[dict] = []
     for key_lower, brand_label in ordered:
         row = grouped[key_lower]
-        mention_rate = row["mentions"] / total_responses
+        mention_rate = len(row["response_ids"]) / total_responses
         rank_bonus = 0.0
         if row["ranks"]:
             avg_r = sum(row["ranks"]) / len(row["ranks"])
@@ -1231,6 +1276,99 @@ def _build_engine_focus_visibility(project_id: int) -> list[dict[str, Any]]:
     return rows
 
 
+def _build_competitor_visibility_trend(
+    project_id: int,
+    days: int = 30,
+    competitor_limit: int = 3,
+) -> dict[str, Any]:
+    """
+    Build a multi-series "visibility over time" chart for focus brand + top competitors.
+
+    We derive daily visibility from actual Mention rows:
+    - For each Response, a brand is "visible" if it has at least one Mention in that response.
+    - Daily visibility_pct = responses_with_brand / total_responses_that_day * 100.
+    """
+    project = Project.query.get(project_id)
+    if not project:
+        return {"brands": [], "series": []}
+
+    focus_brand = (project.name or "").strip()
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    prompt_ids = [p.id for p in prompts]
+    if not prompt_ids:
+        return {"brands": [], "series": []}
+
+    # Choose competitors based on current aggregate visibility table.
+    comp_rows = _build_competitor_visibility(project_id)
+    competitor_names = [
+        str(r.get("brand") or "").strip()
+        for r in comp_rows
+        if str(r.get("brand") or "").strip()
+        and not r.get("is_focus")
+    ][:competitor_limit]
+
+    brands = [b for b in [focus_brand, *competitor_names] if b]
+    if not brands:
+        return {"brands": [], "series": []}
+
+    # Normalize for matching; allow loose equality for "focus brand" mentions.
+    brands_lower = {b.lower(): b for b in brands}
+
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+    cutoff_iso = cutoff_dt.date().isoformat()
+
+    # Load candidate responses in the time window.
+    responses = (
+        Response.query.join(Prompt, Prompt.id == Response.prompt_id)
+        .filter(Prompt.project_id == project_id)
+        .filter(Response.timestamp >= cutoff_iso)
+        .all()
+    )
+    if not responses:
+        return {"brands": brands, "series": []}
+
+    response_ids = [r.id for r in responses]
+    mentions = Mention.query.filter(Mention.response_id.in_(response_ids)).all()
+
+    # response_id -> date -> set(brand_lower mentioned)
+    mentioned_by_response: dict[int, set[str]] = defaultdict(set)
+    for m in mentions:
+        raw = str(m.brand or "").strip()
+        if not raw:
+            continue
+        raw_lower = raw.lower()
+        if raw_lower in brands_lower:
+            mentioned_by_response[m.response_id].add(raw_lower)
+            continue
+        # fallback: treat focus brand mention as match if m.is_focus
+        if focus_brand and m.is_focus:
+            mentioned_by_response[m.response_id].add(focus_brand.lower())
+
+    # date -> total responses and per-brand hit counts
+    totals_by_date: dict[str, int] = defaultdict(int)
+    hits_by_date_brand: dict[tuple[str, str], int] = defaultdict(int)
+    for r in responses:
+        date = str(r.timestamp or "")[:10] or "unknown"
+        totals_by_date[date] += 1
+        hits = mentioned_by_response.get(r.id, set())
+        for b_lower in hits:
+            hits_by_date_brand[(date, b_lower)] += 1
+
+    dates_sorted = sorted(totals_by_date.keys())
+
+    series: list[dict[str, Any]] = []
+    for b_lower, label in brands_lower.items():
+        points = []
+        for date in dates_sorted:
+            total = totals_by_date.get(date, 0) or 0
+            hit = hits_by_date_brand.get((date, b_lower), 0) or 0
+            pct = round((hit / total) * 100, 1) if total else 0.0
+            points.append({"x": date, "y": pct})
+        series.append({"id": label, "data": points})
+
+    return {"brands": brands, "series": series}
+
+
 def _collect_competitor_sources(project_id: int) -> list[str]:
     prompt_ids = [p.id for p in Prompt.query.filter_by(project_id=project_id).all()]
     if not prompt_ids:
@@ -1264,6 +1402,75 @@ def _project_context_state(project: Project) -> dict[str, Any]:
     }
 
 
+def generate_trajectory_summary(engine_trends, new_displacers, focus_brand, engine: str = "chatgpt") -> str:
+    if not engine_trends and not new_displacers:
+        return ""
+    trend_text = "\n".join(
+        f'{eng}: rank delta {data["rank_delta"]:+.1f}, direction {data["direction"]}'
+        for eng, data in engine_trends.items()
+    )
+    displacer_text = ", ".join(new_displacers) if new_displacers else "none"
+    prompt = f'''Write one sentence summarizing the visibility trend for {focus_brand}.
+Engine rank changes this period: {trend_text}
+New competitors displacing the brand: {displacer_text}
+The sentence must be specific - name engines, name competitors, state direction.
+Do not use the words: visibility, optimize, improve. Start with the brand name or an engine name.
+Return only the sentence, no JSON.'''
+    try:
+        return chat(engine, prompt, temperature=0.3).strip()
+    except Exception:
+        return ""
+
+
+def _compute_trajectory(project_id: int, days_back: int = 14) -> dict:
+    project = Project.query.get(project_id)
+    focus_brand = project.name if project else ""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).date().isoformat()
+    recent = PromptMetric.query.filter(
+        PromptMetric.project_id == project_id,
+        PromptMetric.run_date >= cutoff,
+    ).order_by(PromptMetric.run_date.asc(), PromptMetric.id.asc()).all()
+    by_engine: dict[str, list[PromptMetric]] = defaultdict(list)
+    for row in recent:
+        by_engine[row.engine].append(row)
+
+    engine_trends = {}
+    for engine_name, rows in by_engine.items():
+        ranked_rows = [row for row in rows if row.rank is not None]
+        if len(ranked_rows) < 2:
+            continue
+        midpoint = max(1, len(ranked_rows) // 2)
+        older = ranked_rows[:midpoint]
+        newer = ranked_rows[midpoint:]
+        old_avg = sum(row.rank for row in older) / len(older)
+        new_avg = sum(row.rank for row in newer) / len(newer)
+        rank_delta = old_avg - new_avg
+        direction = "up" if rank_delta > 0.25 else ("down" if rank_delta < -0.25 else "stable")
+        engine_trends[engine_name] = {"rank_delta": round(rank_delta, 2), "direction": direction}
+
+    midpoint_date = (datetime.now(timezone.utc) - timedelta(days=days_back / 2)).date().isoformat()
+    older_competitors = {row.top_competitor for row in recent if row.run_date < midpoint_date and row.top_competitor}
+    newer_competitors = {row.top_competitor for row in recent if row.run_date >= midpoint_date and row.top_competitor}
+    new_displacers = sorted(newer_competitors - older_competitors)
+
+    framing_shifts = []
+    for engine_name, rows in by_engine.items():
+        frame_rows = [row for row in rows if row.framing]
+        if len(frame_rows) < 2:
+            continue
+        old_framing = frame_rows[0].framing
+        new_framing = frame_rows[-1].framing
+        if old_framing != new_framing:
+            framing_shifts.append({"engine": engine_name, "old_framing": old_framing, "new_framing": new_framing})
+
+    return {
+        "engine_trends": engine_trends,
+        "new_displacers": new_displacers,
+        "framing_shifts": framing_shifts,
+        "summary_sentence": generate_trajectory_summary(engine_trends, new_displacers, focus_brand),
+    }
+
+
 def _build_dashboard_payload(project_id: int) -> dict:
     project = Project.query.get(project_id)
     if not project:
@@ -1278,9 +1485,19 @@ def _build_dashboard_payload(project_id: int) -> dict:
     prompt_rankings = _build_prompt_rankings(project_id)
     competitors = _build_competitor_visibility(project_id)
     engine_visibility = _build_engine_focus_visibility(project_id)
-    competitor_sources = _collect_competitor_sources(project_id)
-    recommendations = generate_recommendations(project.name, prompt_rankings, competitor_sources)
+    competitor_visibility_trend = _build_competitor_visibility_trend(project_id, days=30, competitor_limit=3)
+    raw_project_responses, _raw_by_prompt = _project_raw_response_context(project_id)
+    competitor_framings = _project_competitor_framings(project_id)
+    project_synthesis = _build_project_synthesis_summary(project_id, project.user_id)
+    recommendations = generate_recommendations(
+        focus_brand=project.name,
+        raw_responses=raw_project_responses,
+        competitor_framings=competitor_framings,
+        synthesis=project_synthesis,
+    )
     context_state = _project_context_state(project)
+    trajectory = _compute_trajectory(project_id)
+    insight = ProjectInsight.query.filter_by(project_id=project_id).first()
 
     return {
         "project": {
@@ -1306,7 +1523,16 @@ def _build_dashboard_payload(project_id: int) -> dict:
         "prompt_rankings": prompt_rankings,
         "competitors": competitors,
         "engine_visibility": engine_visibility,
+        "competitor_visibility_trend": competitor_visibility_trend,
         "recommendations": recommendations,
+        "trajectory": trajectory,
+        "project_insight": {
+            "insight_text": insight.insight_text if insight else "",
+            "recurring_adjectives": json.loads(insight.recurring_adjectives or "[]") if insight else [],
+            "consistent_competitors": json.loads(insight.consistent_competitors or "[]") if insight else [],
+            "framing_pattern": insight.framing_pattern if insight else "",
+            "generated_at": insight.generated_at if insight else "",
+        },
         "context_state": context_state,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1507,6 +1733,8 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
         search_intel["queries"] = query_rows
 
     project_synthesis = _build_project_synthesis_summary(project_id, project.user_id)
+    raw_project_responses, _raw_by_prompt = _project_raw_response_context(project_id)
+    competitor_framings = _project_competitor_framings(project_id)
     action_plan = generate_strategic_action_plan(
         focus_brand=project.name,
         project_name=project.name,
@@ -1515,6 +1743,8 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
         upload_targets=upload_targets,
         search_intel=search_intel,
         synthesis=project_synthesis,
+        raw_responses=raw_project_responses,
+        competitor_framings=competitor_framings,
     )
     context_state = _project_context_state(project)
 
@@ -1536,7 +1766,7 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
 @require_auth
 def get_dashboard_metrics(project_id):
     _get_project_for_user(project_id)
-    cache_key = f"dashboard:{project_id}"
+    cache_key = f"dashboard:v2:{project_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return jsonify(cached)
@@ -1588,21 +1818,13 @@ def get_project_global_audit(project_id):
     project = _get_project_for_user(project_id)
 
     prompts = Prompt.query.filter_by(project_id=project_id).all()
-    all_prompts_data = []
+    all_raw_responses: dict[str, dict[str, str]] = {}
     for p in prompts:
-        try:
-            p_data = _build_prompt_detail_payload(p.id)
-            all_prompts_data.append({
-                "prompt_text": p.prompt_text,
-                "audit": p_data.get("audit", [])
-            })
-        except Exception:
-            all_prompts_data.append({
-                "prompt_text": p.prompt_text,
-                "audit": [{"title": "Data unavailable", "priority": "medium"}]
-            })
+        raw = _raw_responses_for_prompt(p.id, limit=4)
+        if raw:
+            all_raw_responses[p.prompt_text] = raw
 
-    global_audit = generate_global_audit(project.name, all_prompts_data)
+    global_audit = generate_global_audit(project.name, all_raw_responses, _project_competitor_framings(project_id))
     return jsonify(global_audit)
 
 
@@ -1653,7 +1875,7 @@ def execute_project_action(project_id):
         "industry": project.category
     }
 
-    engine = str(data.get("model") or "deepseek").strip().lower()
+    engine = str(data.get("model") or "gemini").strip().lower()
     if engine not in ALLOWED_EXECUTION_MODELS:
         return jsonify({"error": "model must be one of: chatgpt, deepseek, perplexity, gemini, claude"}), 400
     content = generate_content_piece(project.name, directive, content_type, context_data, engine=engine)
@@ -1847,10 +2069,13 @@ def sources_intelligence(project_id):
     project = _get_project_for_user(project_id)
 
     prompts = Prompt.query.filter_by(project_id=project_id).all()
+    prompt_text_by_id = {prompt.id: prompt.prompt_text for prompt in prompts}
 
     domain_count: dict[str, int] = defaultdict(int)
     urls_by_domain: dict[str, list[str]] = defaultdict(list)
     mentions_by_domain: dict[str, int] = defaultdict(int)
+    domain_queries: dict[str, str] = {}
+    engine_responses_for_domains: dict[str, str] = {}
 
     all_source_responses: list[Response] = []
     for prompt in prompts:
@@ -1863,6 +2088,9 @@ def sources_intelligence(project_id):
             mention_counts_by_resp[m.response_id] += 1
 
     for response in all_source_responses:
+        if response.response_text:
+            key = f"{response.engine}:{response.prompt_id}"
+            engine_responses_for_domains[key] = response.response_text
         if response.response_text and response.response_text.startswith("[") and "error:" in response.response_text.lower()[:80]:
             continue
         sources = _parse_sources(response.sources)
@@ -1879,6 +2107,7 @@ def sources_intelligence(project_id):
                 if normalized_source not in urls_by_domain[domain]:
                     urls_by_domain[domain].append(normalized_source)
             domains_seen_this_response.add(domain)
+            domain_queries.setdefault(domain, prompt_text_by_id.get(response.prompt_id, "tracked project prompts"))
 
         mention_count = mention_counts_by_resp.get(response.id, 0)
         for domain in domains_seen_this_response:
@@ -1900,6 +2129,12 @@ def sources_intelligence(project_id):
     for row in domains[:15]:
         domain = row["domain"]
         links = row.get("links", [])
+        domain_insight = _generate_domain_insight(
+            domain=domain,
+            focus_brand=project.name,
+            query=domain_queries.get(domain, "tracked project prompts"),
+            engine_responses=engine_responses_for_domains,
+        )
         if _host_is_under_base(domain, project_host):
             source_class = "Owned"
         elif any(comp in domain.lower() for comp in competitors if comp):
@@ -1914,9 +2149,9 @@ def sources_intelligence(project_id):
             {
                 "domain": domain,
                 "source_class": source_class,
-                "why_it_matters": f"Model answers keep citing {domain} for your topics.",
+                "why_it_matters": domain_insight.get("why_it_matters", ""),
                 "evidence": f"Cited {row.get('source_mentions', 0)} time(s); your brand {row.get('brand_mentions', 0)} time(s) in that context.",
-                "action": f"Put clear, factual copy about your product on {domain} or earn a mention (comparison, spec list, or quote).",
+                "action": domain_insight.get("action", ""),
                 "priority": "high" if row.get("source_mentions", 0) >= 4 else ("medium" if row.get("source_mentions", 0) >= 2 else "low"),
                 "confidence": 0.86,
                 "source_count": int(row.get("source_mentions", 0)),

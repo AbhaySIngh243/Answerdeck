@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import time
 import uuid
 from typing import Any
@@ -172,6 +173,12 @@ def _patch_llm() -> None:
 def main() -> None:
     os.environ.setdefault("RANKLORE_EXTERNAL_PARITY_MODE", "false")
 
+    temp_db = os.path.join(tempfile.gettempdir(), f"answerdeck_acceptance_{uuid.uuid4().hex}.db")
+    sqlite_uri = "sqlite:///" + temp_db.replace("\\", "/")
+    os.environ["DATABASE_POOLER_URL"] = sqlite_uri
+    os.environ["DATABASE_URL"] = sqlite_uri
+    os.environ["SUPABASE_POOLER_URL"] = ""
+
     from app import create_app
     from extensions import executor  # noqa: F401
     from models import AnalysisJob, Project, Prompt, db, DisplacementRecord
@@ -179,6 +186,9 @@ def main() -> None:
     # Import reports blueprint module to ensure compatibility with result_json reads.
     import routes.reports  # noqa: F401
 
+    os.environ["DATABASE_POOLER_URL"] = sqlite_uri
+    os.environ["DATABASE_URL"] = sqlite_uri
+    os.environ["SUPABASE_POOLER_URL"] = ""
     _patch_llm()
 
     app = create_app()

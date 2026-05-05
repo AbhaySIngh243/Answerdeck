@@ -34,6 +34,6 @@ def require_auth(f):
                 )
             except Exception:
                 pass
-            return jsonify({"error": "Authentication failed", "detail": str(e)}), 401
+            return jsonify({"error": "Authentication failed"}), 401
             
     return decorated_function

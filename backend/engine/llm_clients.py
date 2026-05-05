@@ -2,6 +2,7 @@
 
 import os
 import re
+import time
 import ipaddress
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
@@ -44,6 +45,17 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_FALLBACK_MODELS = [
+    model
+    for model in [
+        GEMINI_MODEL,
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+    if model
+]
 OPENAI_ENABLE_WEB_SEARCH = os.getenv("OPENAI_ENABLE_WEB_SEARCH", "true").lower() in {"1", "true", "yes"}
 OPENAI_WEB_SEARCH_MODEL = os.getenv("OPENAI_WEB_SEARCH_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
 OPENAI_REQUIRE_WEB_SEARCH = os.getenv("OPENAI_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
@@ -53,12 +65,32 @@ CLAUDE_REQUIRE_WEB_SEARCH = os.getenv("CLAUDE_REQUIRE_WEB_SEARCH", "false").lowe
 GEMINI_REQUIRE_WEB_SEARCH = os.getenv("GEMINI_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
 DEEPSEEK_REQUIRE_WEB_SEARCH = os.getenv("DEEPSEEK_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
 RANKLORE_EXTERNAL_PARITY_MODE = os.getenv("RANKLORE_EXTERNAL_PARITY_MODE", "true").lower() in {"1", "true", "yes"}
-RANKLORE_LLM_TEMPERATURE = float(os.getenv("RANKLORE_LLM_TEMPERATURE", "0.0"))
+RANKLORE_LLM_TEMPERATURE = float(os.getenv("RANKLORE_LLM_TEMPERATURE", "0.3"))
 RANKLORE_SEARCH_AUGMENT_ENABLED = os.getenv("RANKLORE_SEARCH_AUGMENT_ENABLED", "true").lower() in {"1", "true", "yes"}
 RANKLORE_SEARCH_AUGMENT_MAX_RESULTS = max(1, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_MAX_RESULTS", "8")), 10))
 RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS = max(80, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS", "280")), 400))
 RANKLORE_SEARCH_PROVIDER_STRICT = os.getenv("RANKLORE_SEARCH_PROVIDER_STRICT", "true").lower() in {"1", "true", "yes"}
 URL_PATTERN = re.compile(r"https?://[^\s<>\"')\]]+")
+
+
+def _openai_error_looks_transient(exc: BaseException) -> bool:
+    """True for server/rate issues where a short retry often succeeds."""
+    text = str(exc).lower()
+    needles = (
+        "500",
+        "502",
+        "503",
+        "504",
+        "429",
+        "rate limit",
+        "server_error",
+        "timeout",
+        "timed out",
+        "overloaded",
+        "try again",
+        "connection",
+    )
+    return any(n in text for n in needles)
 
 def _build_client(api_key: str, base_url: str | None = None) -> OpenAI | None:
     if not api_key:
@@ -77,7 +109,7 @@ def _build_anthropic_client(api_key: str) -> Anthropic | None:
 ENGINE_CONFIG: dict[str, dict[str, Any]] = {
     "chatgpt": {
         "client": _build_client(OPENAI_API_KEY),
-        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "model": os.getenv("OPENAI_MODEL", "gpt-4o"),
         "display_name": "ChatGPT",
     },
     "deepseek": {
@@ -95,7 +127,7 @@ ENGINE_CONFIG: dict[str, dict[str, Any]] = {
             GEMINI_API_KEY,
             "https://generativelanguage.googleapis.com/v1beta/openai/",
         ),
-        "model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+        "model": GEMINI_MODEL,
         "display_name": "Gemini",
     },
     "claude": {
@@ -109,7 +141,7 @@ ENGINE_CONFIG: dict[str, dict[str, Any]] = {
 # Backward compatibility alias.
 ENGINE_CONFIG["openai"] = ENGINE_CONFIG["chatgpt"]
 
-DEFAULT_ENGINE_ORDER = ["chatgpt", "deepseek", "perplexity", "claude"]
+DEFAULT_ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "claude"]
 
 
 def _selected_engine_order() -> list[str]:
@@ -141,7 +173,7 @@ def _normalize_url(url: str) -> str:
             return ""
         try:
             ip = ipaddress.ip_address(host)
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
                 return ""
         except ValueError:
             pass
@@ -411,6 +443,9 @@ def _prompt_expects_json(prompt: str) -> bool:
     p = str(prompt or "")
     if not p:
         return False
+    lowered = p.lower()
+    if "json list" in lowered or "valid json list" in lowered or "json array" in lowered:
+        return False
     markers = (
         "Return ONLY valid JSON",
         "Return ONLY a valid JSON",
@@ -418,7 +453,6 @@ def _prompt_expects_json(prompt: str) -> bool:
         "Return a JSON object",
         "respond with JSON",
     )
-    lowered = p.lower()
     return any(m.lower() in lowered for m in markers)
 
 
@@ -473,29 +507,37 @@ def chat(
         # we want deterministic structured output.
         if engine == "chatgpt" and OPENAI_ENABLE_WEB_SEARCH and not wants_json:
             # Align API behavior more closely with ChatGPT app results by enabling web grounding.
-            try:
-                country = _infer_web_search_country(prompt)
-                tool_cfg: dict[str, Any] = {"type": "web_search_preview"}
-                if country:
-                    tool_cfg["user_location"] = {
-                        "type": "approximate",
-                        "country": country,
-                    }
-                response = client.responses.create(
-                    model=OPENAI_WEB_SEARCH_MODEL,
-                    input=prompt,
-                    tools=[tool_cfg],
-                    tool_choice="auto",
-                )
-                text = (getattr(response, "output_text", "") or "").strip()
-                if text:
-                    citations = _extract_openai_response_citation_urls(response)
-                    return f"{text}{_format_sources_tail(citations)}"
-            except Exception as exc:
-                if OPENAI_REQUIRE_WEB_SEARCH:
-                    return f"[ChatGPT web-search required but unavailable: {exc}]"
-                # Fallback to plain chat completion if web tool/model is unavailable.
-                pass
+            country = _infer_web_search_country(prompt)
+            tool_cfg: dict[str, Any] = {"type": "web_search_preview"}
+            if country:
+                tool_cfg["user_location"] = {
+                    "type": "approximate",
+                    "country": country,
+                }
+            web_exc: BaseException | None = None
+            for attempt in range(3):
+                try:
+                    response = client.responses.create(
+                        model=OPENAI_WEB_SEARCH_MODEL,
+                        input=prompt,
+                        tools=[tool_cfg],
+                        tool_choice="auto",
+                    )
+                    text = (getattr(response, "output_text", "") or "").strip()
+                    if text:
+                        citations = _extract_openai_response_citation_urls(response)
+                        return f"{text}{_format_sources_tail(citations)}"
+                    break
+                except Exception as exc:
+                    web_exc = exc
+                    if attempt < 2 and _openai_error_looks_transient(exc):
+                        time.sleep(1.2 * (attempt + 1))
+                        continue
+                    break
+            if OPENAI_REQUIRE_WEB_SEARCH and web_exc is not None and not _openai_error_looks_transient(web_exc):
+                return f"[ChatGPT web-search required but unavailable: {web_exc}]"
+            # Transient failures / empty output: fall through to chat completions (grounding layer may still apply).
+            pass
 
         if cfg.get("provider") == "anthropic":
             response = client.messages.create(
@@ -518,9 +560,30 @@ def chat(
         try:
             response = client.chat.completions.create(**completion_kwargs)
         except Exception as exc:
+            exc_text = str(exc).lower()
+            if engine == "gemini" and (
+                "not_found" in exc_text
+                or "not found" in exc_text
+                or "is not found" in exc_text
+                or "not supported for generatecontent" in exc_text
+            ):
+                current_model = str(completion_kwargs.get("model") or "")
+                last_exc = exc
+                for fallback_model in dict.fromkeys(GEMINI_FALLBACK_MODELS):
+                    if fallback_model == current_model:
+                        continue
+                    try:
+                        completion_kwargs["model"] = fallback_model
+                        response = client.chat.completions.create(**completion_kwargs)
+                        cfg["model"] = fallback_model
+                        break
+                    except Exception as fallback_exc:
+                        last_exc = fallback_exc
+                else:
+                    raise last_exc
             # Older DeepSeek / self-hosted OpenAI-compatible servers may reject
             # response_format. Retry without it.
-            if "response_format" in str(exc).lower() and "response_format" in completion_kwargs:
+            elif "response_format" in exc_text and "response_format" in completion_kwargs:
                 completion_kwargs.pop("response_format", None)
                 response = client.chat.completions.create(**completion_kwargs)
             else:

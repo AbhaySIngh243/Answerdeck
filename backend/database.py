@@ -58,6 +58,8 @@ def init_db(app):
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
         "pool_pre_ping": True,
         "pool_recycle": 280,
+        "pool_size": 10,
+        "max_overflow": 20,
     }
 
     db.init_app(app)
@@ -89,6 +91,17 @@ def _ensure_runtime_schema(engine):
                 statements.append("ALTER TABLE analysis_jobs ADD COLUMN synthesis_json TEXT DEFAULT ''")
             if "drift_json" not in job_columns:
                 statements.append("ALTER TABLE analysis_jobs ADD COLUMN drift_json TEXT DEFAULT ''")
+
+        if "mentions" in inspector.get_table_names():
+            mention_columns = {col["name"] for col in inspector.get_columns("mentions")}
+            if "verbatim_sentence" not in mention_columns:
+                statements.append("ALTER TABLE mentions ADD COLUMN verbatim_sentence TEXT DEFAULT ''")
+            if "reason_stated" not in mention_columns:
+                statements.append("ALTER TABLE mentions ADD COLUMN reason_stated TEXT DEFAULT ''")
+            if "competitor_compared_to" not in mention_columns:
+                statements.append("ALTER TABLE mentions ADD COLUMN competitor_compared_to VARCHAR DEFAULT ''")
+            if "framing_adjectives" not in mention_columns:
+                statements.append("ALTER TABLE mentions ADD COLUMN framing_adjectives VARCHAR DEFAULT ''")
 
         if not statements:
             return

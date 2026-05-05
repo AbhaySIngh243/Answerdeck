@@ -28,7 +28,7 @@ const REGION_OPTIONS = [
 ];
 
 const initialForm = {
-  name: '', category: '', competitors: '', region: '', website_url: '',
+  name: '', category: '', region: '', website_url: '',
 };
 
 const container = {
@@ -101,9 +101,9 @@ const ProjectsView = () => {
 
   const handleCreateProject = (event) => {
     event.preventDefault();
-    const competitors = form.competitors.split(',').map((i) => i.trim()).filter(Boolean);
     createProjectMutation.mutate({
-      name: form.name, category: form.category, competitors,
+      name: form.name,
+      category: form.category,
       region: form.region, website_url: normalizeWebsiteUrl(form.website_url),
     });
   };
@@ -276,11 +276,6 @@ const ProjectsView = () => {
               <div className="col-span-2">
                 <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Website URL</label>
                 <Input value={form.website_url} onChange={(e) => updateField('website_url', e.target.value)} placeholder="example.com" />
-              </div>
-              <div className="col-span-2">
-                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Competitors</label>
-                <Input value={form.competitors} onChange={(e) => updateField('competitors', e.target.value)} placeholder="Brand A, Brand B, Brand C" />
-                <p className="mt-1.5 text-[10px] text-slate-400">Separate competitors with commas.</p>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3 pt-2">

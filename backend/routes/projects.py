@@ -90,7 +90,7 @@ def _default_onboarding(project: Project | None = None) -> dict:
                     "funnel_stage": "awareness",
                 },
                 "4": {
-                    "target_engines": ["chatgpt", "claude", "perplexity", "deepseek"],
+                    "target_engines": ["chatgpt", "claude", "perplexity", "gemini"],
                     "search_provider": "auto",
                 },
                 "5": {"acknowledged": False},
