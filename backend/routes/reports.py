@@ -33,10 +33,19 @@ from engine.execution_steps import (
     resolve_execution_card_for_domain,
 )
 from engine.perplexity_search import is_perplexity_search_enabled, search_web
+from engine.sample_gates import (
+    HIGH_CONFIDENCE_RESPONSES,
+    LOW_CONFIDENCE_RESPONSES,
+    MIN_QUERIES_FOR_RECURRING_ISSUES,
+    MIN_RESPONSES_FOR_AVG_RANK_PER_BRAND,
+    confidence_tier,
+    coverage_meta,
+)
 from exceptions import NotFoundError
 from models import (
     AnalysisJob,
     CompetitorFraming,
+    DisplacementRecord,
     Mention,
     Project,
     ProjectInsight,
@@ -973,15 +982,35 @@ def _build_prompt_rankings(project_id: int) -> list[dict]:
     return rows
 
 
-def _build_competitor_visibility(project_id: int) -> list[dict]:
-    """Aggregate mention-based visibility plus every configured competitor and the focus brand.
+def _percentile(values: list[float], pct: float) -> float | None:
+    """Linear-interpolated percentile in [0,100] for a list of floats; None if empty."""
+    if not values:
+        return None
+    sorted_vals = sorted(values)
+    if len(sorted_vals) == 1:
+        return round(sorted_vals[0], 2)
+    rank = (pct / 100.0) * (len(sorted_vals) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = rank - lo
+    return round(sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac, 2)
 
-    Previously only brands that already appeared in Mention rows were returned, so configured
-    competitors (e.g. Samsung) disappeared from the UI until the LLM happened to mention them.
+
+def _build_competitor_visibility(project_id: int) -> dict:
+    """Aggregate competitor visibility from real Mention rows with proper sample-size meta.
+
+    Returns a dict with both the rows and the coverage block so callers can decide
+    whether to surface or hide the table. Visibility is now computed against the
+    full (prompt x engine) cell count of the latest run — not against the number
+    of cells that happened to produce a response — so brands no longer hit 100%
+    just because every response happened to mention them. ``avg_rank`` is None
+    until a brand has at least ``MIN_RESPONSES_FOR_AVG_RANK_PER_BRAND`` ranked
+    samples, and ``quality_score`` is now returned with its sub-components and
+    is uncapped (callers may clamp for display if they want).
     """
     project = Project.query.get(project_id)
     if not project:
-        return []
+        return {"rows": [], "coverage": coverage_meta()}
 
     focus_brand = (project.name or "").strip()
     configured = [str(c).strip() for c in project.get_competitors_list() if c and str(c).strip()]
@@ -1007,50 +1036,95 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
     prompts = Prompt.query.filter_by(project_id=project_id).all()
     prompt_ids = [p.id for p in prompts]
 
+    responses_by_prompt: dict[int, list[Response]] = {}
     considered_response_ids: set[int] = set()
+    engines_seen: set[str] = set()
+    response_meta: dict[int, dict] = {}
     for prompt_id in prompt_ids:
-        considered_response_ids.update(r.id for r in _latest_responses_by_prompt(prompt_id))
+        latest = _latest_responses_by_prompt(prompt_id)
+        responses_by_prompt[prompt_id] = latest
+        for r in latest:
+            considered_response_ids.add(r.id)
+            engine_key = (r.engine or "").strip().lower()
+            if engine_key:
+                engines_seen.add(engine_key)
+            response_meta[r.id] = {"prompt_id": prompt_id, "engine": engine_key}
 
-    # If no prompt analysis responses exist yet, avoid synthesizing placeholder
-    # competitor scores from configured names only.
-    if not considered_response_ids:
-        return []
-
-    # Canonical key = lowercased brand; preserve a human-readable label
-    grouped: dict[str, dict] = defaultdict(
-        lambda: {"mentions": 0, "response_ids": set(), "ranks": [], "sentiments": [], "any_focus_mention": False, "label": ""}
+    cov = coverage_meta(
+        n_prompts=len(prompts),
+        n_engines=len(engines_seen),
+        n_responses=len(considered_response_ids),
+        n_queries_with_responses=sum(1 for rs in responses_by_prompt.values() if rs),
     )
 
-    if considered_response_ids:
-        mentions = Mention.query.filter(Mention.response_id.in_(considered_response_ids)).all()
-        for mention in mentions:
-            raw = (mention.brand or "").strip()
-            if not raw or is_spurious_brand_mention(raw):
-                continue
-            if _looks_like_channel_noise(raw, mention.context or ""):
-                continue
-            if _looks_like_spec_phrase(raw):
-                continue
-            canonical = alias_reverse.get(raw.lower(), raw)
-            key = canonical.lower()
-            g = grouped[key]
-            g["mentions"] += 1
-            g["response_ids"].add(mention.response_id)
-            g["any_focus_mention"] = g["any_focus_mention"] or bool(mention.is_focus)
-            g["sentiments"].append(mention.sentiment or "neutral")
-            if mention.rank is not None:
-                g["ranks"].append(float(mention.rank))
-            if not g["label"]:
-                g["label"] = canonical
+    if not considered_response_ids:
+        return {"rows": [], "coverage": cov}
 
-    total_responses = max(1, len(considered_response_ids))
+    # Right denominator: total cells = sum across prompts of (engines that produced
+    # a response for THAT prompt). This avoids penalizing a brand for engines that
+    # were never queried for a particular prompt while still preventing the
+    # forced-100% degenerate case from a single high-recall response.
+    total_cells = max(1, len(considered_response_ids))
+
+    grouped: dict[str, dict] = defaultdict(
+        lambda: {
+            "mentions": 0,
+            "response_ids": set(),
+            "prompt_ids": set(),
+            "engines": set(),
+            "ranks": [],
+            "sentiments": [],
+            "any_focus_mention": False,
+            "label": "",
+            "per_engine": defaultdict(
+                lambda: {"mentions": 0, "response_ids": set(), "prompt_ids": set(), "ranks": [], "sentiments": []}
+            ),
+        }
+    )
+
+    mentions = Mention.query.filter(Mention.response_id.in_(considered_response_ids)).all()
+    for mention in mentions:
+        raw = (mention.brand or "").strip()
+        if not raw or is_spurious_brand_mention(raw):
+            continue
+        if _looks_like_channel_noise(raw, mention.context or ""):
+            continue
+        if _looks_like_spec_phrase(raw):
+            continue
+        canonical = alias_reverse.get(raw.lower(), raw)
+        key = canonical.lower()
+        g = grouped[key]
+        meta = response_meta.get(mention.response_id, {})
+        engine_key = meta.get("engine") or ""
+        prompt_id = meta.get("prompt_id")
+        g["mentions"] += 1
+        g["response_ids"].add(mention.response_id)
+        if prompt_id is not None:
+            g["prompt_ids"].add(prompt_id)
+        if engine_key:
+            g["engines"].add(engine_key)
+        g["any_focus_mention"] = g["any_focus_mention"] or bool(mention.is_focus)
+        sentiment = mention.sentiment or "neutral"
+        g["sentiments"].append(sentiment)
+        if mention.rank is not None:
+            g["ranks"].append(float(mention.rank))
+        if not g["label"]:
+            g["label"] = canonical
+        if engine_key:
+            pe = g["per_engine"][engine_key]
+            pe["mentions"] += 1
+            pe["response_ids"].add(mention.response_id)
+            if prompt_id is not None:
+                pe["prompt_ids"].add(prompt_id)
+            pe["sentiments"].append(sentiment)
+            if mention.rank is not None:
+                pe["ranks"].append(float(mention.rank))
 
     def display_label(key_lower: str, fallback: str) -> str:
         if key_lower in grouped and grouped[key_lower]["label"]:
             return grouped[key_lower]["label"]
         return fallback
 
-    # Ordered list of (key_lower, display_name) — focus first, then configured, then any extra mention-only brands
     ordered: list[tuple[str, str]] = []
     seen: set[str] = set()
 
@@ -1068,7 +1142,7 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
         add_brand(focus_brand)
     for c in configured:
         add_brand(c)
-    min_extra_mentions = 2 if total_responses >= 4 else 1
+    min_extra_mentions = 2 if total_cells >= 4 else 1
     for kl in sorted(grouped.keys()):
         if kl not in seen:
             g = grouped[kl]
@@ -1080,33 +1154,87 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
             seen.add(kl)
             ordered.append((kl, label))
 
+    # Engine-level cell counts for per-engine visibility denominators.
+    engine_cell_counts: dict[str, int] = defaultdict(int)
+    for meta in response_meta.values():
+        ek = meta.get("engine") or ""
+        if ek:
+            engine_cell_counts[ek] += 1
+
     rows: list[dict] = []
     for key_lower, brand_label in ordered:
         row = grouped[key_lower]
-        mention_rate = len(row["response_ids"]) / total_responses
-        rank_bonus = 0.0
-        if row["ranks"]:
-            avg_r = sum(row["ranks"]) / len(row["ranks"])
-            rank_bonus = max(0, 30 - (avg_r - 1) * 5)
+        n_cells_with_brand = len(row["response_ids"])
+        mention_rate = n_cells_with_brand / total_cells
+
+        ranks = row["ranks"]
+        rank_samples = len(ranks)
+        has_min_rank = rank_samples >= MIN_RESPONSES_FOR_AVG_RANK_PER_BRAND
+        avg_rank_value = sum(ranks) / rank_samples if rank_samples else None
+        avg_rank_display = round(avg_rank_value, 2) if has_min_rank and avg_rank_value is not None else None
+
+        rank_p25 = _percentile(ranks, 25) if has_min_rank else None
+        rank_p75 = _percentile(ranks, 75) if has_min_rank else None
+
         positive = row["sentiments"].count("positive")
         negative = row["sentiments"].count("negative")
-        sentiment_bonus = ((positive - negative) / len(row["sentiments"])) * 10 + 10 if row["sentiments"] else 0
+        sentiments_n = len(row["sentiments"])
+        sentiment_bonus = ((positive - negative) / sentiments_n) * 10 + 10 if sentiments_n else 0
+        rank_bonus = 0.0
+        if has_min_rank and avg_rank_value is not None:
+            rank_bonus = max(0.0, 30 - (avg_rank_value - 1) * 5)
 
-        quality_score = min(100, mention_rate * 60 + rank_bonus + max(0, sentiment_bonus))
+        mention_rate_score = round(mention_rate * 60, 2)
+        rank_score = round(rank_bonus, 2)
+        sentiment_score = round(max(0.0, sentiment_bonus), 2)
+        quality_score_raw = mention_rate_score + rank_score + sentiment_score
         visibility_pct = round(mention_rate * 100, 1)
 
         is_focus = key_lower == focus_lower if focus_lower else bool(row["any_focus_mention"])
+
+        per_engine_out: dict[str, dict] = {}
+        for engine_key, pe in row["per_engine"].items():
+            denom = max(1, engine_cell_counts.get(engine_key, 0))
+            pe_rate = len(pe["response_ids"]) / denom
+            pe_rank_samples = len(pe["ranks"])
+            pe_avg_rank = (
+                round(sum(pe["ranks"]) / pe_rank_samples, 2)
+                if pe_rank_samples >= MIN_RESPONSES_FOR_AVG_RANK_PER_BRAND
+                else None
+            )
+            per_engine_out[engine_key] = {
+                "engine": engine_key,
+                "visibility_pct": round(pe_rate * 100, 1),
+                "mentions": int(pe["mentions"]),
+                "n_responses_with_brand": len(pe["response_ids"]),
+                "n_engine_cells": denom,
+                "avg_rank": pe_avg_rank,
+                "rank_samples": pe_rank_samples,
+            }
 
         rows.append(
             {
                 "brand": brand_label,
                 "visibility_pct": visibility_pct,
-                "quality_score": round(quality_score, 1),
-                "visibility_score": round(quality_score, 1),  # Backward compatibility
+                "quality_score": round(quality_score_raw, 1),
+                "visibility_score": round(quality_score_raw, 1),  # Backward compatibility
+                "quality_components": {
+                    "mention_rate_score": mention_rate_score,
+                    "rank_score": rank_score,
+                    "sentiment_score": sentiment_score,
+                    "n_supporting": n_cells_with_brand,
+                },
                 "mentions": row["mentions"],
-                "avg_rank": round(sum(row["ranks"]) / len(row["ranks"]), 2) if row["ranks"] else None,
+                "n_responses_with_brand": n_cells_with_brand,
+                "n_prompts_with_brand": len(row["prompt_ids"]),
+                "n_engines_with_brand": len(row["engines"]),
+                "rank_samples": rank_samples,
+                "avg_rank": avg_rank_display,
+                "rank_p25": rank_p25,
+                "rank_p75": rank_p75,
                 "is_focus": is_focus,
                 "is_target_competitor": key_lower in configured_lower and key_lower != focus_lower,
+                "per_engine": per_engine_out,
             }
         )
 
@@ -1135,7 +1263,7 @@ def _build_competitor_visibility(project_id: int) -> list[dict]:
         seen_brands.add(brand_key)
         merged.append(row)
 
-    return merged[:20]
+    return {"rows": merged[:20], "coverage": cov}
 
 
 def _project_website_host(website_url: str) -> str:
@@ -1192,6 +1320,231 @@ def _compute_official_site_cited_stats(project_id: int, website_url: str) -> dic
         "official_site_cited_pct": pct,
         "official_site_cited_count": cited,
         "official_site_responses_total": total,
+    }
+
+
+def _response_cites_competitor_named_domain(response: Response, competitors_normalized: list[str]) -> bool:
+    """True if any citation hostname contains a configured competitor substring (≥3 chars)."""
+    candidates = [
+        str(c or "").strip().lower()
+        for c in competitors_normalized
+        if str(c or "").strip() and len(re.sub(r"[^a-z0-9]", "", str(c).lower())) >= 3
+    ]
+    if not candidates:
+        return False
+    for source in _parse_sources(response.sources):
+        if not isinstance(source, str):
+            continue
+        normalized = _normalize_source_url(source.strip())
+        if not normalized:
+            continue
+        domain = _domain_from_url(normalized)
+        if not domain:
+            continue
+        d_low = domain.lower()
+        if any(slug in d_low for slug in candidates):
+            return True
+    return False
+
+
+def _classify_domain_signal(domain: str, brand_host: str, competitors_normalized: list[str]) -> str:
+    if brand_host and _host_is_under_base(domain, brand_host):
+        return "brand_owned"
+    d_low = (domain or "").lower()
+    for slug in competitors_normalized:
+        if slug and slug in d_low:
+            return "competitor_named"
+    return "other"
+
+
+def _displacement_citation_domains_for_project(project_id: int, limit: int = 40) -> list[dict[str, Any]]:
+    prompt_ids = [p.id for p in Prompt.query.filter_by(project_id=project_id).all()]
+    if not prompt_ids:
+        return []
+    rows = (
+        DisplacementRecord.query.filter(
+            DisplacementRecord.prompt_id.in_(prompt_ids),
+            DisplacementRecord.cited_url != "",
+            DisplacementRecord.cited_url.isnot(None),
+        )
+        .order_by(DisplacementRecord.timestamp.desc())
+        .limit(500)
+        .all()
+    )
+    counts: dict[str, int] = defaultdict(int)
+    competitor_by_domain: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for row in rows:
+        dom = _domain_from_url(row.cited_url)
+        if not dom:
+            continue
+        counts[dom] += 1
+        competitor_by_domain[dom][str(row.competitor_brand or "").strip()] += 1
+    ranked = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:limit]
+    out = []
+    for dom, cnt in ranked:
+        comp_dist = competitor_by_domain.get(dom, {})
+        top_comp = max(comp_dist.keys(), key=lambda k: comp_dist[k]) if comp_dist else ""
+        out.append(
+            {
+                "domain": dom,
+                "displacement_links": cnt,
+                "top_competitor_on_domain": top_comp,
+            }
+        )
+    return out
+
+
+def _build_citation_economics_payload(project_id: int, user_id: str) -> dict[str, Any]:
+    """Aggregate citation vs non-citation for focus-brand responses, keyed by measured engine."""
+    project = Project.query.filter_by(id=project_id, user_id=user_id).first()
+    if not project:
+        raise NotFoundError("Project not found")
+
+    brand_host = _project_website_host(project.website_url or "")
+    competitors_norm = []
+    for c in project.get_competitors_list():
+        slug = str(c or "").strip().lower()
+        slug_compact = re.sub(r"[^a-z0-9]", "", slug)
+        if slug_compact:
+            competitors_norm.append(slug_compact)
+
+    latest = _latest_project_responses(project_id)
+    rid_focus: set[int] = set()
+    if latest:
+        for m in Mention.query.filter(
+            Mention.response_id.in_([r.id for r in latest]),
+            Mention.is_focus.is_(True),
+        ).all():
+            rid_focus.add(m.response_id)
+
+    domain_counts: dict[str, int] = defaultdict(int)
+    domain_signals: dict[str, str] = {}
+    citation_url_occurrences = 0
+
+    by_engine: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "responses_measured": 0,
+            "focus_mentions": 0,
+            "focus_with_any_source_url": 0,
+            "focus_without_source_url": 0,
+            "focus_with_brand_domain_citation": 0,
+            "focus_with_competitor_named_domain": 0,
+        }
+    )
+    rollup = {
+        "responses_measured": 0,
+        "focus_mentions": 0,
+        "focus_with_any_source_url": 0,
+        "focus_without_source_url": 0,
+        "focus_with_brand_domain_citation": 0,
+        "focus_with_competitor_named_domain": 0,
+    }
+
+    for response in latest:
+        if not _is_analysis_engine(response.engine):
+            continue
+        engine = response.engine
+        counts = by_engine[engine]
+        counts["responses_measured"] += 1
+        rollup["responses_measured"] += 1
+
+        sources = _parse_sources(response.sources)
+        has_urls = len(sources) > 0
+
+        if has_urls:
+            for source in sources:
+                if not isinstance(source, str):
+                    continue
+                nu = _normalize_source_url(source.strip())
+                dom = _domain_from_url(nu) if nu else ""
+                if not dom:
+                    continue
+                citation_url_occurrences += 1
+                domain_counts[dom] += 1
+                domain_signals.setdefault(dom, _classify_domain_signal(dom, brand_host, competitors_norm))
+
+        if response.id not in rid_focus:
+            continue
+        counts["focus_mentions"] += 1
+        rollup["focus_mentions"] += 1
+        cites_brand = _response_cites_project_domain(response, brand_host)
+        cites_comp = _response_cites_competitor_named_domain(response, competitors_norm)
+        if has_urls:
+            counts["focus_with_any_source_url"] += 1
+            rollup["focus_with_any_source_url"] += 1
+            if cites_brand:
+                counts["focus_with_brand_domain_citation"] += 1
+                rollup["focus_with_brand_domain_citation"] += 1
+            if cites_comp:
+                counts["focus_with_competitor_named_domain"] += 1
+                rollup["focus_with_competitor_named_domain"] += 1
+        else:
+            counts["focus_without_source_url"] += 1
+            rollup["focus_without_source_url"] += 1
+
+    top_domains_payload = sorted(domain_counts.items(), key=lambda item: item[1], reverse=True)[:25]
+    total_dom_weight = sum(c for _, c in top_domains_payload) or 1
+    hhi = round(sum((cnt / total_dom_weight) ** 2 for _, cnt in top_domains_payload), 3)
+
+    domain_kpis_rows = []
+    for dom, cnt in top_domains_payload:
+        signal = domain_signals.get(dom, "other")
+        domain_kpis_rows.append(
+            {
+                "domain": dom,
+                "citation_occurrences": cnt,
+                "share_of_measured_urls": round((cnt / citation_url_occurrences) * 100, 1)
+                if citation_url_occurrences
+                else 0.0,
+                "signal": signal,
+            }
+        )
+
+    signal_buckets = defaultdict(int)
+    for dom, cnt in domain_counts.items():
+        signal_buckets[domain_signals.get(dom, _classify_domain_signal(dom, brand_host, competitors_norm))] += cnt
+
+    engine_rows = []
+    for engine, row in sorted(by_engine.items()):
+        fm = row["focus_mentions"] or 0
+        engine_rows.append(
+            {
+                "engine": engine,
+                "responses_measured": row["responses_measured"],
+                "focus_mentions": fm,
+                "focus_cited_pct": round((row["focus_with_any_source_url"] / fm) * 100, 1)
+                if fm
+                else 0.0,
+                "focus_uncited_pct": round((row["focus_without_source_url"] / fm) * 100, 1)
+                if fm
+                else 0.0,
+                "focus_with_any_source_url": row["focus_with_any_source_url"],
+                "focus_without_source_url": row["focus_without_source_url"],
+                "focus_with_brand_domain_citation": row["focus_with_brand_domain_citation"],
+                "focus_with_competitor_named_domain": row["focus_with_competitor_named_domain"],
+            }
+        )
+
+    displacement_domains = _displacement_citation_domains_for_project(project_id)
+
+    official = _compute_official_site_cited_stats(project_id, project.website_url or "")
+
+    return {
+        "project_id": project_id,
+        "scope": "latest_response_per_prompt_per_engine",
+        "brand_registered_host": brand_host,
+        "competitors_profiled": len(project.get_competitors_list()),
+        "rollup_focus_mentions": rollup,
+        "official_site_alignment": official,
+        "by_engine": engine_rows,
+        "domain_kpis": {
+            "measured_unique_domains": len(domain_counts),
+            "measured_source_url_occurrences": citation_url_occurrences,
+            "hhi_top25": hhi,
+            "signal_counts": dict(signal_buckets),
+            "top_domains": domain_kpis_rows,
+        },
+        "displacement_citation_domains": displacement_domains,
     }
 
 
@@ -1299,7 +1652,8 @@ def _build_competitor_visibility_trend(
         return {"brands": [], "series": []}
 
     # Choose competitors based on current aggregate visibility table.
-    comp_rows = _build_competitor_visibility(project_id)
+    comp_bundle = _build_competitor_visibility(project_id)
+    comp_rows = comp_bundle.get("rows", []) if isinstance(comp_bundle, dict) else (comp_bundle or [])
     competitor_names = [
         str(r.get("brand") or "").strip()
         for r in comp_rows
@@ -1483,7 +1837,9 @@ def _build_dashboard_payload(project_id: int) -> dict:
     official_site_stats = _compute_official_site_cited_stats(project_id, project.website_url or "")
 
     prompt_rankings = _build_prompt_rankings(project_id)
-    competitors = _build_competitor_visibility(project_id)
+    competitor_bundle = _build_competitor_visibility(project_id)
+    competitors = competitor_bundle.get("rows", []) if isinstance(competitor_bundle, dict) else (competitor_bundle or [])
+    dashboard_coverage = competitor_bundle.get("coverage") if isinstance(competitor_bundle, dict) else None
     engine_visibility = _build_engine_focus_visibility(project_id)
     competitor_visibility_trend = _build_competitor_visibility_trend(project_id, days=30, competitor_limit=3)
     raw_project_responses, _raw_by_prompt = _project_raw_response_context(project_id)
@@ -1534,6 +1890,7 @@ def _build_dashboard_payload(project_id: int) -> dict:
             "generated_at": insight.generated_at if insight else "",
         },
         "context_state": context_state,
+        "coverage": dashboard_coverage,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1645,6 +2002,7 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
                 "llm": llm,
                 "mention_rate": mention_rate,
                 "avg_rank": avg_rank,
+                "response_count": int(summary["responses"]),
                 "positive": summary["positive"],
                 "neutral": summary["neutral"],
                 "negative": summary["negative"],
@@ -1671,16 +2029,59 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
 
     search_intel = {"enabled": is_perplexity_search_enabled(), "domains": [], "queries": []}
     if search_intel["enabled"]:
-        candidate_queries = []
-        candidate_queries.extend(missing_prompts[:3])
-        if not candidate_queries:
-            candidate_queries.extend([row["prompt_text"] for row in prompt_rows[:3]])
+        # Cross-query aggregation: build maps of domain -> evidence so each entry
+        # carries n_queries and n_engines (which is what makes the Pinpointed
+        # Retrieval Points list meaningful instead of "all 5 cite the same prompt").
+        url_evidence: dict[str, dict[str, Any]] = {}
+        domain_evidence: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {"queries": set(), "engines": set(), "n_citations": 0}
+        )
 
-        domain_counts: dict[str, int] = defaultdict(int)
-        query_rows = []
+        # Iterate ALL prompts with persisted research, not just 3 candidate queries.
+        for p in prompts:
+            r_resp = _latest_research_response(p.id)
+            if not r_resp:
+                continue
+            engine_label = (r_resp.engine or "").replace("_research", "").strip().lower() or "research"
+            try:
+                r_data = json.loads(r_resp.response_text)
+            except Exception:
+                continue
+            for src in (r_data.get("sources") or [])[:10]:
+                url = str(src.get("url") or "").strip()
+                if not url:
+                    continue
+                domain = (src.get("domain") or _domain_from_url(url) or "").lower().replace("www.", "")
+                title = str(src.get("title") or "").strip()
+                bucket = url_evidence.setdefault(
+                    url,
+                    {
+                        "url": url,
+                        "domain": domain,
+                        "title": title,
+                        "queries": set(),
+                        "engines": set(),
+                    },
+                )
+                bucket["queries"].add(p.prompt_text)
+                bucket["engines"].add(engine_label)
+                if not bucket["title"] and title:
+                    bucket["title"] = title
+                if domain:
+                    de = domain_evidence[domain]
+                    de["queries"].add(p.prompt_text)
+                    de["engines"].add(engine_label)
+                    de["n_citations"] += 1
+
+        # Optional live-search supplementation (kept short; main signal is persisted research).
+        live_query_rows: list[dict] = []
+        live_domain_counts: dict[str, dict[str, set | int]] = defaultdict(
+            lambda: {"queries": set(), "engines": set(), "n_citations": 0}
+        )
+        candidate_queries = list(missing_prompts[:3]) or [row["prompt_text"] for row in prompt_rows[:3]]
         for query in candidate_queries[:3]:
             result = search_web(query=query, max_results=5, max_tokens_per_page=320)
-            query_rows.append(
+            live_query_rows.append(
                 {
                     "query": query,
                     "ok": result.get("ok", False),
@@ -1688,53 +2089,76 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
                 }
             )
             for item in result.get("results", []):
-                domain = _domain_from_url(item.get("url", ""))
+                domain = (_domain_from_url(item.get("url", "")) or "").lower().replace("www.", "")
                 if domain:
-                    domain_counts[domain] += 1
+                    live_domain_counts[domain]["queries"].add(query)
+                    live_domain_counts[domain]["engines"].add("live")
+                    live_domain_counts[domain]["n_citations"] += 1
 
-        search_intel["retrieval_points"] = []
-        for query in candidate_queries[:3]:
-            # Try to fetch from persisted research if possible
-            p = Prompt.query.filter_by(project_id=project_id, prompt_text=query).first()
-            if p:
-                r_resp = _latest_research_response(p.id)
-                if r_resp:
-                    try:
-                        r_data = json.loads(r_resp.response_text)
-                        for src in r_data.get("sources", [])[:5]:
-                            search_intel["retrieval_points"].append({
-                                "domain": src.get("domain"),
-                                "title": src.get("title"),
-                                "url": src.get("url"),
-                                "query": query
-                            })
-                    except Exception:
-                        pass
+        # Merge live counts into the persisted domain map so the UI sees both signals.
+        for dom, info in live_domain_counts.items():
+            target = domain_evidence[dom]
+            target["queries"] |= info["queries"]
+            target["engines"] |= info["engines"]
+            target["n_citations"] += int(info["n_citations"])
 
-        if search_intel["retrieval_points"]:
-            deduped_points = []
-            seen_points = set()
-            for point in search_intel["retrieval_points"]:
-                key = (
-                    str(point.get("url") or "").strip(),
-                    str(point.get("query") or "").strip().lower(),
-                    str(point.get("title") or "").strip().lower(),
-                )
-                if key in seen_points:
-                    continue
-                seen_points.add(key)
-                deduped_points.append(point)
-            search_intel["retrieval_points"] = deduped_points[:15]
+        # Materialize retrieval points sorted by cross-query strength.
+        retrieval_points = []
+        for url, bucket in url_evidence.items():
+            retrieval_points.append(
+                {
+                    "url": url,
+                    "domain": bucket["domain"],
+                    "title": bucket["title"] or url,
+                    "cited_for_queries": sorted(bucket["queries"]),
+                    "n_queries": len(bucket["queries"]),
+                    "n_engines": len(bucket["engines"]),
+                    "engines": sorted(bucket["engines"]),
+                    "query": next(iter(sorted(bucket["queries"])), ""),  # backward-compat
+                }
+            )
+        retrieval_points.sort(
+            key=lambda item: (item["n_queries"], item["n_engines"], item["title"].lower()),
+            reverse=True,
+        )
 
-        search_intel["domains"] = [
-            {"domain": domain, "count": count}
-            for domain, count in sorted(domain_counts.items(), key=lambda item: item[1], reverse=True)[:10]
-        ]
-        search_intel["queries"] = query_rows
+        # Materialize domains sorted by cross-query reach first, then total citations.
+        domains_out = []
+        for domain, info in domain_evidence.items():
+            domains_out.append(
+                {
+                    "domain": domain,
+                    "n_citations": int(info["n_citations"]),
+                    "n_queries": len(info["queries"]),
+                    "n_engines": len(info["engines"]),
+                    "count": int(info["n_citations"]),  # backward-compat
+                }
+            )
+        domains_out.sort(
+            key=lambda item: (item["n_queries"], item["n_engines"], item["n_citations"]),
+            reverse=True,
+        )
+
+        search_intel["retrieval_points"] = retrieval_points[:15]
+        search_intel["domains"] = domains_out[:10]
+        search_intel["queries"] = live_query_rows
 
     project_synthesis = _build_project_synthesis_summary(project_id, project.user_id)
     raw_project_responses, _raw_by_prompt = _project_raw_response_context(project_id)
     competitor_framings = _project_competitor_framings(project_id)
+
+    engines_seen_set: set[str] = set()
+    for r in all_latest_responses:
+        eng_key = (r.engine or "").strip().lower()
+        if eng_key:
+            engines_seen_set.add(eng_key)
+    deep_coverage = coverage_meta(
+        n_prompts=len(prompts),
+        n_engines=len(engines_seen_set),
+        n_responses=len(all_latest_responses),
+        n_queries_with_responses=sum(1 for rs in responses_by_prompt.values() if rs),
+    )
+
     action_plan = generate_strategic_action_plan(
         focus_brand=project.name,
         project_name=project.name,
@@ -1745,6 +2169,8 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
         synthesis=project_synthesis,
         raw_responses=raw_project_responses,
         competitor_framings=competitor_framings,
+        n_responses=deep_coverage["n_responses"],
+        n_engines=deep_coverage["n_engines"],
     )
     context_state = _project_context_state(project)
 
@@ -1758,6 +2184,7 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
         "missing_prompts": missing_prompts,
         "action_plan": action_plan,
         "context_state": context_state,
+        "coverage": deep_coverage,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1784,6 +2211,14 @@ def get_project_intel_summary(project_id):
     prompt_rankings = dashboard.get("prompt_rankings", [])
     analyzed_prompt_count = sum(1 for row in prompt_rankings if (row.get("engines_analyzed") or 0) > 0)
 
+    coverage = dashboard.get("coverage") or coverage_meta()
+    n_responses = int((coverage or {}).get("n_responses") or 0)
+    tracked_prompts = [
+        str(row.get("prompt_text") or "").strip()
+        for row in prompt_rankings
+        if row.get("prompt_text")
+    ]
+
     if analyzed_prompt_count == 0:
         return jsonify(
             {
@@ -1793,13 +2228,16 @@ def get_project_intel_summary(project_id):
                 "competitive_threats": [],
                 "top_priority_prompts": [],
                 "has_data": False,
+                "coverage": coverage,
             }
         )
 
     project_meta = {
         "name": project.name,
         "category": project.category,
-        "region": project.region
+        "region": project.region,
+        "n_responses": n_responses,
+        "tracked_prompts": tracked_prompts,
     }
     computed_health = _compute_overall_health(prompt_rankings)
     summary = generate_project_summary(project.name, project_meta, prompt_rankings)
@@ -1809,6 +2247,7 @@ def get_project_intel_summary(project_id):
         summary = {}
     summary["overall_health"] = computed_health
     summary["has_data"] = True
+    summary["coverage"] = coverage
     return jsonify(summary)
 
 
@@ -1819,13 +2258,29 @@ def get_project_global_audit(project_id):
 
     prompts = Prompt.query.filter_by(project_id=project_id).all()
     all_raw_responses: dict[str, dict[str, str]] = {}
+    engines_seen: set[str] = set()
+    n_responses = 0
     for p in prompts:
         raw = _raw_responses_for_prompt(p.id, limit=4)
         if raw:
             all_raw_responses[p.prompt_text] = raw
+            for eng, text in raw.items():
+                if text:
+                    n_responses += 1
+                    engines_seen.add((eng or "").strip().lower())
+
+    cov = coverage_meta(
+        n_prompts=len(prompts),
+        n_engines=len(engines_seen),
+        n_responses=n_responses,
+        n_queries_with_responses=len(all_raw_responses),
+    )
+
+    if len(all_raw_responses) < MIN_QUERIES_FOR_RECURRING_ISSUES:
+        return jsonify({"items": [], "coverage": cov, "has_data": False})
 
     global_audit = generate_global_audit(project.name, all_raw_responses, _project_competitor_framings(project_id))
-    return jsonify(global_audit)
+    return jsonify({"items": global_audit, "coverage": cov, "has_data": True})
 
 
 @reports_bp.route("/project/<int:project_id>/actions/playbook", methods=["POST"])
@@ -2169,30 +2624,64 @@ def sources_intelligence(project_id):
     )
 
 
+@reports_bp.route("/project/<int:project_id>/citation-economics", methods=["GET"])
+@require_auth
+def citation_economics(project_id):
+    return jsonify(_build_citation_economics_payload(project_id, g.user.id))
+
+
 @reports_bp.route("/project/<int:project_id>/competitors", methods=["GET"])
 @require_auth
 def competitor_table(project_id):
     project = _get_project_for_user(project_id)
-    competitors = _build_competitor_visibility(project_id)
-    total = sum(item["visibility_pct"] for item in competitors) or 1
+    bundle = _build_competitor_visibility(project_id)
+    competitors = bundle.get("rows", []) if isinstance(bundle, dict) else (bundle or [])
+    cov = bundle.get("coverage") if isinstance(bundle, dict) else coverage_meta()
+
+    # Share-of-voice = brand mention events / total mention events. Unlike the
+    # old forced-normalized visibility ratio, this is NOT guaranteed to spread
+    # equally across brands when everyone has hit max visibility.
+    mention_totals = sum(int(item.get("mentions") or 0) for item in competitors)
     table = []
     for item in competitors:
+        mentions = int(item.get("mentions") or 0)
+        share = round((mentions / mention_totals) * 100, 2) if mention_totals else None
+        avg_rank = item.get("avg_rank")
+        rank_score = None
+        if avg_rank is not None:
+            rank_score = max(0.0, min(100.0, round(100 - (float(avg_rank) * 8), 1)))
         table.append(
             {
                 "brand": item["brand"],
-                "ai_share": round((item["visibility_pct"] / total) * 100, 2),
+                "ai_share": share,
+                "share_of_voice": share,
                 "visibility_pct": item["visibility_pct"],
                 "quality_score": item["quality_score"],
+                "quality_components": item.get("quality_components") or {},
                 "visibility": item["visibility_pct"],  # Backward compatibility
-                "avg_rank": item["avg_rank"],
-                "mentions": item["mentions"],
-                "rank_score": max(0, min(100, round(100 - ((item["avg_rank"] or 10) * 8), 1))),
+                "avg_rank": avg_rank,
+                "rank_p25": item.get("rank_p25"),
+                "rank_p75": item.get("rank_p75"),
+                "rank_samples": item.get("rank_samples", 0),
+                "mentions": mentions,
+                "n_responses_with_brand": item.get("n_responses_with_brand", 0),
+                "n_prompts_with_brand": item.get("n_prompts_with_brand", 0),
+                "n_engines_with_brand": item.get("n_engines_with_brand", 0),
+                "rank_score": rank_score,
                 "is_focus": item["is_focus"],
                 "is_target_competitor": item.get("is_target_competitor", False),
+                "per_engine": item.get("per_engine") or {},
             }
         )
 
-    return jsonify({"rows": table, "count": len(table), "context_state": _project_context_state(project)})
+    return jsonify(
+        {
+            "rows": table,
+            "count": len(table),
+            "coverage": cov,
+            "context_state": _project_context_state(project),
+        }
+    )
 
 
 @reports_bp.route("/overview", methods=["GET"])

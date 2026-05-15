@@ -53,9 +53,9 @@ export default function PromptPerformanceTable({ loading, rows, onViewAll }) {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
-      className="glass-card-v2 overflow-hidden"
+      className="overflow-hidden rounded-2xl border border-slate-200/60 bg-white shadow-sm"
     >
-      <div className="border-b border-slate-100/80 px-6 py-4">
+      <div className="border-b border-slate-100 px-6 py-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-500/10 text-violet-600">

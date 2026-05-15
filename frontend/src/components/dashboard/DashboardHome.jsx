@@ -20,7 +20,6 @@ import { useAuth } from '../../contexts/AuthContext';
 import { getDomainFromWebsiteUrl } from '../../lib/url';
 import DashboardCard from './DashboardCard';
 import StatsCard from './StatsCard';
-import { SkeletonStats } from './LoadingSkeleton';
 import { Button } from '../ui/button';
 
 function clerkDisplayName(u) {
@@ -46,6 +45,24 @@ const promptItem = {
   hidden: { opacity: 0, x: -8 },
   visible: { opacity: 1, x: 0 },
 };
+
+const setupSteps = [
+  {
+    step: 'Step 1',
+    title: 'Add your brand',
+    description: 'Enter your website and competitors',
+  },
+  {
+    step: 'Step 2',
+    title: 'Add queries',
+    description: 'Track the prompts your customers use',
+  },
+  {
+    step: 'Step 3',
+    title: 'See results',
+    description: 'Understand how AI answers mention you',
+  },
+];
 
 const DashboardHome = () => {
   const { user, loading: authLoading, isSignedIn } = useAuth();
@@ -124,6 +141,10 @@ const DashboardHome = () => {
     month: 'long',
     day: 'numeric',
   });
+  const hasDashboardError = Boolean(overviewError || projectsError);
+  const shouldShowSetupLoading = projectsLoading && projects.length === 0;
+  const shouldShowSetupHome =
+    !hasDashboardError && !projectsLoading && projects.length === 0;
 
   return (
     <motion.div
@@ -136,17 +157,19 @@ const DashboardHome = () => {
       <motion.div variants={item} className="flex items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            {greeting}
+            {shouldShowSetupHome ? 'Welcome to Answerdeck' : greeting}
           </h1>
           <p className="mt-1 text-sm text-slate-400">{today}</p>
         </div>
-        <Button
-          onClick={() => navigate('/dashboard/projects')}
-          className="hidden sm:inline-flex"
-        >
-          <Plus className="h-4 w-4" />
-          New Project
-        </Button>
+        {!shouldShowSetupHome && !shouldShowSetupLoading && (
+          <Button
+            onClick={() => navigate('/dashboard/projects')}
+            className="hidden sm:inline-flex"
+          >
+            <Plus className="h-4 w-4" />
+            New Project
+          </Button>
+        )}
       </motion.div>
 
       {(overviewError || projectsError) && (
@@ -177,9 +200,77 @@ const DashboardHome = () => {
         </motion.div>
       )}
 
+      {shouldShowSetupLoading && (
+        <motion.div
+          variants={item}
+          className="glass-card-v2 min-h-[360px] animate-pulse rounded-3xl p-8 sm:p-12"
+        >
+          <div className="mx-auto flex max-w-xl flex-col items-center text-center">
+            <div className="mb-8 h-20 w-20 rounded-3xl bg-slate-100" />
+            <div className="h-7 w-80 max-w-full rounded-lg bg-slate-100" />
+            <div className="mt-4 h-4 w-96 max-w-full rounded bg-slate-100" />
+            <div className="mt-8 h-11 w-48 rounded-xl bg-slate-100" />
+            <div className="mt-10 grid w-full grid-cols-1 gap-4 border-t border-slate-100 pt-6 sm:grid-cols-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="space-y-2">
+                  <div className="h-3 w-14 rounded bg-slate-100" />
+                  <div className="h-4 w-24 rounded bg-slate-100" />
+                  <div className="h-3 w-full rounded bg-slate-100" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {shouldShowSetupHome && (
+        <motion.div
+          variants={item}
+          className="glass-card-v2 overflow-hidden rounded-3xl px-6 py-12 text-center sm:px-10 sm:py-14 lg:px-16"
+        >
+          <div className="mx-auto flex max-w-3xl flex-col items-center">
+            <div className="mb-7 flex h-20 w-20 items-center justify-center rounded-3xl bg-brand-primary/10 text-brand-primary">
+              <Search className="h-9 w-9" />
+            </div>
+            <h2 className="max-w-2xl text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+              See how your brand shows up in AI answers
+            </h2>
+            <p className="mt-3 max-w-xl text-sm leading-6 text-slate-500 sm:text-base">
+              Track where you appear, where you do not, and why competitors are recommended instead.
+            </p>
+            <Button
+              onClick={() => navigate('/dashboard/projects?create=1')}
+              className="mt-7 shadow-lg shadow-brand-primary/20"
+            >
+              <Plus className="h-4 w-4" />
+              Create your first project
+            </Button>
+            <p className="mt-2 text-xs font-medium text-slate-400">Takes less than 2 minutes</p>
+
+            <div className="mt-10 grid w-full grid-cols-1 gap-5 border-t border-slate-200/60 pt-6 text-left sm:grid-cols-3">
+              {setupSteps.map((setupStep) => (
+                <div key={setupStep.step}>
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                    {setupStep.step}
+                  </p>
+                  <h3 className="mt-1 text-sm font-bold text-slate-800">{setupStep.title}</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">{setupStep.description}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {!shouldShowSetupLoading && !shouldShowSetupHome && (
+        <>
       {/* Stats row */}
       {overviewLoading || projectsLoading ? (
-        <SkeletonStats count={4} />
+        <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="h-24 animate-pulse rounded-2xl bg-white/70 shadow-sm ring-1 ring-slate-200/60" />
+          ))}
+        </div>
       ) : (
         <motion.div
           variants={container}
@@ -439,6 +530,8 @@ const DashboardHome = () => {
             </div>
           </DashboardCard>
         </motion.div>
+      )}
+        </>
       )}
     </motion.div>
   );

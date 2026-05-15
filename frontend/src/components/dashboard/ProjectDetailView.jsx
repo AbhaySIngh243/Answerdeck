@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -39,6 +39,7 @@ import PerformancePanel from './sections/PerformancePanel';
 import PromptPerformanceTable from './sections/PromptPerformanceTable';
 import CompetitorSnapshot from './sections/CompetitorSnapshot';
 import TopCitingSources from './sections/TopCitingSources';
+import CoverageBadge, { CoverageEmptyState, isInsufficient } from './sections/CoverageBadge';
 import { Button } from '../ui/button';
 
 const SECTION_IDS = [
@@ -50,7 +51,7 @@ const SECTION_IDS = [
   { id: 'opportunities', label: 'Opportunities', icon: Sparkles },
 ];
 
-const lbl = 'text-[11px] font-semibold uppercase tracking-wider text-slate-400';
+const lbl = 'text-[11px] font-semibold text-slate-400';
 
 function DataBadge({ type }) {
   if (type === 'measured') return <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-emerald-600"><span className="h-1 w-1 rounded-full bg-emerald-500" />Measured</span>;
@@ -131,12 +132,22 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
 
   const detailText = item.detail || (Array.isArray(item.action_plan) ? item.action_plan.join(' ') : '');
   const { prose, urls } = useMemo(() => splitProseAndUrls(detailText), [detailText]);
+  const isTemplated = String(item.source_type || '').toLowerCase() === 'templated';
+  const nResponsesSupporting = Number(item.n_responses_supporting || 0);
+  const nEnginesSupporting = Number(item.n_engines_supporting || 0);
+  const evidenceBasis = String(item.evidence_basis || '').trim();
+  const evidenceQuote = String(item.evidence_quote || '').trim();
 
   return (
     <div className="glass-card-v2 overflow-hidden transition-shadow hover:shadow-[0_8px_32px_rgba(15,23,42,0.08)]">
       <div className="p-5">
         <div className="mb-2 flex items-start justify-between gap-3">
-          <h4 className="text-[13px] font-semibold leading-snug text-slate-800">{item.title}</h4>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <h4 className="text-[13px] font-semibold leading-snug text-slate-800">{item.title}</h4>
+            {isTemplated && (
+              <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-500" title="Templated suggestion \u2014 not synthesized from a specific evidence cluster">Template</span>
+            )}
+          </div>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${item.priority === 'high' ? 'bg-red-50 text-red-500' : 'bg-brand-primary/10 text-brand-primary'}`}>
             {item.priority}
           </span>
@@ -148,11 +159,20 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
             {item.action_plan.slice(0, 4).map((step, idx) => <li key={`${idx}-${step}`}>{step}</li>)}
           </ul>
         )}
-        {(item.source_count || item.confidence) && (
+        {evidenceQuote && (
+          <blockquote className="mb-2 border-l-2 border-brand-primary/40 bg-slate-50/70 px-3 py-2 text-xs italic leading-relaxed text-slate-600">
+            &ldquo;{evidenceQuote}&rdquo;
+          </blockquote>
+        )}
+        {(evidenceBasis || nResponsesSupporting > 0 || item.source_count) && (
           <p className="mb-1 text-[10px] text-slate-400">
-            {item.source_count ? `${item.source_count} sources` : null}
-            {item.source_count && item.confidence ? ' · ' : null}
-            {item.confidence ? `${Math.round(Number(item.confidence) * 100)}% confidence` : null}
+            {evidenceBasis
+              ? evidenceBasis
+              : nResponsesSupporting > 0
+                ? `Based on ${nResponsesSupporting} answer${nResponsesSupporting === 1 ? '' : 's'}${nEnginesSupporting ? ` across ${nEnginesSupporting} engine${nEnginesSupporting === 1 ? '' : 's'}` : ''}`
+                : item.source_count
+                  ? `${item.source_count} sources`
+                  : null}
           </p>
         )}
         {urls.length > 0 && (
@@ -195,7 +215,7 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
             <div className="space-y-4 p-5">
               {playbook.why_it_matters && (
                 <div className="rounded-xl bg-brand-primary/5 border border-brand-primary/15 p-3.5">
-                  <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-brand-primary"><Lightbulb className="h-3 w-3" /> Why this matters</p>
+                  <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold text-brand-primary"><Lightbulb className="h-3 w-3" /> Why this matters</p>
                   <p className="text-xs leading-relaxed text-slate-700">{playbook.why_it_matters}</p>
                 </div>
               )}
@@ -222,13 +242,13 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
               </div>
               {toArray(playbook.quick_wins).length > 0 && (
                 <div>
-                  <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-600"><Zap className="h-3 w-3" /> Quick wins</p>
+                  <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-emerald-600"><Zap className="h-3 w-3" /> Quick wins</p>
                   <div className="space-y-2">{toArray(playbook.quick_wins).map((qw, qi) => (<div key={qi} className="rounded-xl bg-emerald-50 border border-emerald-100 px-3.5 py-2.5"><p className="mb-0.5 text-xs font-medium text-emerald-700">{qw.title}</p><p className="text-xs leading-relaxed text-emerald-600/70">{qw.detail}</p></div>))}</div>
                 </div>
               )}
               {toArray(playbook.common_mistakes).length > 0 && (
                 <div>
-                  <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-500"><ShieldAlert className="h-3 w-3" /> Avoid</p>
+                  <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-red-500"><ShieldAlert className="h-3 w-3" /> Avoid</p>
                   <div className="space-y-2">{toArray(playbook.common_mistakes).map((cm, ci) => (<div key={ci} className="rounded-xl bg-red-50 border border-red-100 px-3.5 py-2.5"><p className="mb-0.5 text-xs font-medium text-red-600">{cm.title}</p><p className="text-xs leading-relaxed text-red-500/70">{cm.detail}</p></div>))}</div>
                 </div>
               )}
@@ -253,6 +273,7 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
 
 const ProjectDetailView = () => {
   const { id } = useParams();
+  const location = useLocation();
   const queryClient = useQueryClient();
 
   const [newPromptText, setNewPromptText] = useState('');
@@ -266,6 +287,7 @@ const ProjectDetailView = () => {
 
   // Track active polling jobs to allow cleanup and prevent memory leaks
   const activePollsRef = useRef(new Map());
+  const launchJobsHandledRef = useRef(false);
   const MAX_POLL_ATTEMPTS = 120; // 5 minutes at 2.5s intervals
 
   const { data: projectData, isLoading, error } = useQuery({
@@ -419,22 +441,41 @@ const ProjectDetailView = () => {
       const first = s.split(/(?<=[.!?])\s+/)[0];
       happening = (first && first.length <= 280 ? first : s.slice(0, 220)).trim();
     }
-    const fromRoadmap = toArray(intelSummary.strategic_roadmap).map((step) => String(step.action || '').trim()).filter(Boolean);
-    const fromBullets = Array.isArray(intelSummary.executive_bullets) ? intelSummary.executive_bullets.slice(1).map((b) => String(b).trim()).filter(Boolean) : [];
-    const fromQueries = toArray(intelSummary.top_priority_prompts).map((p) => String(p).trim()).filter(Boolean);
+    // Priorities = roadmap actions + later bullets, deduped. We DO NOT mix
+    // in tracked prompt strings here -- those have their own "Prompts to watch"
+    // column. Echoing prompts into "Do these first" produced the duplication
+    // we saw in the screenshots (e.g. "best smart TVs in India 2025" appearing
+    // as both a priority and a watched prompt).
+    const promptEchoes = new Set(
+      toArray(projectData?.prompts)
+        .map((p) => String(p?.prompt_text || '').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const fromRoadmap = toArray(intelSummary.strategic_roadmap)
+      .map((step) => String(step.action || '').trim())
+      .filter(Boolean);
+    const fromBullets = Array.isArray(intelSummary.executive_bullets)
+      ? intelSummary.executive_bullets.slice(1).map((b) => String(b).trim()).filter(Boolean)
+      : [];
     const seen = new Set();
     const priorities = [];
-    for (const t of [...fromRoadmap, ...fromBullets, ...fromQueries]) {
+    for (const t of [...fromRoadmap, ...fromBullets]) {
       const k = t.toLowerCase();
       if (!k || seen.has(k)) continue;
+      // Belt-and-suspenders: even if the backend forgot to filter, we drop
+      // priorities that are identical to a tracked prompt string.
+      if (promptEchoes.has(k)) continue;
       seen.add(k);
       priorities.push(t);
       if (priorities.length >= 5) break;
     }
-    const losing = toArray(intelSummary.competitive_threats).map((t) => String(t).trim()).filter(Boolean);
+    const losing = toArray(intelSummary.competitive_threats)
+      .map((t) => String(t).trim())
+      .filter((t) => t && !promptEchoes.has(t.toLowerCase()));
     return { happening, priorities, losing };
-  }, [intelSummary]);
+  }, [intelSummary, projectData?.prompts]);
 
+  const [expandedCompetitor, setExpandedCompetitor] = useState({});
   const [execContent, setExecContent] = useState(null);
   const [isExecuting, setIsExecuting] = useState(false);
   const [selectedActionModel, setSelectedActionModel] = useState('gemini');
@@ -483,8 +524,17 @@ const ProjectDetailView = () => {
   const executeActionMutation = useMutation({ mutationFn: (data) => api.executeAction(id, data), onSuccess: (res) => { setExecContent(res); setIsExecuting(false); setExecError(null); }, onError: (err) => { setIsExecuting(false); setExecError(err.message || 'Failed to generate content.'); } });
 
   const refreshAll = async () => {
-    const keys = ['project-data', 'prompts', 'prompt-analysis', 'deep-analysis', 'sources-intelligence', 'competitor-intelligence', 'intel-summary', 'global-audit'];
-    await Promise.all(keys.map((key) => queryClient.invalidateQueries({ queryKey: [key, id] })));
+    const keys = [
+      ['project-data', 'v2', id],
+      ['prompts', id],
+      ['prompt-analysis', id],
+      ['deep-analysis', id],
+      ['sources-intelligence', id],
+      ['competitor-intelligence', id],
+      ['intel-summary', id],
+      ['global-audit', id],
+    ];
+    await Promise.all(keys.map((queryKey) => queryClient.invalidateQueries({ queryKey })));
   };
 
   const analyzePromptMutation = useMutation({
@@ -549,10 +599,14 @@ const ProjectDetailView = () => {
         activePollsRef.current.delete(jobId);
         // Invalidate all relevant caches to ensure fresh data
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['project-data', id] }),
+          queryClient.invalidateQueries({ queryKey: ['project-data', 'v2', id] }),
           queryClient.invalidateQueries({ queryKey: ['prompt-analysis', id] }),
           queryClient.invalidateQueries({ queryKey: ['prompt-detail', promptId] }),
           queryClient.invalidateQueries({ queryKey: ['deep-analysis', id] }),
+          queryClient.invalidateQueries({ queryKey: ['sources-intelligence', id] }),
+          queryClient.invalidateQueries({ queryKey: ['competitor-intelligence', id] }),
+          queryClient.invalidateQueries({ queryKey: ['intel-summary', id] }),
+          queryClient.invalidateQueries({ queryKey: ['global-audit', id] }),
         ]);
         return;
       }
@@ -578,6 +632,23 @@ const ProjectDetailView = () => {
       console.error(`Job polling error for ${jobId}:`, err);
     }
   }, [id, queryClient]);
+
+  useEffect(() => {
+    if (launchJobsHandledRef.current) return;
+
+    const jobs = Array.isArray(location.state?.analysisJobs)
+      ? location.state.analysisJobs
+      : [];
+    const validJobs = jobs.filter((item) => item?.job_id && item?.prompt_id);
+    if (validJobs.length === 0) return;
+
+    launchJobsHandledRef.current = true;
+    validJobs.forEach((item) => {
+      setRunningPrompts((prev) => ({ ...prev, [item.prompt_id]: true }));
+      activePollsRef.current.set(item.job_id, { timeoutId: null, promptId: item.prompt_id });
+      pollJobStatus(item.job_id, item.prompt_id, 1);
+    });
+  }, [location.state, pollJobStatus]);
 
   if (isLoading) {
     return (
@@ -659,7 +730,7 @@ const ProjectDetailView = () => {
             </button>
             {showDatePicker && (
               <div className="glass-card-v2 absolute right-0 top-full z-30 mt-1.5 w-[280px] p-4 shadow-xl">
-                <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Export date range</p>
+                <p className="mb-3 text-[11px] font-semibold text-slate-400">Export date range</p>
                 <div className="mb-3 flex items-center gap-2">
                   <label className="flex-1 text-[11px] font-medium text-slate-500">From<input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} className="mt-1 block w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[12px] font-medium text-slate-700 outline-none focus:border-brand-primary" /></label>
                   <span className="mt-4 text-slate-300">–</span>
@@ -684,31 +755,45 @@ const ProjectDetailView = () => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[200px_minmax(0,1fr)]">
-        {/* Section sidebar */}
-        <motion.aside initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} className="glass-card-v2 h-fit space-y-0.5 p-2.5 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-6rem)] lg:overflow-y-auto max-lg:max-h-[min(50vh,22rem)] max-lg:overflow-y-auto">
-          <p className={`${lbl} px-3 pb-1.5 pt-2`}>Sections</p>
+      {/* Horizontal tab bar */}
+      <div className="border-b border-slate-200/60">
+        <nav className="-mb-px flex gap-1 overflow-x-auto">
           {SECTION_IDS.map((section) => {
             const SIcon = section.icon;
             const active = activeSection === section.id;
             return (
-              <button key={section.id} onClick={() => setActiveSection(section.id)} className={`relative flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-[13px] font-medium transition-all ${active ? 'bg-brand-primary text-white shadow-sm shadow-brand-primary/20' : 'text-slate-500 hover:bg-slate-50/80 hover:text-slate-800'}`}>
-                {active && <motion.div layoutId="section-indicator" className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-white/60" transition={{ type: 'spring', stiffness: 350, damping: 30 }} />}
-                <SIcon className={`h-4 w-4 shrink-0 ${active ? 'text-white/80' : 'text-slate-400'}`} />
+              <button
+                key={section.id}
+                onClick={() => setActiveSection(section.id)}
+                className={`relative flex shrink-0 items-center gap-2 px-4 py-3 text-[13px] font-medium transition-colors ${
+                  active
+                    ? 'text-brand-primary'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                <SIcon className={`h-4 w-4 ${active ? 'text-brand-primary' : 'text-slate-400'}`} />
                 {section.label}
+                {active && (
+                  <motion.div
+                    layoutId="section-tab-indicator"
+                    className="absolute bottom-0 left-0 right-0 h-[2px] bg-brand-primary"
+                    transition={{ type: 'spring', stiffness: 350, damping: 30 }}
+                  />
+                )}
               </button>
             );
           })}
-        </motion.aside>
+        </nav>
+      </div>
 
-        {/* Content */}
-        <div className="min-w-0 space-y-5">
+      {/* Content */}
+      <div className="min-w-0 space-y-5">
           <AnimatePresence mode="wait">
             {/* ===== DASHBOARD TAB ===== */}
             {activeSection === 'dashboard' && (
               <motion.div key="dashboard" {...sectionMotion} className="space-y-5">
                 <OverviewKpiGrid dashboard={dashboard} prompts={prompts} enabledEngines={enabledEngines} />
-                <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.4fr_1fr]">
+                <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.5fr_1fr]">
                   <PerformancePanel range={dashChartMode} onRangeChange={setDashChartMode} dashboard={dashboard} />
                   <CompetitorSnapshot competitors={toArray(dashboard?.competitors)} onViewAll={() => setActiveSection('competitors')} />
                 </div>
@@ -721,95 +806,150 @@ const ProjectDetailView = () => {
                         <div className="mb-6 space-y-3"><div className="h-5 w-64 rounded bg-slate-100" /><div className="h-3 w-44 rounded bg-slate-100" /></div>
                         <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1.4fr_1fr]"><div className="space-y-4"><div className="h-20 rounded-xl bg-slate-50" /><div className="h-28 rounded-xl bg-slate-50" /></div><div className="h-52 rounded-xl bg-slate-50" /></div>
                       </div>
-                    ) : intelSummary && dashboardIntelLayout && (
-                      <div className="glass-card-v2 overflow-hidden">
-                        <div className="flex flex-wrap items-start justify-between gap-4 px-6 py-5">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h2 className="text-base font-semibold tracking-tight text-slate-900">Summary</h2>
-                              <DataBadge type="ai" />
-                            </div>
-                          </div>
-                          <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${intelSummary.overall_health === 'Strong' ? 'bg-emerald-50 text-emerald-700' : intelSummary.overall_health === 'Critical' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{intelSummary.overall_health}</span>
-                        </div>
-                        <div className="grid grid-cols-1 gap-0 lg:grid-cols-[1.35fr_1fr] lg:gap-0">
-                          <div className="space-y-6 px-6 pb-6 lg:pr-8">
+                    ) : intelSummary && dashboardIntelLayout && (() => {
+                      const summaryCoverage = intelSummary?.coverage || dashboard?.coverage;
+                      const summaryResponseCount = Number(summaryCoverage?.n_responses ?? 0) || 0;
+                      const noSummaryData = intelSummary?.has_data === false && summaryResponseCount <= 0;
+                      const overallHealth = intelSummary.overall_health || (noSummaryData ? 'No data' : 'Neutral');
+                      const healthBadgeStyle = overallHealth === 'Strong'
+                        ? 'bg-emerald-50 text-emerald-700'
+                        : overallHealth === 'Critical'
+                          ? 'bg-red-50 text-red-700'
+                          : overallHealth === 'No data'
+                            ? 'bg-amber-50 text-amber-700'
+                            : 'bg-slate-100 text-slate-600';
+                      return (
+                        <div className="glass-card-v2 overflow-hidden">
+                          <div className="flex flex-wrap items-start justify-between gap-4 px-6 py-5">
                             <div>
-                              <p className={`${lbl} mb-2`}>In short</p>
-                              <p className="text-sm font-medium leading-snug text-slate-800">{dashboardIntelLayout.happening || '—'}</p>
-                            </div>
-                            <div>
-                              <p className={`${lbl} mb-2`}>Do these first</p>
-                              <ul className="space-y-2">
-                                {(dashboardIntelLayout.priorities.length ? dashboardIntelLayout.priorities : ['Run your prompts to get a short list here.']).map((line, idx) => (
-                                  <li key={idx} className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{line}</li>
-                                ))}
-                              </ul>
-                            </div>
-                            <div>
-                              <p className={`${lbl} mb-2`}>Risks</p>
-                              <ul className="list-disc space-y-1.5 pl-4 text-sm text-slate-600">
-                                {(dashboardIntelLayout.losing.length ? dashboardIntelLayout.losing : ['Run more analyses to see competitor gaps here.']).map((line, idx) => (
-                                  <li key={idx}>{line}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          </div>
-                          <div className="space-y-5 border-t border-slate-100/80 px-6 py-6 lg:border-l lg:border-t-0 lg:pt-6">
-                            <div>
-                              <p className={`${lbl} mb-2`}>Prompts to watch</p>
-                              <div className="space-y-2">
-                                {toArray(intelSummary.top_priority_prompts).length === 0 && <p className="text-sm text-slate-500">None yet. Run analysis first.</p>}
-                                {toArray(intelSummary.top_priority_prompts).map((q, idx) => (
-                                  <div key={idx} className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{q}</div>
-                                ))}
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h2 className="text-base font-semibold tracking-tight text-slate-900">Summary</h2>
+                                <DataBadge type="ai" />
+                                {summaryCoverage && <CoverageBadge coverage={summaryCoverage} />}
                               </div>
                             </div>
-                            {coverageSnapshot && (
-                              <div>
-                                <p className={`${lbl} mb-2`}>Coverage</p>
-                                <div className="space-y-2">
-                                  <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.queriesLine}</div>
-                                  <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.shareLine}</div>
-                                  <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.topCompetitorLine}</div>
+                            <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${healthBadgeStyle}`}>{overallHealth}</span>
+                          </div>
+                          {noSummaryData ? (
+                            <div className="px-6 pb-6">
+                              <CoverageEmptyState
+                                coverage={summaryCoverage}
+                                title="No summary signal yet"
+                                message="Run a prompt with model answers to generate a dashboard summary from real data."
+                              />
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 gap-0 lg:grid-cols-[1.35fr_1fr] lg:gap-0">
+                              <div className="space-y-6 px-6 pb-6 lg:pr-8">
+                                <div>
+                                  <p className={`${lbl} mb-2`}>In short</p>
+                                  <p className="text-sm font-medium leading-snug text-slate-800">{dashboardIntelLayout.happening || '—'}</p>
+                                </div>
+                                <div>
+                                  <p className={`${lbl} mb-2`}>Do these first</p>
+                                  <ul className="space-y-2">
+                                    {(dashboardIntelLayout.priorities.length ? dashboardIntelLayout.priorities : ['Run your prompts to get a short list here.']).map((line, idx) => (
+                                      <li key={idx} className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{line}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                                <div>
+                                  <p className={`${lbl} mb-2`}>Risks</p>
+                                  <ul className="list-disc space-y-1.5 pl-4 text-sm text-slate-600">
+                                    {(dashboardIntelLayout.losing.length ? dashboardIntelLayout.losing : ['Run more analyses to see competitor gaps here.']).map((line, idx) => (
+                                      <li key={idx}>{line}</li>
+                                    ))}
+                                  </ul>
                                 </div>
                               </div>
+                              <div className="space-y-5 border-t border-slate-100/80 px-6 py-6 lg:border-l lg:border-t-0 lg:pt-6">
+                                <div>
+                                  <p className={`${lbl} mb-2`}>Prompts to watch</p>
+                                  <div className="space-y-2">
+                                    {toArray(intelSummary.top_priority_prompts).length === 0 && <p className="text-sm text-slate-500">None yet. Run analysis first.</p>}
+                                    {toArray(intelSummary.top_priority_prompts).map((q, idx) => (
+                                      <div key={idx} className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{q}</div>
+                                    ))}
+                                  </div>
+                                </div>
+                                {coverageSnapshot && (
+                                  <div>
+                                    <p className={`${lbl} mb-2`}>Coverage</p>
+                                    <div className="space-y-2">
+                                      <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.queriesLine}</div>
+                                      <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.shareLine}</div>
+                                      <div className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{coverageSnapshot.topCompetitorLine}</div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                    {globalAuditLoading ? (
+                      <div className="glass-card-v2 flex justify-center py-14"><Loader2 className="h-6 w-6 animate-spin text-slate-300" /></div>
+                    ) : (() => {
+                      // The backend now returns { items, coverage, has_data } from this endpoint.
+                      // Fall back gracefully if a cached older array shape lands here.
+                      const audit = globalAudit;
+                      const items = Array.isArray(audit)
+                        ? audit
+                        : (Array.isArray(audit?.items) ? audit.items : []);
+                      const auditCoverage = audit && !Array.isArray(audit) ? audit.coverage : null;
+                      const hasData = audit && !Array.isArray(audit) ? audit.has_data !== false : items.length > 0;
+                      const gated = !hasData || isInsufficient(auditCoverage);
+                      if (!audit && items.length === 0) return null;
+                      return (
+                        <div className="glass-card-v2 overflow-hidden">
+                          <div className="px-6 py-5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h2 className="text-base font-semibold tracking-tight text-slate-900">Recurring issues</h2>
+                              <DataBadge type="ai" />
+                              {auditCoverage && <CoverageBadge coverage={auditCoverage} />}
+                            </div>
+                            <p className="mt-0.5 text-sm text-slate-500">Problems that show up in more than one prompt</p>
+                          </div>
+                          <div className="space-y-4 px-6 pb-6">
+                            {gated ? (
+                              <CoverageEmptyState
+                                coverage={auditCoverage}
+                                message="Recurring issues need at least 2 different queries with model answers so we can spot a repeated pattern, not a one-off."
+                              />
+                            ) : (
+                              items.map((item, idx) => {
+                                const priority = String(item?.priority || 'medium').toLowerCase();
+                                const supporting = toArray(item?.queries_supporting);
+                                return (
+                                  <div key={idx} className="glass-inset rounded-xl p-4">
+                                    <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                                      <h3 className="text-sm font-semibold text-slate-800">{item.title}</h3>
+                                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${priority === 'high' ? 'bg-red-50 text-red-600' : priority === 'low' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{priority}</span>
+                                    </div>
+                                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                      <div><p className={`${lbl} mb-1`}>Root cause</p><p className="text-xs leading-relaxed text-slate-600">{item.root_cause}</p></div>
+                                      <div><p className={`${lbl} mb-1`}>Solution</p><p className="text-xs leading-relaxed text-slate-700">{item.solution}</p></div>
+                                    </div>
+                                    {item.evidence_quote && (
+                                      <blockquote className="mt-3 border-l-2 border-brand-primary/40 bg-slate-50/70 px-3 py-2 text-xs italic leading-relaxed text-slate-600">
+                                        &ldquo;{item.evidence_quote}&rdquo;
+                                      </blockquote>
+                                    )}
+                                    {supporting.length > 0 && (
+                                      <p className="mt-2 text-[10px] text-slate-400">
+                                        Seen in {supporting.length} {supporting.length === 1 ? 'query' : 'queries'}: {supporting.slice(0, 3).map((q) => `"${q}"`).join(' \u00b7 ')}{supporting.length > 3 ? ' \u2026' : ''}
+                                      </p>
+                                    )}
+                                    {item.avoid && <p className="mt-2 text-xs text-slate-500"><span className="font-medium text-slate-600">Avoid:</span> {item.avoid}</p>}
+                                  </div>
+                                );
+                              })
                             )}
                           </div>
                         </div>
-                      </div>
-                    )}
-                    {globalAuditLoading ? (
-                      <div className="glass-card-v2 flex justify-center py-14"><Loader2 className="h-6 w-6 animate-spin text-slate-300" /></div>
-                    ) : Array.isArray(globalAudit) && globalAudit.length > 0 && (
-                      <div className="glass-card-v2 overflow-hidden">
-                        <div className="px-6 py-5">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h2 className="text-base font-semibold tracking-tight text-slate-900">Recurring issues</h2>
-                            <DataBadge type="ai" />
-                          </div>
-                          <p className="mt-0.5 text-sm text-slate-500">Problems that show up in more than one prompt</p>
-                        </div>
-                        <div className="space-y-4 px-6 pb-6">
-                          {globalAudit.map((item, idx) => {
-                            const priority = String(item?.priority || 'medium').toLowerCase();
-                            return (
-                              <div key={idx} className="glass-inset rounded-xl p-4">
-                                <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
-                                  <h3 className="text-sm font-semibold text-slate-800">{item.title}</h3>
-                                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${priority === 'high' ? 'bg-red-50 text-red-600' : priority === 'low' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{priority}</span>
-                                </div>
-                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                                  <div><p className={`${lbl} mb-1`}>Root cause</p><p className="text-xs leading-relaxed text-slate-600">{item.root_cause}</p></div>
-                                  <div><p className={`${lbl} mb-1`}>Solution</p><p className="text-xs leading-relaxed text-slate-700">{item.solution}</p></div>
-                                </div>
-                                {item.avoid && <p className="mt-2 text-xs text-slate-500"><span className="font-medium text-slate-600">Avoid:</span> {item.avoid}</p>}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
+                      );
+                    })()}
                   </>
                 )}
               </motion.div>
@@ -862,7 +1002,7 @@ const ProjectDetailView = () => {
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-[13px]">
-                      <thead><tr className="border-b border-slate-100/80 text-slate-400">{['Prompt', 'Answer vis.', 'Quality', 'Sentiment', 'Avg Rank', 'Models', 'Actions'].map((h) => <th key={h} className="px-5 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider">{h}</th>)}</tr></thead>
+                      <thead><tr className="border-b border-slate-100/80 text-slate-400">{['Prompt', 'Answer vis.', 'Quality', 'Sentiment', 'Avg Rank', 'Models', 'Actions'].map((h) => <th key={h} className="px-5 py-2.5 text-left text-[11px] font-medium">{h}</th>)}</tr></thead>
                       <tbody className="divide-y divide-slate-50">
                         {promptAnalysisLoading ? Array.from({ length: 6 }).map((_, idx) => (<tr key={`sk-${idx}`}><td className="px-5 py-3"><div className="h-3 w-52 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-5 w-14 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-12 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-12 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-10 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-28 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-6 w-24 animate-pulse rounded bg-slate-100" /></td></tr>))
                           : toArray(promptAnalysis?.rows).map((row, idx) => (
@@ -916,8 +1056,11 @@ const ProjectDetailView = () => {
                         <div className="flex items-center gap-2">
                           <p className="text-sm font-semibold text-slate-800">Competitor Analysis</p>
                           <DataBadge type="measured" />
+                          {competitorIntel?.coverage && <CoverageBadge coverage={competitorIntel.coverage} />}
                         </div>
-                        <p className="text-[11px] text-slate-400">How often each brand is named in model answers, per engine. Not the same as who got a link in citations.</p>
+                        <p className="text-[11px] text-slate-400">
+                          Directional from the first run, then stronger as more prompts complete. Visibility is % of measured answers that named each brand; AI Share is share of actual brand mentions.
+                        </p>
                       </div>
                     </div>
                     <span className="text-[11px] tabular-nums text-slate-400">{competitorDisplayRows.length} brands</span>
@@ -939,22 +1082,24 @@ const ProjectDetailView = () => {
                       ))}
                     </div>
                   ) : competitorDisplayRows.length === 0 ? (
-                    <div className="flex flex-col items-center py-16 text-center">
-                      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-50 text-slate-300"><Target className="h-5 w-5" /></div>
-                      <p className="text-sm font-medium text-slate-400">No competitor data yet</p>
-                      <p className="mt-0.5 text-xs text-slate-400">Run an analysis to populate this view</p>
+                    <div className="px-6 py-8">
+                      <CoverageEmptyState
+                        coverage={competitorIntel?.coverage}
+                        title="No competitor signal yet"
+                        message="No competitors were extracted from the measured answers yet. Run or rerun a prompt to generate real brand mentions."
+                      />
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
                       <table className="w-full">
                         <thead>
                           <tr className="border-b border-slate-100/80 bg-slate-50/50">
-                            <th className="w-10 px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400">#</th>
-                            <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400">Brand</th>
-                            <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400">Visibility</th>
-                            <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-400">AI Share</th>
-                            <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-400">Quality</th>
-                            <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-400">Avg Rank</th>
+                            <th className="w-10 px-6 py-3 text-left text-[10px] font-semibold text-slate-400">#</th>
+                            <th className="px-4 py-3 text-left text-[10px] font-semibold text-slate-400">Brand</th>
+                            <th className="px-4 py-3 text-left text-[10px] font-semibold text-slate-400" title="% of (prompt \u00d7 engine) cells where the brand was named.">Visibility</th>
+                            <th className="px-4 py-3 text-right text-[10px] font-semibold text-slate-400" title="Share of all brand-mention events across model answers in the tracked portfolio.">AI Share</th>
+                            <th className="px-4 py-3 text-right text-[10px] font-semibold text-slate-400" title="Composite of mention rate, rank, and sentiment. Hover a row to see the sub-components.">Quality</th>
+                            <th className="px-6 py-3 text-right text-[10px] font-semibold text-slate-400" title="Mean rank when the brand was named (only shown with \u22653 ranked appearances).">Avg Rank</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
@@ -963,47 +1108,85 @@ const ProjectDetailView = () => {
                             const barPct = Math.min(100, (Number(vis) / competitorMaxVis) * 100);
                             const isFocus = item.is_focus;
                             const isTarget = item.is_target_competitor;
+                            const rowKey = item.brand || idx;
+                            const expanded = !!expandedCompetitor[rowKey];
+                            const perEngine = item.per_engine && typeof item.per_engine === 'object'
+                              ? Object.values(item.per_engine)
+                              : [];
+                            const qc = item.quality_components || {};
+                            const qualityTooltip = item.quality_score != null
+                              ? `Quality breakdown\nmention rate score: ${qc.mention_rate_score ?? '0'}\nrank score: ${qc.rank_score ?? '0'}\nsentiment score: ${qc.sentiment_score ?? '0'}\nbased on ${qc.n_supporting ?? 0} answer(s)`
+                              : 'Not enough data';
+                            const rankSamples = Number(item.rank_samples || 0);
+                            const rankTooltip = item.avg_rank != null
+                              ? `Across ${rankSamples} ranked mention${rankSamples === 1 ? '' : 's'}${item.rank_p25 != null && item.rank_p75 != null ? ` (p25 #${item.rank_p25} \u2013 p75 #${item.rank_p75})` : ''}`
+                              : `Need at least 3 ranked mentions${rankSamples ? ` (have ${rankSamples})` : ''}`;
+                            const supportTooltip = `Seen in ${item.n_responses_with_brand ?? 0} answer(s) across ${item.n_prompts_with_brand ?? 0} prompt(s) \u00d7 ${item.n_engines_with_brand ?? 0} engine(s)`;
                             return (
-                              <motion.tr
-                                key={item.brand || idx}
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                transition={{ delay: idx * 0.03 }}
-                                className={`group transition-colors hover:bg-slate-50/60 ${isFocus ? 'bg-brand-primary/[0.03]' : ''}`}
-                              >
-                                <td className="px-6 py-3.5">
-                                  <span className="text-[11px] font-semibold tabular-nums text-slate-400">{idx + 1}</span>
-                                </td>
-                                <td className="px-4 py-3.5">
-                                  <div className="flex items-center gap-2.5">
-                                    <span className={`text-sm font-semibold ${isFocus ? 'text-brand-primary' : 'text-slate-800'}`}>{item.brand}</span>
-                                    {isFocus && <span className="rounded-md bg-brand-primary/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-brand-primary">You</span>}
-                                    {isTarget && <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">Target</span>}
-                                  </div>
-                                </td>
-                                <td className="px-4 py-3.5">
-                                  <div className="flex items-center gap-3">
-                                    <div className="h-1.5 w-32 overflow-hidden rounded-full bg-slate-100">
-                                      <motion.div
-                                        initial={{ width: 0 }}
-                                        animate={{ width: `${barPct}%` }}
-                                        transition={{ duration: 0.6, delay: idx * 0.04, ease: 'easeOut' }}
-                                        className={`h-full rounded-full ${isFocus ? 'bg-brand-primary' : 'bg-slate-300'}`}
-                                      />
+                              <React.Fragment key={rowKey}>
+                                <motion.tr
+                                  initial={{ opacity: 0 }}
+                                  animate={{ opacity: 1 }}
+                                  transition={{ delay: idx * 0.03 }}
+                                  onClick={() => perEngine.length > 0 && setExpandedCompetitor((prev) => ({ ...prev, [rowKey]: !prev[rowKey] }))}
+                                  className={`group transition-colors hover:bg-slate-50/60 ${isFocus ? 'bg-brand-primary/[0.03]' : ''} ${perEngine.length > 0 ? 'cursor-pointer' : ''}`}
+                                >
+                                  <td className="px-6 py-3.5">
+                                    <span className="text-[11px] font-semibold tabular-nums text-slate-400">{idx + 1}</span>
+                                  </td>
+                                  <td className="px-4 py-3.5">
+                                    <div className="flex items-center gap-2.5">
+                                      {perEngine.length > 0 && (
+                                        <ChevronDown className={`h-3 w-3 text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                                      )}
+                                      <span className={`text-sm font-semibold ${isFocus ? 'text-brand-primary' : 'text-slate-800'}`} title={supportTooltip}>{item.brand}</span>
+                                      {isFocus && <span className="rounded-md bg-brand-primary/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-brand-primary">You</span>}
+                                      {isTarget && <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">Target</span>}
                                     </div>
-                                    <span className={`min-w-[2.75rem] text-right text-xs font-semibold tabular-nums ${isFocus ? 'text-brand-primary' : 'text-slate-700'}`}>{vis}%</span>
-                                  </div>
-                                </td>
-                                <td className="px-4 py-3.5 text-right">
-                                  <span className="text-xs font-semibold tabular-nums text-slate-700">{item.ai_share != null ? `${item.ai_share}%` : <span className="text-slate-300">—</span>}</span>
-                                </td>
-                                <td className="px-4 py-3.5 text-right">
-                                  <span className="text-xs font-semibold tabular-nums text-slate-700">{item.quality_score != null ? `${item.quality_score}%` : <span className="text-slate-300">—</span>}</span>
-                                </td>
-                                <td className="px-6 py-3.5 text-right">
-                                  <span className="text-xs font-semibold tabular-nums text-slate-700">{item.avg_rank != null ? `#${item.avg_rank}` : <span className="text-slate-300">—</span>}</span>
-                                </td>
-                              </motion.tr>
+                                  </td>
+                                  <td className="px-4 py-3.5">
+                                    <div className="flex items-center gap-3">
+                                      <div className="h-1.5 w-32 overflow-hidden rounded-full bg-slate-100">
+                                        <motion.div
+                                          initial={{ width: 0 }}
+                                          animate={{ width: `${barPct}%` }}
+                                          transition={{ duration: 0.6, delay: idx * 0.04, ease: 'easeOut' }}
+                                          className={`h-full rounded-full ${isFocus ? 'bg-brand-primary' : 'bg-slate-300'}`}
+                                        />
+                                      </div>
+                                      <span className={`min-w-[2.75rem] text-right text-xs font-semibold tabular-nums ${isFocus ? 'text-brand-primary' : 'text-slate-700'}`} title={supportTooltip}>{vis}%</span>
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-3.5 text-right">
+                                    <span className="text-xs font-semibold tabular-nums text-slate-700">{item.ai_share != null ? `${item.ai_share}%` : <span className="text-slate-300">\u2014</span>}</span>
+                                  </td>
+                                  <td className="px-4 py-3.5 text-right">
+                                    <span className="text-xs font-semibold tabular-nums text-slate-700" title={qualityTooltip}>
+                                      {item.quality_score != null ? `${item.quality_score}` : <span className="text-slate-300">\u2014</span>}
+                                    </span>
+                                  </td>
+                                  <td className="px-6 py-3.5 text-right">
+                                    <span className="text-xs font-semibold tabular-nums text-slate-700" title={rankTooltip}>
+                                      {item.avg_rank != null ? `#${item.avg_rank}` : <span className="text-slate-300">\u2014</span>}
+                                    </span>
+                                  </td>
+                                </motion.tr>
+                                {expanded && perEngine.length > 0 && perEngine.map((pe) => (
+                                  <tr key={`${rowKey}-${pe.engine}`} className="bg-slate-50/40 text-[11px]">
+                                    <td className="px-6 py-2" />
+                                    <td className="px-4 py-2 text-slate-500" colSpan={1}>
+                                      <span className="ml-4 inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{pe.engine}</span>
+                                    </td>
+                                    <td className="px-4 py-2 text-slate-600">
+                                      <span className="tabular-nums">{pe.visibility_pct != null ? `${pe.visibility_pct}%` : '\u2014'}</span>
+                                      <span className="ml-2 text-[10px] text-slate-400">{pe.n_responses_with_brand}/{pe.n_engine_cells} answers</span>
+                                    </td>
+                                    <td className="px-4 py-2 text-right text-slate-500">\u2014</td>
+                                    <td className="px-4 py-2 text-right text-slate-500">\u2014</td>
+                                    <td className="px-6 py-2 text-right text-slate-600 tabular-nums">{pe.avg_rank != null ? `#${pe.avg_rank}` : '\u2014'}</td>
+                                  </tr>
+                                ))}
+                              </React.Fragment>
                             );
                           })}
                         </tbody>
@@ -1066,11 +1249,11 @@ const ProjectDetailView = () => {
                         <div className="space-y-3">
                           <div className="flex flex-wrap items-center gap-3">
                             <div>
-                              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Format</p>
+                              <p className="mb-1 text-[10px] font-semibold text-slate-400">Format</p>
                               <div className="flex rounded-xl border border-slate-200/60 bg-slate-50/50 p-0.5">{EXEC_CONTENT_TYPES.map((ct) => (<button key={ct} type="button" onClick={() => setCustomBriefType(ct)} className={`rounded-lg px-3 py-1.5 text-[12px] font-medium transition-all ${customBriefType === ct ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>{ct}</button>))}</div>
                             </div>
                             <div>
-                              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">AI Engine</p>
+                              <p className="mb-1 text-[10px] font-semibold text-slate-400">AI Engine</p>
                               <select value={selectedActionModel} onChange={(e) => setSelectedActionModel(e.target.value)} className="rounded-xl border border-slate-200/60 bg-white px-3 py-2 text-xs font-medium text-slate-700 focus:border-brand-primary focus:outline-none">{availableEngines.filter((e) => e.enabled).map((engine) => <option key={engine.id} value={engine.id}>{engine.name}</option>)}</select>
                             </div>
                           </div>
@@ -1130,7 +1313,7 @@ const ProjectDetailView = () => {
                           </div>
                           {execContent.placement_advice && (
                             <div className="mt-4 rounded-xl border border-brand-primary/15 bg-brand-primary/5 px-4 py-3">
-                              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-brand-primary">Publishing Strategy</p>
+                              <p className="mb-1 text-[10px] font-semibold text-brand-primary">Publishing Strategy</p>
                               <p className="text-xs leading-relaxed text-slate-700">{execContent.placement_advice}</p>
                             </div>
                           )}
@@ -1162,40 +1345,130 @@ const ProjectDetailView = () => {
                     <div className="glass-card-v2 animate-pulse overflow-hidden"><div className="border-b border-slate-100/80 px-6 py-4"><div className="h-4 w-48 rounded bg-slate-100" /></div><div className="grid grid-cols-1 gap-3 p-5 md:grid-cols-2">{Array.from({ length: 4 }).map((_, idx) => <div key={idx} className="glass-inset rounded-xl p-4"><div className="mb-2 h-4 w-40 rounded bg-slate-100" /><div className="mb-1 h-3 w-56 rounded bg-slate-100" /><div className="h-3 w-44 rounded bg-slate-100" /></div>)}</div></div>
                     <div className="glass-card-v2 animate-pulse p-5"><div className="mb-4 h-4 w-52 rounded bg-slate-100" /><div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, idx) => <div key={idx} className="glass-inset h-16 rounded-xl" />)}</div></div>
                   </>
-                ) : (
-                  <>
-                    <div className="glass-card-v2 overflow-hidden">
-                      <div className="flex items-center gap-2.5 border-b border-slate-100/80 px-6 py-4">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600"><Sparkles className="h-4 w-4" /></div>
-                        <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Action plan</p><DataBadge type="ai" /></div><p className="text-[11px] text-slate-400">Open an item to see steps you can do this week</p></div>
-                      </div>
-                      <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">{toArray(deepAnalysis?.action_plan).map((item, idx) => <ActionPlanCard key={idx} item={item} projectId={id} onGenerateDraft={(action) => { const pathDetail = action.detail || (Array.isArray(action.action_plan) ? action.action_plan.join(' ') : action.title); const t = { source: 'path', headline: action.title, query: (action.trigger_signal || pathDetail || action.title).slice(0, 200), pathRec: pathDetail || action.title, contentType: 'Article' }; setExecDraftTarget(t); setActiveSection('execute'); }} />)}</div>
-                    </div>
-                    {deepAnalysis?.search_intel?.enabled && (
-                      <div className="glass-card-v2 p-6">
-                        <h3 className="mb-2 text-lg font-bold text-slate-900">Pinpointed Retrieval Points</h3>
-                        <p className="mb-4 text-sm text-slate-500">Specific threads, videos, and articles used as primary data sources by LLMs.</p>
-                        <div className="mb-6 space-y-3">
-                          {toArray(deepAnalysis?.search_intel?.retrieval_points).map((item, idx) => (
-                            <div key={idx} className="glass-inset flex items-center justify-between gap-4 rounded-xl border border-brand-primary/15 bg-brand-primary/5 p-3.5">
-                              <div className="min-w-0"><p className="mb-0.5 text-xs font-bold uppercase text-brand-primary">{item.domain} &middot; Cited for &quot;{item.query}&quot;</p><p className="truncate text-sm font-semibold text-slate-900">{item.title}</p></div>
-                              <a href={item.url} target="_blank" rel="noreferrer" className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-bold text-white transition-all hover:shadow-md">View <ExternalLink className="h-3 w-3" /></a>
+                ) : (() => {
+                  const allActions = toArray(deepAnalysis?.action_plan);
+                  const measuredActions = allActions.filter((a) => String(a?.source_type || '').toLowerCase() !== 'templated');
+                  const templatedActions = allActions.filter((a) => String(a?.source_type || '').toLowerCase() === 'templated');
+                  const opportunitiesCoverage = deepAnalysis?.coverage;
+                  const planEmpty = allActions.length === 0;
+                  const handleDraft = (action) => {
+                    const pathDetail = action.detail || (Array.isArray(action.action_plan) ? action.action_plan.join(' ') : action.title);
+                    const t = { source: 'path', headline: action.title, query: (action.trigger_signal || pathDetail || action.title).slice(0, 200), pathRec: pathDetail || action.title, contentType: 'Article' };
+                    setExecDraftTarget(t);
+                    setActiveSection('execute');
+                  };
+                  return (
+                    <>
+                      <div className="glass-card-v2 overflow-hidden">
+                        <div className="flex items-center gap-2.5 border-b border-slate-100/80 px-6 py-4">
+                          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600"><Sparkles className="h-4 w-4" /></div>
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-semibold text-slate-800">Action plan</p>
+                              <DataBadge type="ai" />
+                              {opportunitiesCoverage && <CoverageBadge coverage={opportunitiesCoverage} />}
                             </div>
-                          ))}
-                          {toArray(deepAnalysis?.search_intel?.retrieval_points).length === 0 && <p className="px-2 text-xs italic text-slate-500">Run a fresh analysis to identify specific deep links.</p>}
+                            <p className="text-[11px] text-slate-400">Open an item to see steps you can do this week. Early runs are directional; confidence is computed from real evidence.</p>
+                          </div>
                         </div>
-                        <h3 className="mb-2 text-lg font-bold text-slate-900">High-Impact Retrieval Domains</h3>
-                        <p className="mb-4 text-sm text-slate-500">Domains frequently used by search-enabled LLMs for your niche.</p>
-                        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">{toArray(deepAnalysis?.search_intel?.domains).map((item) => (<div key={item.domain} className="glass-card-v2 flex items-center justify-between p-3.5"><span className="text-sm font-medium text-slate-900">{item.domain}</span><span className="rounded-full bg-brand-primary/10 px-2.5 py-0.5 text-xs font-bold text-brand-primary">{item.count} citations</span></div>))}</div>
+                        {planEmpty ? (
+                          <div className="p-6">
+                            <CoverageEmptyState
+                              coverage={opportunitiesCoverage}
+                              title="No action signal yet"
+                              message="No evidence-backed actions were found yet. Run a prompt with model answers so recommendations can be tied to real responses."
+                            />
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
+                            {measuredActions.map((item, idx) => (
+                              <ActionPlanCard key={`m-${idx}`} item={item} projectId={id} onGenerateDraft={handleDraft} />
+                            ))}
+                          </div>
+                        )}
+                        {templatedActions.length > 0 && (
+                          <details className="border-t border-slate-100/80 px-5 py-4">
+                            <summary className="cursor-pointer text-[11px] font-semibold text-slate-400 hover:text-slate-600">
+                              Suggested templates ({templatedActions.length})
+                              <span className="ml-2 font-normal normal-case text-slate-400">Generic next moves \u2014 not synthesized from a specific evidence cluster.</span>
+                            </summary>
+                            <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+                              {templatedActions.map((item, idx) => (
+                                <ActionPlanCard key={`t-${idx}`} item={item} projectId={id} onGenerateDraft={handleDraft} />
+                              ))}
+                            </div>
+                          </details>
+                        )}
                       </div>
-                    )}
-                  </>
-                )}
+                      {deepAnalysis?.search_intel?.enabled && (() => {
+                        const points = toArray(deepAnalysis?.search_intel?.retrieval_points);
+                        const domains = toArray(deepAnalysis?.search_intel?.domains);
+                        return (
+                          <div className="glass-card-v2 p-6">
+                            <div className="mb-2 flex flex-wrap items-center gap-2">
+                              <h3 className="text-lg font-bold text-slate-900">Pinpointed Retrieval Points</h3>
+                              {opportunitiesCoverage && <CoverageBadge coverage={opportunitiesCoverage} />}
+                            </div>
+                            <p className="mb-4 text-sm text-slate-500">Specific articles, threads, and videos LLMs lean on. Ranked by how many of your queries they show up in.</p>
+                            <div className="mb-6 space-y-3">
+                              {points.length === 0 ? (
+                                <p className="px-2 text-xs italic text-slate-500">Run a fresh analysis to identify specific deep links.</p>
+                              ) : (
+                                points.map((item, idx) => {
+                                  const supportingQueries = toArray(item.cited_for_queries);
+                                  const nQueries = Number(item.n_queries || supportingQueries.length || 1);
+                                  const nEngines = Number(item.n_engines || 1);
+                                  const queryLabel = supportingQueries[0] || item.query || '';
+                                  return (
+                                    <div key={idx} className="glass-inset flex items-center justify-between gap-4 rounded-xl border border-brand-primary/15 bg-brand-primary/5 p-3.5">
+                                      <div className="min-w-0">
+                                        <p className="mb-0.5 text-xs font-bold text-brand-primary">
+                                          {item.domain} &middot; Cited for {nQueries} {nQueries === 1 ? 'query' : 'queries'}{nEngines > 1 ? ` \u00b7 ${nEngines} engines` : ''}
+                                        </p>
+                                        <p className="truncate text-sm font-semibold text-slate-900">{item.title}</p>
+                                        {queryLabel && <p className="truncate text-[10px] text-slate-500" title={supportingQueries.join(' \u00b7 ')}>e.g. &ldquo;{queryLabel}&rdquo;{supportingQueries.length > 1 ? ` (+${supportingQueries.length - 1} more)` : ''}</p>}
+                                      </div>
+                                      <a href={item.url} target="_blank" rel="noreferrer" className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-bold text-white transition-all hover:shadow-md">View <ExternalLink className="h-3 w-3" /></a>
+                                    </div>
+                                  );
+                                })
+                              )}
+                            </div>
+                            <h3 className="mb-2 text-lg font-bold text-slate-900">High-Impact Retrieval Domains</h3>
+                            <p className="mb-4 text-sm text-slate-500">Domains frequently used by search-enabled LLMs for your niche. Ranked by cross-query reach.</p>
+                            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+                              {domains.length === 0 && (
+                                <p className="col-span-full px-2 text-xs italic text-slate-500">No domain signal yet.</p>
+                              )}
+                              {domains.map((item) => {
+                                const nQueries = Number(item.n_queries || 0);
+                                const nEngines = Number(item.n_engines || 0);
+                                const citations = Number(item.n_citations ?? item.count ?? 0);
+                                return (
+                                  <div key={item.domain} className="glass-card-v2 flex flex-col gap-1 p-3.5">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-sm font-medium text-slate-900">{item.domain}</span>
+                                      <span className="rounded-full bg-brand-primary/10 px-2.5 py-0.5 text-xs font-bold text-brand-primary">{citations} citations</span>
+                                    </div>
+                                    {(nQueries > 0 || nEngines > 0) && (
+                                      <p className="text-[10px] text-slate-400">
+                                        across {nQueries || 1} {nQueries === 1 ? 'query' : 'queries'}{nEngines ? ` \u00b7 ${nEngines} ${nEngines === 1 ? 'engine' : 'engines'}` : ''}
+                                      </p>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </>
+                  );
+                })()}
               </motion.div>
             )}
           </AnimatePresence>
         </div>
-      </div>
 
       {/* ===== SELECTED PROMPT DETAIL PANEL ===== */}
       {selectedPromptId && (
@@ -1300,23 +1573,23 @@ const ProjectDetailView = () => {
                 <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_1.2fr]">
                   <div className="space-y-6">
                     <div className="glass-card-v2 p-6">
-                      <h5 className={`mb-6 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500`}><BarChart2 className="h-4 w-4" /> Market Share & Positioning</h5>
-                      <div className="space-y-4">{toArray(promptDetailData.brand_ranking).slice(0, 6).map((item) => (<div key={item.name} className={`flex items-center justify-between rounded-xl p-3 transition-all ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'bg-brand-primary/8 border border-brand-primary/20' : 'hover:bg-slate-50'}`}><span className={`font-bold ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'text-brand-primary' : 'text-slate-900'}`}>{item.name}</span><div className="flex items-center gap-4"><span className="text-[10px] font-bold uppercase text-slate-500">{item.mentions} Citations</span><span className={`text-sm font-bold tabular-nums ${item.avg_rank === 1 ? 'text-yellow-400' : 'text-slate-500'}`}>#{item.avg_rank ?? '-'}</span></div></div>))}</div>
+                      <h5 className="mb-6 flex items-center gap-2 text-[10px] font-bold tracking-tight text-slate-500"><BarChart2 className="h-4 w-4" /> Market Share & Positioning</h5>
+                      <div className="space-y-4">{toArray(promptDetailData.brand_ranking).slice(0, 6).map((item) => (<div key={item.name} className={`flex items-center justify-between rounded-xl p-3 transition-all ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'bg-brand-primary/8 border border-brand-primary/20' : 'hover:bg-slate-50'}`}><span className={`font-bold ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'text-brand-primary' : 'text-slate-900'}`}>{item.name}</span><div className="flex items-center gap-4"><span className="text-[10px] font-bold text-slate-500">{item.mentions} Citations</span><span className={`text-sm font-bold tabular-nums ${item.avg_rank === 1 ? 'text-yellow-400' : 'text-slate-500'}`}>#{item.avg_rank ?? '-'}</span></div></div>))}</div>
                     </div>
                     <div className="glass-card-v2 p-6">
-                      <h5 className="mb-5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400"><TrendingUp className="h-4 w-4" /> Sentiment Profile</h5>
+                      <h5 className="mb-5 flex items-center gap-2 text-[10px] font-bold tracking-tight text-slate-400"><TrendingUp className="h-4 w-4" /> Sentiment Profile</h5>
                       <div className="grid grid-cols-3 gap-3">
                         <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-50 to-emerald-500/5 p-4 text-center">
                           <p className="text-3xl font-bold tabular-nums text-emerald-600">{promptDetailData.sentiment?.positive ?? 0}</p>
-                          <p className="mt-1 text-[9px] font-bold uppercase tracking-wider text-emerald-500">Positive</p>
+                          <p className="mt-1 text-[9px] font-bold text-emerald-500">Positive</p>
                         </div>
                         <div className="rounded-2xl border border-slate-200/60 bg-gradient-to-br from-slate-50 to-slate-100/30 p-4 text-center">
                           <p className="text-3xl font-bold tabular-nums text-slate-700">{promptDetailData.sentiment?.neutral ?? 0}</p>
-                          <p className="mt-1 text-[9px] font-bold uppercase tracking-wider text-slate-400">Neutral</p>
+                          <p className="mt-1 text-[9px] font-bold text-slate-400">Neutral</p>
                         </div>
                         <div className="rounded-2xl border border-red-500/20 bg-gradient-to-br from-red-50 to-red-500/5 p-4 text-center">
                           <p className="text-3xl font-bold tabular-nums text-red-500">{promptDetailData.sentiment?.negative ?? 0}</p>
-                          <p className="mt-1 text-[9px] font-bold uppercase tracking-wider text-red-400">Negative</p>
+                          <p className="mt-1 text-[9px] font-bold text-red-400">Negative</p>
                         </div>
                       </div>
                     </div>
@@ -1371,7 +1644,7 @@ const ProjectDetailView = () => {
                   </div>
                 </div>
                 <div className="glass-card-v2 p-8">
-                  <h5 className="mb-8 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500"><FileText className="h-4 w-4" /> Cited Sources & Knowledge Points</h5>
+                  <h5 className="mb-8 flex items-center gap-2 text-[10px] font-bold tracking-tight text-slate-500"><FileText className="h-4 w-4" /> Cited Sources & Knowledge Points</h5>
                   <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">{toArray(promptDetailData.sources).slice(0, 30).map((source) => (<details key={source.domain} className="glass-card-v2 group h-fit overflow-hidden transition-all hover:border-brand-primary/20"><summary className="flex cursor-pointer list-none items-center justify-between px-5 py-4 hover:bg-slate-50"><span className="flex items-center gap-3"><img src={`https://www.google.com/s2/favicons?domain=${source.domain.split(' ')[0]}&sz=32`} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" className="h-4 w-4 opacity-40 grayscale transition-all group-hover:opacity-100 group-hover:grayscale-0" onError={(e) => { e.target.style.display = 'none'; }} /><span className={`truncate text-sm font-bold max-w-[140px] ${source.domain.includes('(Target Content)') ? 'text-brand-primary' : 'text-slate-900'}`}>{source.domain}</span></span><span className="rounded-full border border-slate-200/60 px-2.5 py-1 text-[10px] font-bold text-slate-500 transition-all group-hover:border-brand-primary/20 group-hover:text-brand-primary">{source.mentions || 0} Hits</span></summary><ul className="space-y-4 border-t border-slate-200/60 bg-slate-50/50 px-5 pb-5 pt-3">{toArray(source.links).map((linkObj, lIdx) => (<li key={(linkObj.url || '') + lIdx} className="group/link flex flex-col gap-2">{linkObj.title && <span className="text-[11px] font-bold leading-snug text-slate-700 transition-colors group-hover/link:text-brand-primary">{linkObj.title}</span>}<div className="flex items-center gap-2 overflow-hidden rounded-xl border border-slate-200/60 bg-white p-2.5"><ExternalLink className="h-3 w-3 shrink-0 text-slate-500" /><a href={linkObj.url} target="_blank" rel="noreferrer" className="truncate text-[10px] font-bold text-slate-500 hover:text-brand-primary" title={linkObj.url}>{linkObj.url}</a></div></li>))}</ul></details>))}</div>
                 </div>
               </div>
@@ -1441,12 +1714,12 @@ function ImprovePromptModal({ promptId, originalText, projectName, industry, onC
 
         <div className="space-y-4 px-5 py-4 text-sm">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Original</p>
+            <p className="text-[11px] font-semibold text-slate-400">Original</p>
             <p className="mt-1 rounded-lg bg-slate-50 px-3 py-2 text-slate-700">{originalText}</p>
           </div>
 
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Rewrite</p>
+            <p className="text-[11px] font-semibold text-slate-400">Rewrite</p>
             {improveMutation.isPending ? (
               <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1472,7 +1745,7 @@ function ImprovePromptModal({ promptId, originalText, projectName, industry, onC
 
           {Array.isArray(suggestion?.alternative_angles) && suggestion.alternative_angles.length > 0 && (
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Alternative angles</p>
+              <p className="text-[11px] font-semibold text-slate-400">Alternative angles</p>
               <div className="mt-1 space-y-1">
                 {suggestion.alternative_angles.map((alt, i) => (
                   <button

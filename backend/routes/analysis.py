@@ -1,6 +1,7 @@
 """Analysis routes and background execution pipeline."""
 
 import os
+import re
 import json
 import uuid
 import time
@@ -54,7 +55,16 @@ from models import (
     db,
 )
 from auth import require_auth
-from routes.reports import invalidate_project_report_caches
+from routes.reports import (
+    invalidate_project_report_caches,
+    _classify_domain_signal,
+    _domain_from_url,
+    _is_analysis_engine,
+    _latest_responses_by_prompt,
+    _normalize_source_url,
+    _parse_sources,
+    _project_website_host,
+)
 
 analysis_bp = Blueprint("analysis", __name__)
 
@@ -789,6 +799,305 @@ def async_run_analysis(
                     db.session.commit()
         except Exception:
             pass
+
+def _analysis_job_list_row(job: AnalysisJob) -> dict[str, Any]:
+    synth: dict[str, Any] = {}
+    drift: dict[str, Any] = {}
+    try:
+        synth = json.loads(job.synthesis_json or "{}") if job.synthesis_json else {}
+        if not isinstance(synth, dict):
+            synth = {}
+    except Exception:
+        synth = {}
+    if not synth and job.result_json:
+        try:
+            res = json.loads(job.result_json)
+            synth = res.get("synthesis", {}) if isinstance(res, dict) and isinstance(res.get("synthesis"), dict) else {}
+        except Exception:
+            synth = {}
+    try:
+        drift = json.loads(job.drift_json or "{}") if job.drift_json else {}
+        if not isinstance(drift, dict):
+            drift = {}
+    except Exception:
+        drift = {}
+    if not drift and job.result_json:
+        try:
+            res = json.loads(job.result_json)
+            drift = res.get("drift", {}) if isinstance(res, dict) and isinstance(res.get("drift"), dict) else {}
+        except Exception:
+            drift = {}
+
+    mentioning = synth.get("engines_mentioning_focus") or synth.get("engines_mentioning") or []
+    not_mentioning = synth.get("engines_not_mentioning_focus") or synth.get("engines_not_mentioning") or []
+    return {
+        "job_id": job.job_id,
+        "prompt_id": job.prompt_id,
+        "project_id": job.project_id,
+        "status": job.status,
+        "created_at": job.created_at,
+        "started_at": job.started_at or None,
+        "completed_at": job.completed_at or None,
+        "error": job.error if job.status == "failed" else None,
+        "metrics_snapshot": {
+            "consensus_rank": synth.get("consensus_rank"),
+            "citation_concentration": synth.get("citation_concentration"),
+            "engines_mentioning_count": len([x for x in mentioning if str(x).strip()]),
+            "engines_not_mentioning_count": len([x for x in not_mentioning if str(x).strip()]),
+            "rank_variance": synth.get("rank_variance"),
+            "drift_velocity": drift.get("velocity"),
+            "rank_delta": drift.get("rank_delta"),
+            "current_rank": drift.get("current_rank"),
+            "previous_rank": drift.get("previous_rank"),
+            "mention_rate_delta": drift.get("mention_rate_delta"),
+        },
+    }
+
+
+def _competitor_url_slugs(project: Project) -> list[str]:
+    """Lowercase alphanumeric slugs from competitor names (matches reports heuristics)."""
+    out: list[str] = []
+    for raw in project.get_competitors_list():
+        s = str(raw or "").strip().lower()
+        slug = re.sub(r"[^a-z0-9]", "", s)
+        if slug and len(slug) >= 3:
+            out.append(slug)
+    return out
+
+
+def _iter_project_responses_for_citation_scope(
+    project: Project,
+    prompts: list[Prompt],
+    scope: str,
+):
+    """Yield (prompt, response) pairs: latest per prompt+engine, or all historical analysis rows."""
+    if scope == "all":
+        prompt_by_id = {p.id: p for p in prompts}
+        rows = (
+            Response.query.join(Prompt, Response.prompt_id == Prompt.id)
+            .filter(Prompt.project_id == project.id, Prompt.user_id == project.user_id)
+            .order_by(Response.timestamp.desc())
+            .all()
+        )
+        for r in rows:
+            if not _is_analysis_engine(r.engine):
+                continue
+            pr = prompt_by_id.get(r.prompt_id)
+            if not pr:
+                continue
+            sel = {m.strip().lower() for m in pr.get_models() if m and m.strip()}
+            if sel and (r.engine or "").strip().lower() not in sel:
+                continue
+            yield pr, r
+        return
+
+    for pr in prompts:
+        for r in _latest_responses_by_prompt(pr.id):
+            yield pr, r
+
+
+@analysis_bp.route("/project/<int:project_id>/citation-economics", methods=["GET"])
+@require_auth
+def get_citation_economics(project_id: int):
+    """
+    Aggregates citation vs mention patterns per engine and domain, derived from stored responses.
+    No hardcoded brands: uses project website URL and competitor list for domain classification.
+    """
+    project = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
+    if not project:
+        raise NotFoundError("Project not found")
+
+    scope = (request.args.get("scope") or "latest").strip().lower()
+    if scope not in {"latest", "all"}:
+        scope = "latest"
+
+    brand_host = _project_website_host(project.website_url or "")
+    competitors_normalized = _competitor_url_slugs(project)
+
+    prompts = Prompt.query.filter_by(project_id=project_id, user_id=g.user.id).all()
+    if not prompts:
+        return jsonify(
+            {
+                "project_id": project_id,
+                "scope": scope,
+                "brand_host": brand_host or None,
+                "by_engine": {},
+                "domain_counts": [],
+                "prompt_top_domains": [],
+                "quadrant": [],
+                "totals": {
+                    "prompts": 0,
+                    "cited_focus_mentions": 0,
+                    "non_cited_focus_mentions": 0,
+                    "focus_absent_slots": 0,
+                    "citation_url_occurrences": 0,
+                },
+            }
+        )
+
+    by_engine: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "cited_mentions": 0,
+            "non_cited_mentions": 0,
+            "no_focus_mention": 0,
+            "response_slots": 0,
+        }
+    )
+    domain_totals: dict[str, dict[str, Any]] = {}
+    prompt_domain_counts: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    totals = {
+        "prompts": len(prompts),
+        "cited_focus_mentions": 0,
+        "non_cited_focus_mentions": 0,
+        "focus_absent_slots": 0,
+        "citation_url_occurrences": 0,
+    }
+
+    for prompt, response in _iter_project_responses_for_citation_scope(project, prompts, scope):
+        eng = (response.engine or "").strip() or "unknown"
+        st = by_engine[eng]
+        st["response_slots"] += 1
+
+        mentions = Mention.query.filter_by(response_id=response.id).all()
+        focus_mentioned = any(bool(m.is_focus) for m in mentions)
+
+        sources = _parse_sources(response.sources)
+        has_citations = bool(sources)
+
+        if focus_mentioned:
+            if has_citations:
+                st["cited_mentions"] += 1
+                totals["cited_focus_mentions"] += 1
+            else:
+                st["non_cited_mentions"] += 1
+                totals["non_cited_focus_mentions"] += 1
+        else:
+            st["no_focus_mention"] += 1
+            totals["focus_absent_slots"] += 1
+
+        for src in sources:
+            if not isinstance(src, str) or not src.strip():
+                continue
+            normalized = _normalize_source_url(src.strip())
+            dom = _domain_from_url(normalized) if normalized else ""
+            if not dom:
+                continue
+            sig = _classify_domain_signal(dom, brand_host, competitors_normalized)
+            dkey = dom.lower()
+            if dkey not in domain_totals:
+                domain_totals[dkey] = {"count": 0, "signal": sig}
+            domain_totals[dkey]["count"] += 1
+            domain_totals[dkey]["signal"] = sig
+            totals["citation_url_occurrences"] += 1
+            prompt_domain_counts[prompt.id][dkey] += 1
+
+    domain_list = [
+        {"domain": dom, "citation_count": meta["count"], "signal": meta["signal"]}
+        for dom, meta in domain_totals.items()
+    ]
+    domain_list.sort(key=lambda x: (-x["citation_count"], x["domain"]))
+
+    pid_to_text = {p.id: p.prompt_text for p in prompts}
+    prompt_top = []
+    for pid, dcounts in sorted(
+        prompt_domain_counts.items(),
+        key=lambda item: sum(item[1].values()),
+        reverse=True,
+    ):
+        top = sorted(dcounts.items(), key=lambda x: -x[1])[:10]
+        prompt_top.append(
+            {
+                "prompt_id": pid,
+                "prompt_text": pid_to_text.get(pid, ""),
+                "top_domains": [{"domain": d, "citations": c} for d, c in top],
+            }
+        )
+
+    quadrant: list[dict[str, Any]] = []
+    for eng in sorted(by_engine.keys(), key=lambda x: x.lower()):
+        st = by_engine[eng]
+        slots = max(st["response_slots"], 1)
+        cited = st["cited_mentions"]
+        non_cited = st["non_cited_mentions"]
+        mentioned = cited + non_cited
+        coverage_pct = round(100.0 * mentioned / slots, 1)
+        cited_of_mentioned_pct = round(100.0 * cited / mentioned, 1) if mentioned else 0.0
+        quadrant.append(
+            {
+                "engine": eng,
+                "coverage_pct": coverage_pct,
+                "cited_share_when_focus_mentioned_pct": cited_of_mentioned_pct,
+                "slots": st["response_slots"],
+                "cited_mentions": cited,
+                "non_cited_mentions": non_cited,
+                "no_focus_mention": st["no_focus_mention"],
+            }
+        )
+
+    by_engine_out = {k: dict(v) for k, v in by_engine.items()}
+
+    return jsonify(
+        {
+            "project_id": project_id,
+            "scope": scope,
+            "brand_host": brand_host or None,
+            "by_engine": by_engine_out,
+            "domain_counts": domain_list[:80],
+            "prompt_top_domains": prompt_top[:50],
+            "quadrant": quadrant,
+            "totals": totals,
+        }
+    )
+
+
+@analysis_bp.route("/project/<int:project_id>/jobs", methods=["GET"])
+@require_auth
+def list_project_analysis_jobs(project_id):
+    limit_raw = request.args.get("limit", default="80")
+    prompt_filter = request.args.get("prompt_id", type=int)
+    try:
+        limit = max(1, min(500, int(limit_raw)))
+    except Exception:
+        limit = 80
+
+    project = Project.query.filter_by(id=project_id, user_id=g.user.id).first()
+    if not project:
+        raise NotFoundError("Project not found")
+
+    qry = AnalysisJob.query.filter_by(project_id=project_id, user_id=g.user.id).order_by(AnalysisJob.created_at.desc())
+    if prompt_filter:
+        qry = qry.filter_by(prompt_id=prompt_filter)
+
+    rows = [_analysis_job_list_row(job) for job in qry.limit(limit).all()]
+
+    timeline = sorted(
+        [r for r in rows if r.get("completed_at") and r.get("status") == "completed"],
+        key=lambda item: item.get("completed_at") or "",
+    )
+    timeline_points = []
+    for r in timeline:
+        snap = r.get("metrics_snapshot") or {}
+        timeline_points.append(
+            {
+                "job_id": r["job_id"],
+                "prompt_id": r["prompt_id"],
+                "completed_at": r["completed_at"],
+                "consensus_rank": snap.get("consensus_rank"),
+                "engines_mentioning_count": snap.get("engines_mentioning_count"),
+                "citation_concentration": snap.get("citation_concentration"),
+                "rank_delta": snap.get("rank_delta"),
+            }
+        )
+
+    return jsonify(
+        {
+            "project_id": project_id,
+            "count": len(rows),
+            "jobs": rows,
+            "timeline_completed": timeline_points,
+        }
+    )
 
 
 @analysis_bp.route("/run/<int:prompt_id>", methods=["POST"])

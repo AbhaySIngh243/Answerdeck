@@ -87,11 +87,18 @@ function AppRoutes() {
         {/* Clerk's "routing=path" may navigate to sub-routes under these paths. */}
         <Route path="/login/*" element={<LoginPage />} />
         <Route path="/signup/*" element={<SignupPage />} />
+        <Route
+          path="/dashboard/project/:id/onboarding"
+          element={
+            <ProtectedRoute>
+              <ProjectOnboardingWizard />
+            </ProtectedRoute>
+          }
+        />
         <Route path="/dashboard" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
           <Route index element={<DashboardHome />} />
           <Route path="projects" element={<ProjectsView />} />
           <Route path="project/:id" element={<ProjectDetailView />} />
-          <Route path="project/:id/onboarding" element={<ProjectOnboardingWizard />} />
           <Route path="project/:id/prompts/setup" element={<ProjectPromptSetupView />} />
           <Route path="reports" element={<ReportsView />} />
           <Route path="settings" element={<SettingsView />} />

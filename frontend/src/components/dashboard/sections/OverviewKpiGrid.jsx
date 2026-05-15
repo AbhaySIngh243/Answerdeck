@@ -1,11 +1,11 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { MessageSquare, Cpu, Eye, Crown } from 'lucide-react';
+import { MessageSquare, Cpu, Eye, Crown, BarChart3 } from 'lucide-react';
 import { MetricTile } from '../ui/MetricTile';
 
 const container = {
   hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { staggerChildren: 0.08 } },
+  visible: { opacity: 1, transition: { staggerChildren: 0.06 } },
 };
 
 export default function OverviewKpiGrid({
@@ -27,21 +27,36 @@ export default function OverviewKpiGrid({
       )[0]
     : null;
 
+  const rankings = Array.isArray(dashboard?.prompt_rankings) ? dashboard.prompt_rankings : [];
+  const rankedEntries = rankings.filter((r) => r.avg_rank != null);
+  const avgPosition =
+    rankedEntries.length > 0
+      ? (rankedEntries.reduce((s, r) => s + Number(r.avg_rank), 0) / rankedEntries.length).toFixed(2)
+      : '—';
+
   const cards = [
     {
       label: 'Prompts',
       value: promptCount,
-      sub: promptCount > 0 ? 'Active queries tracked' : 'No prompts yet',
+      sub: 'Active queries tracked',
+      icon: MessageSquare,
+      accent: 'blue',
     },
     {
       label: 'AI Models',
       value: engineCount,
-      sub: enabledEngines.length > 0 ? enabledEngines.map(e => e.name).join(', ') : 'No engines enabled',
+      sub: enabledEngines.length > 0
+        ? enabledEngines.map((e) => e.name).join(', ')
+        : 'No engines enabled',
+      icon: Cpu,
+      accent: 'purple',
     },
     {
       label: 'Visibility',
       value: `${visibilityPct}%`,
       sub: 'Across all prompts',
+      icon: Eye,
+      accent: 'green',
     },
     {
       label: 'Top Competitor',
@@ -56,6 +71,15 @@ export default function OverviewKpiGrid({
               )
             )} visibility pts`
           : 'Run analysis to populate',
+      icon: Crown,
+      accent: 'amber',
+    },
+    {
+      label: 'Your Avg Position',
+      value: avgPosition,
+      sub: 'Across all prompts',
+      icon: BarChart3,
+      accent: 'blue',
     },
   ];
 
@@ -64,7 +88,7 @@ export default function OverviewKpiGrid({
       variants={container}
       initial="hidden"
       animate="visible"
-      className="grid grid-cols-2 gap-4 lg:grid-cols-4"
+      className="grid grid-cols-2 gap-4 lg:grid-cols-5"
     >
       {cards.map((c) => (
         <MetricTile
@@ -74,7 +98,6 @@ export default function OverviewKpiGrid({
           sub={c.sub}
           icon={c.icon}
           accent={c.accent}
-          className="py-5"
         />
       ))}
     </motion.div>

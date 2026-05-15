@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 from collections import Counter
 from html import unescape
@@ -395,7 +396,7 @@ def _is_valid_prompt(value: str, brand: str) -> bool:
     if _contains_brand(text, brand):
         return False
     count = _word_count(text)
-    if count < 5 or count > 8:
+    if count < 6 or count > 14:
         return False
     if re.search(r"\b(vs|versus)\b", text, flags=re.IGNORECASE):
         return False
@@ -411,10 +412,12 @@ def _short_category(category: str) -> str:
 
 def _build_fallback_prompts(project: dict[str, Any]) -> list[str]:
     category = _short_category(project.get("category") or "")
+    region = str(project.get("region") or "").strip()
+    region_phrase = f" in {region}" if region and region.lower() != "global" else ""
     candidates = [
-        f"Which are the best {category} options",
-        f"Recommended {category} tools for teams like us",
-        f"Best {category} options for tight budgets",
+        f"Which {category} should I buy for everyday use{region_phrase}",
+        f"Best {category} for reliability and after sales support",
+        f"What {category} offers the best value for money{region_phrase}",
     ]
     brand = project.get("name") or ""
     return [c for c in candidates if _is_valid_prompt(c, brand)][:3]
@@ -496,7 +499,7 @@ def _prompt_coheres_with_theme(prompt: str, theme_tokens: set[str]) -> bool:
 
 def _valid_prompt1_discovery(text: str) -> bool:
     t = text.lower()
-    if any(x in t for x in ("best", "top", "which", "what", "options", "picks", "choices", "alternatives")):
+    if any(x in t for x in ("best", "top", "which", "what", "options", "picks", "choices", "alternatives", "buy")):
         return True
     return bool(re.search(r"\b(find|discover|looking for)\b", t))
 
@@ -504,9 +507,11 @@ def _valid_prompt1_discovery(text: str) -> bool:
 _PROMPT2_FRAMING_RE = re.compile(
     r"(?:"
     r"\brecommended\b|"
+    r"\bwhich (?:one|brand|option|product)\b|"
     r"\bwhich are the best\b|\bwhich is the best\b|\bwhat are the best\b|"
     r"\btop options\b|\btop picks\b|\bbest options\b|\bbest picks\b|\bbest choices\b|"
-    r"\bbest .{1,40} for\b"
+    r"\bbest .{1,60} for\b|"
+    r"\bcompare\b|\balternatives?\b|\bworth buying\b|\breliable\b"
     r")",
     re.IGNORECASE,
 )
@@ -516,17 +521,18 @@ def _valid_prompt2_framing(text: str) -> bool:
     if _PROMPT2_FRAMING_RE.search(text or ""):
         return True
     t = text.lower()
-    return "best" in t and " for " in t
+    return ("best" in t and " for " in t) or ("buy" in t and "which" in t)
 
 
 _PROMPT3_CONSTRAINT_RE = re.compile(
     r"(?:"
     r"\bunder\b|\$\s*[\d,.]+|\b\d{3,}\b|"
     r"\bbudgets?\b|\baffordable\b|\bcheap\b|\bpremium\b|\benterprise\b|"
-    r"\btight\b|\blow[- ]cost\b|"
+    r"\btight\b|\blow[- ]cost\b|\bvalue for money\b|"
     r"\bsmall\s+(?:business|team|space|room|apartment|office|home)s?\b|"
+    r"\bafter[- ]sales\b|\bsupport\b|\bwarranty\b|\breliable\b|\bdurable\b|"
     r"\bwhen\s+[a-z]|"
-    r"\bfor\s+(?:home|travel|renovation|renovating|rentals|renters|students|families|apartments)\b"
+    r"\bfor\s+(?:home|travel|renovation|renovating|rentals|renters|students|families|apartments|everyday|gaming|work|teams)\b"
     r")",
     re.IGNORECASE,
 )
@@ -623,23 +629,37 @@ def _build_suggestion_user_prompt(
     site_context: str,
     theme_hint: str,
 ) -> str:
-    return f"""Generate exactly 3 real search-style prompts a buyer might type. Do not use the brand name (it's context only).
+    angle_packs = [
+        "purchase decision, reliability/support, value-for-money constraint",
+        "shortlist comparison, buyer persona/use case, post-purchase risk",
+        "best-fit recommendation, budget/value, must-have feature scenario",
+        "category education, alternative discovery, practical buying constraint",
+    ]
+    angle_pack = random.choice(angle_packs)
+
+    return f"""Generate exactly 3 high-signal prompts worth paying to test in an AI visibility audit.
+These should be real questions a serious buyer might ask ChatGPT/Perplexity/Gemini before choosing a brand.
+Do not use the brand name (it's context only).
 
 Website-derived context (may be partial if fetch failed):
 {site_context}
 
+Suggested angle mix for THIS run: {angle_pack}
+
 Requirements:
 - Each JSON value must be the raw query text only (no "Prompt 1:" prefixes or labels).
-- Each prompt must be 5-8 words only, natural conversational language, real buying or decision intent.
+- Each prompt must be 6-14 words, natural conversational language, real buying or decision intent.
 - Do not mention the brand name in any prompt.
 - All three prompts must stay in the SAME product or service niche implied by the site context and category. Do not jump to unrelated parent categories (example: if the site is smart lighting, do not output generic home electronics).
-- Make prompts specific enough to surface competitor brands and alternatives.
+- Make prompts specific enough to surface competitor brands, alternatives, objections, and purchase criteria.
+- Prefer questions a brand would actually pay to monitor: recommendations, shortlists, "which should I buy", reliability/support, price/value, specific use cases, or alternatives.
+- Avoid bland SEO keyword phrases like "recommended X for consumers" unless it sounds like a real buyer question.
 - Avoid "vs" / "versus" brand comparisons.
 
 Slot rules:
-- prompt_1: discovery intent (best / top / which / what options in this niche).
-- prompt_2: recommendation-style framing only. Prefer openers like: recommended, which are the best, top options, best picks, best choices, best <niche> for <audience>. Do not use a bare category pivot that ignores the site niche.
-- prompt_3: must reflect a constraint or scenario: price/budget (under, affordable, budget, tight budget), audience/space (small apartment, small team), timing (when renovating), or setting (for home, for travel) — and must read differently in intent from prompt_1 and prompt_2.
+- prompt_1: broad buying/discovery question that could surface a shortlist.
+- prompt_2: sharper recommendation/comparison question using a buyer persona, use case, or feature need.
+- prompt_3: constraint/risk question: price/value, reliability, after-sales support, warranty, space, timing, or setup scenario.
 
 Brand (do not echo): {project_name}
 Category context: {category}

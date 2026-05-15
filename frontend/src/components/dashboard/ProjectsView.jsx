@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -43,6 +43,7 @@ const item = {
 
 const ProjectsView = () => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { loading: authLoading, isSignedIn } = useAuth();
   const queryClient = useQueryClient();
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -94,6 +95,34 @@ const ProjectsView = () => {
 
   const atProjectLimit = safeProjects.length >= maxProjects;
 
+  const startSetupMutation = useMutation({
+    mutationFn: () => api.createProject({
+      name: 'Untitled project',
+      category: '',
+      region: 'Global',
+      website_url: '',
+    }),
+    retry: 2,
+    retryDelay: (attempt) => Math.min(3000 * Math.pow(2, attempt), 10000),
+    onSuccess: (payload) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
+      if (payload?.id) navigate(`/dashboard/project/${payload.id}/onboarding`);
+    },
+  });
+
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') return;
+    if (!atProjectLimit && safeProjects.length === 0 && !startSetupMutation.isPending) {
+      startSetupMutation.mutate();
+    } else if (!atProjectLimit) {
+      setShowCreateModal(true);
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [atProjectLimit, navigate, queryClient, safeProjects.length, searchParams, setSearchParams, startSetupMutation]);
+
   const deleteProjectMutation = useMutation({
     mutationFn: api.deleteProject,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
@@ -106,6 +135,11 @@ const ProjectsView = () => {
       category: form.category,
       region: form.region, website_url: normalizeWebsiteUrl(form.website_url),
     });
+  };
+
+  const handleStartSetup = () => {
+    if (atProjectLimit || startSetupMutation.isPending) return;
+    startSetupMutation.mutate();
   };
 
   const updateField = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
@@ -165,8 +199,25 @@ const ProjectsView = () => {
           </div>
           <h3 className="text-lg font-semibold text-slate-800">No projects yet</h3>
           <p className="mt-1 max-w-sm text-sm text-slate-400">Create your first project to begin AI visibility monitoring.</p>
-          <Button onClick={() => setShowCreateModal(true)} className="mt-5">
-            <Plus className="h-4 w-4" />Create Project
+          {startSetupMutation.isError && (
+            <p className="mt-3 max-w-sm text-sm text-red-500">
+              {String(startSetupMutation.error?.message || '').toLowerCase().includes('timed out')
+                ? 'Server is still starting up. Please wait and try again.'
+                : startSetupMutation.error?.message}
+            </p>
+          )}
+          <Button onClick={handleStartSetup} disabled={atProjectLimit || startSetupMutation.isPending} className="mt-5">
+            {startSetupMutation.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Preparing setup...
+              </>
+            ) : (
+              <>
+                <Plus className="h-4 w-4" />
+                Create Project
+              </>
+            )}
           </Button>
         </motion.div>
       ) : (
@@ -211,11 +262,11 @@ const ProjectsView = () => {
 
                       <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Region</p>
+                          <p className="text-[10px] font-semibold text-slate-400">Region</p>
                           <p className="truncate text-sm font-semibold text-slate-700">{project.region || 'Global'}</p>
                         </div>
                         <div>
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Competitors</p>
+                          <p className="text-[10px] font-semibold text-slate-400">Competitors</p>
                           <p className="text-sm font-semibold text-slate-700">{competitors.length}</p>
                         </div>
                       </div>
@@ -264,24 +315,24 @@ const ProjectsView = () => {
                 <Input autoFocus required value={form.name} onChange={(e) => updateField('name', e.target.value)} placeholder="e.g. Answrdeck" />
               </div>
               <div>
-                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Industry</label>
+                <label className="mb-1.5 block text-[10px] font-semibold text-slate-400">Industry</label>
                 <Input value={form.category} onChange={(e) => updateField('category', e.target.value)} placeholder="e.g. FinTech" />
               </div>
               <div>
-                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Region</label>
+                <label className="mb-1.5 block text-[10px] font-semibold text-slate-400">Region</label>
                 <Select value={form.region || 'Global'} onChange={(e) => updateField('region', e.target.value)}>
                   {REGION_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
                 </Select>
               </div>
               <div className="col-span-2">
-                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Website URL</label>
+                <label className="mb-1.5 block text-[10px] font-semibold text-slate-400">Website URL</label>
                 <Input value={form.website_url} onChange={(e) => updateField('website_url', e.target.value)} placeholder="example.com" />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3 pt-2">
               <Button type="button" variant="secondary" onClick={() => setShowCreateModal(false)}>Discard</Button>
               <Button type="submit" disabled={createDisabled}>
-                {createProjectMutation.isPending ? <><Loader2 className="h-4 w-4 animate-spin" /><span>Creating...</span></> : <span>Next: Onboarding</span>}
+                {createProjectMutation.isPending ? <><Loader2 className="h-4 w-4 animate-spin" /><span>Creating...</span></> : <span>Onboarding</span>}
               </Button>
             </div>
           </form>

@@ -4,11 +4,11 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   ArrowLeft,
   CheckCircle2,
-  Globe2,
-  Info,
+  Lightbulb,
   Loader2,
   Plus,
   Rocket,
+  Send,
   Sparkles,
   Target,
   Wand2,
@@ -17,20 +17,26 @@ import {
 
 import { api } from '../../lib/api';
 import { Button } from '../ui/button';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '../ui/card';
 import { Input } from '../ui/input';
 import { Select } from '../ui/select';
 import { Badge } from '../ui/badge';
 import { Textarea } from '../ui/textarea';
-import OnboardingAssistant from './OnboardingAssistant';
+import BrandLogo from '../BrandLogo';
 
 const TOTAL_STEPS = 5;
+const STEP_FLOW = [1, 3, 4, 5];
+const DISPLAY_TOTAL = STEP_FLOW.length;
+
+function displayIndexFor(step) {
+  const idx = STEP_FLOW.indexOf(step);
+  return idx >= 0 ? idx + 1 : 1;
+}
+
+function previousFlowStep(step) {
+  const idx = STEP_FLOW.indexOf(step);
+  if (idx <= 0) return STEP_FLOW[0];
+  return STEP_FLOW[idx - 1];
+}
 
 const BRAND_PRIORITIES = [
   { id: 'visibility', label: 'Brand visibility', description: 'How often is your brand mentioned vs competitors?' },
@@ -102,6 +108,208 @@ const SEARCH_PROVIDERS = [
   { id: 'perplexity', label: 'Perplexity', description: 'Live web results via Perplexity.' },
   { id: 'none', label: 'No grounding', description: 'Use raw engine responses without search context.' },
 ];
+
+const STEP_HELP = {
+  1: {
+    heading: 'Make this brand findable',
+    summary: 'Two minutes of context here sharpens every later analysis.',
+    tips: [
+      {
+        title: 'Use the name customers say',
+        body: 'Plain-language brand name — not the legal entity or holding company.',
+      },
+      {
+        title: 'Use your primary domain',
+        body: 'Your main marketing site (not an app.* subdomain or staging URL).',
+      },
+      {
+        title: '4–8 head-to-head competitors',
+        body: 'Direct alternatives buyers compare against — not marketplaces or parents.',
+      },
+    ],
+  },
+  3: {
+    heading: 'Pick the prompts that matter',
+    summary: 'These are the questions we will ask every AI engine, on repeat.',
+    tips: [
+      {
+        title: 'Use customer phrasing',
+        body: 'Real questions buyers type, not your marketing copy.',
+      },
+      {
+        title: 'Cover the full funnel',
+        body: 'Mix awareness, consideration, and decision-stage prompts.',
+      },
+      {
+        title: 'Skip your brand name',
+        body: 'We want to see how engines answer cold — without you in the prompt.',
+      },
+    ],
+  },
+  4: {
+    heading: 'Anchor the analysis',
+    summary: 'A clearer brand strategy means sharper, more useful audits.',
+    tips: [
+      {
+        title: 'One-sentence promise',
+        body: 'Why customers pick you over the alternatives — in plain language.',
+      },
+      {
+        title: 'Concrete differentiators',
+        body: 'Specific strengths the AI should look for in answers.',
+      },
+      {
+        title: 'Pick a few priorities',
+        body: 'The 2–3 things you care about most — not everything.',
+      },
+    ],
+  },
+  5: {
+    heading: 'Ready to launch',
+    summary: 'First analysis usually takes 30–90 seconds depending on engine count.',
+    tips: [
+      {
+        title: 'Everything is editable',
+        body: 'Prompts, competitors, and strategy can all be tuned after launch.',
+      },
+      {
+        title: 'Where to look next',
+        body: 'Open your project to see the first visibility audit when it lands.',
+      },
+      {
+        title: 'Need a hand?',
+        body: 'Use the ask box below — we can refine prompts or priorities for you.',
+      },
+    ],
+  },
+};
+
+function OnboardingHelpPanel({ projectId, step, context }) {
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState(null);
+
+  const helpEntry = STEP_HELP[step] || STEP_HELP[1];
+
+  const askMutation = useMutation({
+    mutationFn: (payload) => api.askOnboardingAssistant(projectId, payload),
+    onSuccess: (data) => setAnswer(data),
+  });
+
+  useEffect(() => {
+    setAnswer(null);
+    setQuestion('');
+    askMutation.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  function handleAsk(event) {
+    event.preventDefault();
+    const text = question.trim();
+    if (!text || askMutation.isPending) return;
+    askMutation.mutate({ step, context, question: text });
+  }
+
+  return (
+    <aside className="relative flex min-h-screen w-full min-w-0 flex-col overflow-hidden bg-slate-950 px-6 py-8 text-white sm:px-8 lg:px-10 lg:py-10">
+      <div className="pointer-events-none absolute -right-32 -top-24 h-72 w-72 rounded-full bg-brand-primary/20 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-32 left-10 h-72 w-72 rounded-full bg-blue-500/10 blur-3xl" />
+
+      <div className="relative flex items-center justify-between">
+        <BrandLogo
+          variant="mark"
+          size="sm"
+          className="rounded-2xl bg-white/95 p-2 shadow-lg shadow-black/30"
+        />
+        <span className="text-[10px] font-semibold tracking-wide text-blue-200/70">
+          Step {displayIndexFor(step)} of {DISPLAY_TOTAL}
+        </span>
+      </div>
+
+      <div className="relative mt-10 w-full max-w-xl lg:max-w-none">
+        <h2 className="text-2xl font-bold leading-tight tracking-tight sm:text-3xl">
+          {helpEntry.heading}
+        </h2>
+        <p className="mt-3 text-sm leading-6 text-slate-300">{helpEntry.summary}</p>
+
+        <ul className="mt-6 space-y-3">
+          {helpEntry.tips.map((tip) => (
+            <li
+              key={tip.title}
+              className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4"
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-400/15 text-blue-200">
+                <Lightbulb className="h-4 w-4" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-white">{tip.title}</p>
+                <p className="mt-1 text-xs leading-5 text-slate-300">{tip.body}</p>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="relative mt-auto pt-8">
+        {answer ? (
+          <div className="mb-3 max-h-60 overflow-y-auto rounded-2xl border border-white/10 bg-white/[0.05] p-4 text-xs leading-5 text-slate-200">
+            {answer.tip ? (
+              <p className="text-sm font-medium text-white">{answer.tip}</p>
+            ) : null}
+            {answer.recommended_action ? (
+              <p className="mt-2">
+                <span className="font-semibold text-blue-200">Next step:</span>{' '}
+                {answer.recommended_action}
+              </p>
+            ) : null}
+            {Array.isArray(answer.examples) && answer.examples.length > 0 ? (
+              <ul className="mt-2 space-y-1 text-[11px] text-slate-300">
+                {answer.examples.slice(0, 3).map((ex, i) => (
+                  <li key={i} className="rounded bg-white/[0.05] px-2 py-1">
+                    {ex}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+
+        <form
+          onSubmit={handleAsk}
+          className="flex items-center gap-2 rounded-2xl border border-white/15 bg-white/[0.05] px-3 py-2 focus-within:border-blue-300/60 focus-within:bg-white/[0.08]"
+        >
+          <Sparkles className="h-4 w-4 shrink-0 text-blue-200" />
+          <input
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder="Ask about this step…"
+            className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-400"
+          />
+          <button
+            type="submit"
+            disabled={!question.trim() || askMutation.isPending}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/15 text-white transition-colors hover:bg-white/25 disabled:opacity-50"
+            aria-label="Ask"
+          >
+            {askMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
+          </button>
+        </form>
+        {askMutation.isError ? (
+          <p className="mt-2 text-[11px] text-red-300">
+            Assistant is offline right now — you can still keep moving.
+          </p>
+        ) : (
+          <p className="mt-2 text-[11px] text-slate-400">
+            Only fetches when you ask. Suggestions stay quiet otherwise.
+          </p>
+        )}
+      </div>
+    </aside>
+  );
+}
 
 function normalizeStringList(value) {
   if (Array.isArray(value)) {
@@ -350,7 +558,13 @@ export default function ProjectOnboardingWizard() {
         searchProvider: form.step4.search_provider,
       });
     },
-    onSuccess: () => navigate(`/dashboard/project/${id}`),
+    onSuccess: (payload) => {
+      navigate(`/dashboard/project/${id}`, {
+        state: {
+          analysisJobs: Array.isArray(payload?.results) ? payload.results : [],
+        },
+      });
+    },
     onSettled: () => setLaunchingAnalysis(false),
   });
 
@@ -390,7 +604,6 @@ export default function ProjectOnboardingWizard() {
         }
         if (shouldApplyCompetitors) {
           next.step1 = { ...next.step1, competitors: incomingCompetitors };
-          next.step2 = { ...next.step2, competitors: incomingCompetitors };
         }
         return next;
       });
@@ -415,10 +628,8 @@ export default function ProjectOnboardingWizard() {
         s.brand_name && s.domain && s.industry && s.region && s.competitors.length > 0,
       );
     }
-    if (currentStep === 2) return form.step2.competitors.length > 0;
     if (currentStep === 3) return form.step3.seed_prompts.length > 0;
     if (currentStep === 4) {
-      // New step 4: require at least value proposition and analysis priorities
       return (
         form.step4.value_proposition.trim().length > 0 &&
         form.step4.analysis_priorities.length > 0
@@ -443,6 +654,17 @@ export default function ProjectOnboardingWizard() {
   }
 
   async function handleNext() {
+    if (currentStep === 1) {
+      await saveStepMutation.mutateAsync({
+        step: 1,
+        data: buildStepPayload(1),
+      });
+      await saveStepMutation.mutateAsync({
+        step: 2,
+        data: { competitors: form.step1.competitors },
+      });
+      return;
+    }
     await saveStepMutation.mutateAsync({ step: currentStep, data: buildStepPayload(currentStep) });
   }
 
@@ -454,7 +676,7 @@ export default function ProjectOnboardingWizard() {
     if (!hasBrandAndIndustry) return;
 
     if (
-      (currentStep === 1 || currentStep === 2) &&
+      currentStep === 1 &&
       suggestedCompetitors.length === 0 &&
       suggestionsRequestedForStep !== currentStep
     ) {
@@ -480,15 +702,6 @@ export default function ProjectOnboardingWizard() {
     suggestedCompetitors.length,
     form?.step3?.seed_prompts?.length,
   ]);
-
-  useEffect(() => {
-    if (currentStep === 2 && form && form.step2.competitors.length === 0) {
-      if (form.step1.competitors.length > 0) {
-        updateField('step2', 'competitors', [...form.step1.competitors]);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentStep, form?.step1?.competitors]);
 
   function togglePromptSelection(prompt, stage = form?.step3?.funnel_stage || 'awareness') {
     if (!form) return;
@@ -555,10 +768,6 @@ export default function ProjectOnboardingWizard() {
     if (!step1Current.some((c) => c.toLowerCase() === name.toLowerCase())) {
       updateField('step1', 'competitors', [...step1Current, name]);
     }
-    const step2Current = form.step2.competitors;
-    if (!step2Current.some((c) => c.toLowerCase() === name.toLowerCase())) {
-      updateField('step2', 'competitors', [...step2Current, name]);
-    }
   }
 
   const assistantContext = form
@@ -592,56 +801,57 @@ export default function ProjectOnboardingWizard() {
   const isBusy =
     saveStepMutation.isPending || completeMutation.isPending || launchingAnalysis;
 
-  const siteSummary = {
-    has_domain: Boolean(form.step1.domain),
-    brand: form.step1.brand_name,
-    industry: form.step1.industry,
-    region: form.step1.region,
+  const displayStep = displayIndexFor(currentStep);
+  const stepHeadlines = {
+    1: { eyebrow: 'Brand identity', title: 'Tell us about your brand' },
+    3: { eyebrow: 'Tracking prompts', title: 'Pick the prompts we will track' },
+    4: { eyebrow: 'Brand strategy', title: 'Define your brand strategy' },
+    5: { eyebrow: 'Review', title: 'Review and launch' },
   };
+  const headline = stepHeadlines[currentStep] || stepHeadlines[1];
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 pb-28 lg:pr-[380px]">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Set up your project</h1>
-          <p className="text-sm text-slate-500">
-            Step {currentStep} of {TOTAL_STEPS} &mdash;{' '}
-            {currentStep === 1 && 'Tell us about your brand'}
-            {currentStep === 2 && 'Confirm your direct competitors'}
-            {currentStep === 3 && 'Pick the prompts we will track'}
-            {currentStep === 4 && 'Define your brand strategy'}
-            {currentStep === 5 && 'Review & launch'}
-          </p>
-        </div>
-        <Button asChild variant="secondary" size="sm">
-          <Link to="/dashboard/projects">
-            <ArrowLeft className="mr-1 h-4 w-4" />
-            Projects
-          </Link>
-        </Button>
-      </div>
+    <div className="min-h-screen bg-slate-50">
+      <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(420px,560px)]">
+        <main className="flex min-h-screen flex-col overflow-y-auto px-4 py-8 sm:px-8 md:px-12 lg:px-16 lg:py-12">
+          <div className="flex w-full max-w-4xl flex-1 flex-col self-start">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold text-brand-primary">
+                  {headline.eyebrow}
+                </p>
+                <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-900 sm:text-[2rem]">
+                  {headline.title}
+                </h1>
+                <p className="mt-1.5 text-sm text-slate-500">
+                  Step {displayStep} of {DISPLAY_TOTAL}
+                </p>
+              </div>
+              <Button asChild variant="secondary" size="sm">
+                <Link to="/dashboard/projects">
+                  <ArrowLeft className="mr-1 h-4 w-4" />
+                  Projects
+                </Link>
+              </Button>
+            </div>
 
-      <div className="flex gap-1.5">
-        {Array.from({ length: TOTAL_STEPS }, (_, i) => (
-          <div
-            key={i}
-            className={`h-1.5 flex-1 rounded-full transition-all ${
-              i < currentStep ? 'bg-brand-primary' : 'bg-slate-200'
-            }`}
-          />
-        ))}
-      </div>
+            <div className="mt-8 flex gap-2">
+              {STEP_FLOW.map((flowStep) => {
+                const reached = STEP_FLOW.indexOf(flowStep) <= STEP_FLOW.indexOf(currentStep);
+                return (
+                  <div
+                    key={flowStep}
+                    className={`h-1.5 flex-1 rounded-full transition-all ${
+                      reached ? 'bg-brand-primary' : 'bg-slate-200'
+                    }`}
+                  />
+                );
+              })}
+            </div>
 
-      {/* Step 1 — Brand identity */}
+            <div className="mt-10 space-y-6">
       {currentStep === 1 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Brand identity</CardTitle>
-            <CardDescription>
-              How your brand shows up to the AI engines we will query.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
+        <section className="space-y-5">
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-slate-700">Brand name *</label>
@@ -689,21 +899,7 @@ export default function ProjectOnboardingWizard() {
               </div>
             </div>
 
-            {siteSummary.has_domain && (
-              <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-3 text-xs text-slate-600">
-                <Globe2 className="mt-0.5 h-4 w-4 shrink-0 text-brand-primary" />
-                <div>
-                  <p className="font-semibold text-slate-700">
-                    Tracking {siteSummary.brand || 'this brand'} on {form.step1.domain}
-                  </p>
-                  <p>
-                    {siteSummary.industry || 'Industry TBD'} · {siteSummary.region || 'Region TBD'}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">
                 Competitors *{' '}
                 <span className="font-normal text-slate-400">(press Enter to add)</span>
@@ -732,7 +928,7 @@ export default function ProjectOnboardingWizard() {
                         key={c}
                         type="button"
                         onClick={() => addSuggestedCompetitor(c)}
-                        className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-xs text-slate-600 hover:border-brand-primary hover:text-brand-primary"
+                        className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2.5 py-0.5 text-xs text-slate-600 hover:border-brand-primary hover:text-brand-primary"
                       >
                         <Plus className="h-3 w-3" /> {c}
                       </button>
@@ -757,85 +953,11 @@ export default function ProjectOnboardingWizard() {
                 </Button>
               )}
             </div>
-          </CardContent>
-        </Card>
+        </section>
       )}
 
-      {/* Step 2 — Competitor discovery */}
-      {currentStep === 2 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Confirm competitors</CardTitle>
-            <CardDescription>
-              These are the brands we'll rank against in every engine answer. Aim for 4–8 true
-              head-to-head competitors — not parent companies or marketplaces.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-slate-700">Competitors to track *</label>
-              <TagInput
-                tags={form.step2.competitors}
-                onChange={(val) => updateField('step2', 'competitors', val)}
-                placeholder="Type a competitor and press Enter"
-              />
-              <p className="text-xs text-slate-400">
-                Matches your brand identity step; you can prune or extend the list here.
-              </p>
-            </div>
-
-            {suggestedCompetitors.length > 0 && (
-              <div className="space-y-1.5">
-                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  AI suggestions
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {suggestedCompetitors
-                    .filter(
-                      (c) =>
-                        !form.step2.competitors.some((t) => t.toLowerCase() === c.toLowerCase()),
-                    )
-                    .slice(0, 8)
-                    .map((c) => (
-                      <button
-                        key={c}
-                        type="button"
-                        onClick={() => addSuggestedCompetitor(c)}
-                        className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2.5 py-0.5 text-xs text-slate-600 hover:border-brand-primary hover:text-brand-primary"
-                      >
-                        <Plus className="h-3 w-3" /> {c}
-                      </button>
-                    ))}
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3 text-xs text-blue-900">
-              <Info className="mt-0.5 h-4 w-4 shrink-0" />
-              <div>
-                <p className="font-semibold">Why this matters</p>
-                <p>
-                  A tight competitor list lets the audit say "you're losing to X on Y intent",
-                  instead of a vague "you're not ranked". The AI will ground every comparison in
-                  these specific names.
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Step 3 — Prompt intent map */}
       {currentStep === 3 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Tracking prompts</CardTitle>
-            <CardDescription>
-              Real user questions we'll ask every engine. Aim for 3–10 prompts spread across funnel
-              stages.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
+        <section className="space-y-5">
             {suggestionsMutation.isPending && (
               <div className="flex items-center gap-2 rounded-lg border border-brand-primary/20 bg-brand-primary/5 p-3 text-sm text-brand-primary">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -867,7 +989,7 @@ export default function ProjectOnboardingWizard() {
                         />
                         <div className="flex-1">
                           <p className="text-sm text-slate-700">{prompt}</p>
-                          <p className="mt-0.5 text-[11px] uppercase tracking-wide text-slate-400">
+                          <p className="mt-0.5 text-[11px] text-slate-400">
                             Quality: {quality.label} ({quality.score})
                           </p>
                         </div>
@@ -963,7 +1085,7 @@ export default function ProjectOnboardingWizard() {
 
             {form.step3.seed_prompts.length > 0 && (
               <div className="space-y-1.5">
-                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                <p className="text-xs font-medium text-slate-500">
                   Selected ({form.step3.seed_prompts.length})
                 </p>
                 {form.step3.seed_prompts.map((p) => {
@@ -977,7 +1099,7 @@ export default function ProjectOnboardingWizard() {
                       <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-brand-primary" />
                       <div className="flex-1">
                         <p>{p}</p>
-                        <p className="mt-0.5 text-[11px] uppercase tracking-wide text-slate-400">
+                        <p className="mt-0.5 text-[11px] text-slate-400">
                           {stage} · quality {quality.score}
                         </p>
                       </div>
@@ -993,21 +1115,14 @@ export default function ProjectOnboardingWizard() {
                 })}
               </div>
             )}
-          </CardContent>
-        </Card>
+        </section>
       )}
 
-      {/* Step 4 — Brand strategy & analysis preferences */}
       {currentStep === 4 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Brand strategy & positioning</CardTitle>
-            <CardDescription>
-              Help us understand what makes your brand unique so our analysis can be more
-              contextual and actionable.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5">
+        <section className="space-y-5">
+          <p className="text-sm text-slate-500">
+            Help us understand what makes your brand unique so our analysis can be more contextual and actionable.
+          </p>
             {/* Value Proposition */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">
@@ -1137,51 +1252,33 @@ export default function ProjectOnboardingWizard() {
               </div>
             </div>
 
-            <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3 text-xs text-blue-900">
-              <Info className="mt-0.5 h-4 w-4 shrink-0" />
-              <div>
-                <p className="font-semibold">Why this helps</p>
-                <p>
-                  The more we understand your brand strategy, the more contextual our analysis
-                  becomes. We'll flag when your positioning is off, when key differentiators are
-                  missing, or when sentiment doesn't match your intended tone.
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        </section>
       )}
 
-      {/* Step 5 — Review + launch */}
       {currentStep === 5 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Review & launch</CardTitle>
-            <CardDescription>
-              We'll run your first analysis in the background. First pass takes 30–90 seconds
-              depending on engine count.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
+        <section className="space-y-5">
+          <p className="text-sm text-slate-500">
+            We will run your first analysis in the background. First pass takes 30–90 seconds depending on engine count.
+          </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-lg border border-slate-200 p-3 text-sm">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Brand</p>
+                <p className="text-xs font-semibold text-slate-500">Brand</p>
                 <p className="mt-1 text-slate-800">{form.step1.brand_name || '—'}</p>
                 <p className="text-xs text-slate-500">
                   {form.step1.domain} · {form.step1.industry} · {form.step1.region}
                 </p>
               </div>
               <div className="rounded-lg border border-slate-200 p-3 text-sm">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Competitors ({form.step2.competitors.length})
+                <p className="text-xs font-semibold text-slate-500">
+                  Competitors ({form.step1.competitors.length})
                 </p>
                 <p className="mt-1 text-slate-700">
-                  {form.step2.competitors.slice(0, 6).join(', ') || '—'}
-                  {form.step2.competitors.length > 6 ? ', …' : ''}
+                  {form.step1.competitors.slice(0, 6).join(', ') || '—'}
+                  {form.step1.competitors.length > 6 ? ', …' : ''}
                 </p>
               </div>
               <div className="rounded-lg border border-slate-200 p-3 text-sm">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <p className="text-xs font-semibold text-slate-500">
                   Prompts ({form.step3.seed_prompts.length})
                 </p>
                 <ul className="mt-1 space-y-1 text-xs text-slate-600">
@@ -1199,7 +1296,7 @@ export default function ProjectOnboardingWizard() {
                 </ul>
               </div>
               <div className="rounded-lg border border-slate-200 p-3 text-sm">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <p className="text-xs font-semibold text-slate-500">
                   Brand strategy
                 </p>
                 <p className="mt-1 text-slate-700 line-clamp-2">
@@ -1222,64 +1319,74 @@ export default function ProjectOnboardingWizard() {
                 the first audit on your project dashboard.
               </p>
             </div>
-          </CardContent>
-        </Card>
+        </section>
       )}
+            </div>
 
-      {(saveStepMutation.isError || completeMutation.isError || launchMutation.isError) && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-          {String(
-            saveStepMutation.error?.message ||
-              completeMutation.error?.message ||
-              launchMutation.error?.message ||
-              'Failed to save onboarding step',
-          )}
-        </div>
-      )}
+            {(saveStepMutation.isError || completeMutation.isError || launchMutation.isError) && (
+              <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+                {String(
+                  saveStepMutation.error?.message ||
+                    completeMutation.error?.message ||
+                    launchMutation.error?.message ||
+                    'Failed to save onboarding step',
+                )}
+              </div>
+            )}
 
-      <div className="flex items-center justify-between">
-        <Button
-          type="button"
-          variant="secondary"
-          onClick={() => setForm((prev) => ({ ...prev, step: Math.max(1, prev.step - 1) }))}
-          disabled={currentStep <= 1 || isBusy}
-        >
-          Back
-        </Button>
-        {currentStep < TOTAL_STEPS ? (
-          <Button type="button" onClick={handleNext} disabled={!canContinue || isBusy}>
-            {saveStepMutation.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
-            Continue
-          </Button>
-        ) : (
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => completeMutation.mutate()}
-              disabled={!canContinue || isBusy}
-            >
-              {completeMutation.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
-              <CheckCircle2 className="mr-1 h-4 w-4" />
-              Save without running
-            </Button>
-            <Button
-              type="button"
-              onClick={() => launchMutation.mutate()}
-              disabled={!canContinue || isBusy}
-            >
-              {launchingAnalysis ? (
-                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+            <div className="mt-10 flex items-center justify-between border-t border-slate-200/70 pt-6">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() =>
+                  setForm((prev) => ({
+                    ...prev,
+                    step: previousFlowStep(prev?.step || 1),
+                  }))
+                }
+                disabled={currentStep === STEP_FLOW[0] || isBusy}
+              >
+                Back
+              </Button>
+              {currentStep < TOTAL_STEPS ? (
+                <Button type="button" onClick={handleNext} disabled={!canContinue || isBusy}>
+                  {saveStepMutation.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+                  Continue
+                </Button>
               ) : (
-                <Rocket className="mr-1 h-4 w-4" />
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => completeMutation.mutate()}
+                    disabled={!canContinue || isBusy}
+                  >
+                    {completeMutation.isPending && (
+                      <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                    )}
+                    <CheckCircle2 className="mr-1 h-4 w-4" />
+                    Save without running
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => launchMutation.mutate()}
+                    disabled={!canContinue || isBusy}
+                  >
+                    {launchingAnalysis ? (
+                      <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Rocket className="mr-1 h-4 w-4" />
+                    )}
+                    Launch first analysis
+                  </Button>
+                </div>
               )}
-              Launch first analysis
-            </Button>
+            </div>
           </div>
-        )}
-      </div>
+        </main>
 
-      <OnboardingAssistant projectId={id} step={currentStep} context={assistantContext} />
+        <OnboardingHelpPanel projectId={id} step={currentStep} context={assistantContext} />
+      </div>
     </div>
   );
 }
