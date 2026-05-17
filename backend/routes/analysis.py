@@ -328,9 +328,10 @@ def generate_project_cross_prompt_insight(project_id: int, user_id: str, app_obj
             f"QUERY: {q}\n" + "\n".join(f"  {eng}: {text[:400]}" for eng, text in engines.items())
             for q, engines in list(all_texts.items())[:8]
         )
-        llm_prompt = f'''You are analyzing how AI engines describe {project.name} across {len(all_texts)} different buyer queries.
+        query_scope = "one buyer query" if len(all_texts) == 1 else f"{len(all_texts)} different buyer queries"
+        llm_prompt = f'''You are analyzing how AI engines describe {project.name} across {query_scope}.
 {context_block}
-Find the 3 most important cross-prompt patterns. A pattern must appear in at least 2 queries.
+Find the 3 most important visibility signals. With one query, make a directional read from that query; with multiple queries, prefer repeated patterns.
 Rules:
 - Every pattern must name the specific engines that showed it
 - Every pattern must include a verbatim word or phrase from the data above

@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 from engine.llm_clients import chat
 from engine.perplexity_search import get_search_provider_name, search_web
 from engine.sample_gates import (
-    MIN_QUERIES_FOR_RECURRING_ISSUES,
     MIN_RESPONSES_FOR_NARRATIVE,
     confidence_from_evidence,
     confidence_tier,
@@ -1304,7 +1303,7 @@ def generate_positioning_insights(
 2. Each object MUST have: "category", "title", "detail", and "link".
 3. Use the specific Research Data below to provide PRECISE 'where and what' instructions.
 4. Instead of "Post an article", say "Post in this Reddit thread" or "Optimize this specific page".
-5. Every object MUST reference at least one real engine name, competitor brand, or domain from the data above.
+5. Every object MUST reference a real engine name, competitor brand, or domain from the data above.
 6. If displacement events exist, at least one object must directly address a specific displacement event with the competitor name and reason quoted.
 7. If synthesis domains exist, at least one object must name a specific domain and explain exactly what to do on that domain.
 8. Do NOT produce any object that could apply to any brand in any category — if it reads as generic, rewrite it with specifics from the data.
@@ -1453,6 +1452,38 @@ Return ONLY valid JSON list:
     except Exception:
         parsed = []
     items = [row for row in parsed if isinstance(row, dict)] if isinstance(parsed, list) else []
+    if not items:
+        for cf in (competitor_framings or [])[:4]:
+            competitor = str(cf.get("competitor_brand") or "").strip()
+            quote = _clip_text(cf.get("verbatim_sentence"), 220)
+            if not competitor:
+                continue
+            items.append(
+                {
+                    "action": f"Publish a direct {focus_brand} vs {competitor} proof page that addresses the exact claim models repeat.",
+                    "engine": str(cf.get("engine") or "measured engines"),
+                    "priority": "high",
+                    "evidence": quote or f"{competitor} displaced {focus_brand} in measured model answers.",
+                    "source_type": "measured",
+                }
+            )
+        top_domains = (synthesis or {}).get("top_cited_domains") if isinstance(synthesis, dict) else []
+        if isinstance(top_domains, list):
+            for row in top_domains[: max(0, 4 - len(items))]:
+                if not isinstance(row, dict):
+                    continue
+                domain = str(row.get("domain") or "").strip()
+                if not domain:
+                    continue
+                items.append(
+                    {
+                        "action": f"Earn or update a citation on {domain} with a concise {focus_brand} description and verifiable proof points.",
+                        "engine": "citation analysis",
+                        "priority": "medium",
+                        "evidence": f"{domain} appears in the measured citation set.",
+                        "source_type": "measured",
+                    }
+                )
     return {
         "missing_from_prompts": [],
         "competitor_sources": [str(cf.get("competitor_brand") or "") for cf in (competitor_framings or []) if cf.get("competitor_brand")],
@@ -1614,7 +1645,7 @@ def _build_detailed_audit_fallback(focus_brand: str, query: str, visibility_cont
                 "fix_steps": [
                     f"Publish a dedicated answer page for '{query}' with direct entity-first summary.",
                     "Add FAQ and comparison schema blocks on that page.",
-                    "Distribute a shortened variant to at least two high-citation external domains.",
+                    "Distribute a shortened variant to high-citation external domains.",
                 ],
                 "expected_impact": "Increase mention rate across missing engines within 2-4 weeks.",
                 "avoid": "Avoid generic category pages that do not answer the exact prompt intent.",
@@ -1752,11 +1783,10 @@ def _build_heuristic_strategic_action_plan(
     n_responses: int = 0,
     n_engines: int = 0,
 ) -> list[dict]:
-    """Deterministic fallback when the LLM plan is empty.
+    """Evidence-derived fallback when the LLM plan is empty.
 
-    These are TEMPLATED cards -- the UI treats them differently from
-    measured/AI-generated cards. Confidence is computed from the actual
-    evidence backing each card, never hardcoded.
+    The rows are assembled only from measured gaps, citations, and competitor
+    framings. Confidence is computed from the actual evidence backing each card.
     """
     raw: list[dict[str, Any]] = []
 
@@ -1769,16 +1799,16 @@ def _build_heuristic_strategic_action_plan(
         engine_responses = int(row.get("response_count") or row.get("responses") or 0) or n_engines or 1
         raw.append(
             {
-                "title": _clip_text(f"Lift «{focus_brand}» visibility on {eng}", 220),
+                "title": _clip_text(f"Lift {focus_brand} visibility on {eng}", 220),
                 "trigger_signal": f"Engine {eng} evidence: mention rate {mr}%, avg rank {avg_rank}",
                 "action_plan": [
-                    f"Publish a tighter entity-first summary for «{focus_brand}» on URLs your citations already reward.",
-                    f"Mirror how {eng} summarizes the category — add concise comparisons plus proof snippets.",
+                    f"Publish a tighter entity-first summary for {focus_brand} on URLs your citations already reward.",
+                    f"Mirror how {eng} summarizes the category; add concise comparisons plus proof snippets.",
                 ],
                 "owner_hint": "Content + SEO",
                 "time_to_value": "this month",
                 "priority": "high" if mr < 40 else "medium",
-                "source_type": "templated",
+                "source_type": "evidence_derived",
                 "evidence_basis": f"{engine_responses} answer{'s' if engine_responses != 1 else ''} on {eng}",
                 "n_responses_supporting": engine_responses,
                 "n_engines_supporting": 1,
@@ -1795,7 +1825,7 @@ def _build_heuristic_strategic_action_plan(
         raw.append(
             {
                 "title": _clip_text(f"Close blind-spot intent: {_clip_text(q, 96)}", 220),
-                "trigger_signal": f"Engine prompt evidence: latest run mentions no engines for «{focus_brand}» on this query",
+                "trigger_signal": f"Engine prompt evidence: latest run mentions no engines for {focus_brand} on this query",
                 "action_plan": [
                     f"Create a page that directly answers: { _clip_text(q, 140) }",
                     "Add FAQ / comparison sections using the prompt's exact wording.",
@@ -1803,7 +1833,7 @@ def _build_heuristic_strategic_action_plan(
                 "owner_hint": "Content + SEO",
                 "time_to_value": "this week",
                 "priority": "high",
-                "source_type": "templated",
+                "source_type": "evidence_derived",
                 "evidence_basis": f"No mentions across {n_engines or 'any'} engine{'s' if n_engines != 1 else ''} for this prompt",
                 "n_responses_supporting": n_engines or 1,
                 "n_engines_supporting": n_engines or 1,
@@ -1820,15 +1850,15 @@ def _build_heuristic_strategic_action_plan(
         raw.append(
             {
                 "title": _clip_text(f"Earn or refresh citations from {dom}", 220),
-                "trigger_signal": f"Engine multi-model evidence: domain {dom} surfaced {cnt}× across responses",
+                "trigger_signal": f"Engine multi-model evidence: domain {dom} surfaced {cnt} time{'s' if cnt != 1 else ''} across responses",
                 "action_plan": [
-                    f"Pitch or update a factual blurb tailored to «{focus_brand}» where {dom} pulls quotes.",
+                    f"Pitch or update a factual blurb tailored to {focus_brand} where {dom} pulls quotes.",
                     "Ensure pricing, SKU, or service claims there match structured data on your site.",
                 ],
                 "owner_hint": "PR + SEO",
                 "time_to_value": "this month",
                 "priority": "medium",
-                "source_type": "templated",
+                "source_type": "evidence_derived",
                 "evidence_basis": f"{dom} surfaced in {cnt} response{'s' if cnt != 1 else ''}",
                 "n_responses_supporting": cnt,
                 "n_engines_supporting": max(1, engines_count or 1),
@@ -1845,40 +1875,40 @@ def _build_heuristic_strategic_action_plan(
         raw.append(
             {
                 "title": _clip_text(f"Counter displaced narrative vs {brand}", 220),
-                "trigger_signal": f"Engine competitor evidence: {brand} framing — {vs or 'quoted in model summaries'}",
+                "trigger_signal": f"Engine competitor evidence: {brand} framing - {vs or 'quoted in model summaries'}",
                 "action_plan": [
-                    f"Publish a truthful contrast page: «{focus_brand}» vs {brand} on the angles models repeat.",
+                    f"Publish a truthful contrast page: {focus_brand} vs {brand} on the angles models repeat.",
                     "Add third-party proof (reviews, releases) backing your claims.",
                 ],
                 "owner_hint": "Brand + Content",
                 "time_to_value": "this quarter",
                 "priority": "medium",
-                "source_type": "templated",
+                "source_type": "evidence_derived",
                 "evidence_quote": vs,
-                "evidence_basis": f"{brand} framing observed {framing_count}× in model answers",
+                "evidence_basis": f"{brand} framing observed {framing_count} time{'s' if framing_count != 1 else ''} in model answers",
                 "n_responses_supporting": framing_count,
                 "n_engines_supporting": 1,
-                "detail": _clip_text(f"Models associate {brand} positively in contexts where «{focus_brand}» should appear.", 200),
+                "detail": _clip_text(f"Models associate {brand} positively in contexts where {focus_brand} should appear.", 200),
             }
         )
 
     if not raw and focus_brand and n_responses >= MIN_RESPONSES_FOR_NARRATIVE:
         raw.append(
             {
-                "title": _clip_text(f"Sharpen canonical story for «{focus_brand}»", 220),
+                "title": _clip_text(f"Sharpen canonical story for {focus_brand}", 220),
                 "trigger_signal": "Engine corpus evidence: models need tighter who-you-are + proof pairing",
                 "action_plan": [
-                    f"Unify headline, subtitle, and first paragraph mentions of «{focus_brand}» on key URLs.",
+                    f"Unify headline, subtitle, and first paragraph mentions of {focus_brand} on key URLs.",
                     "Add schema (Organization / Product) that matches wording models already echo.",
                 ],
                 "owner_hint": "Content + SEO",
                 "time_to_value": "this month",
                 "priority": "low",
-                "source_type": "templated",
+                "source_type": "evidence_derived",
                 "evidence_basis": f"Baseline across {n_responses} model answers",
                 "n_responses_supporting": n_responses,
                 "n_engines_supporting": n_engines or 1,
-                "detail": _clip_text(f"Baseline reinforcement for «{focus_brand}» ({project_name}).", 180),
+                "detail": _clip_text(f"Baseline reinforcement for {focus_brand} ({project_name}).", 180),
             }
         )
 
@@ -1899,7 +1929,7 @@ def _build_heuristic_strategic_action_plan(
                 "owner_hint": row.get("owner_hint") or "Content + SEO",
                 "time_to_value": row.get("time_to_value") or "this month",
                 "priority": row.get("priority") or "medium",
-                "source_type": row.get("source_type") or "templated",
+                "source_type": row.get("source_type") or "evidence_derived",
                 "confidence": confidence,
                 "evidence_basis": row.get("evidence_basis") or "",
                 "evidence_quote": row.get("evidence_quote") or "",
@@ -1929,7 +1959,7 @@ def generate_strategic_action_plan(
 
     Small samples are allowed because the first run should still show useful
     directional opportunities. The prompt and returned evidence fields keep the
-    confidence honest instead of hiding the section behind an arbitrary unlock.
+    confidence honest instead of hiding the section behind an arbitrary gate.
     """
     if int(n_responses or 0) <= 0:
         return []
@@ -1985,10 +2015,14 @@ EVIDENCE:
 {json.dumps(context)}
 
 Return ONLY valid JSON: a list of 5 objects. Each object:
-- "action" (specific action)
+- "title" (short result-oriented title, not generic)
+- "trigger_signal" (plain-English evidence signal naming the engine, competitor, domain, or missing prompt)
+- "why_it_matters" (one sentence explaining the business consequence)
+- "action_plan" (array of 2-4 concrete steps a marketer can do this week)
 - "engine" (engine that motivated it)
 - "timeframe" (this week / this month / next quarter)
 - "expected_impact" (specific metric or outcome)
+- "evidence_quote" (short quote from the responses above, or empty string only if the signal is a measured absence)
 - "priority" ("high" | "medium" | "low")
 
 RULES - non-negotiable:
@@ -1996,6 +2030,7 @@ RULES - non-negotiable:
 - Every action involving a competitor must name that competitor explicitly
 - Actions must be different from each other - no repeating the same theme
 - Specify a timeframe for each action
+- Use simple language. The reader should know exactly what page, claim, comparison, citation, or engine gap to work on.
 - No action can be generic enough to apply to any brand in any category
 - For directional samples, phrase the expected impact as a hypothesis to validate with more runs, not as a guaranteed outcome"""
 
@@ -2010,10 +2045,24 @@ RULES - non-negotiable:
                 for row in parsed:
                     if not isinstance(row, dict):
                         continue
-                    action_text = _clip_text(row.get("action") or row.get("title"), 220)
+                    action_text = _clip_text(row.get("title") or row.get("action"), 220)
                     if not action_text:
                         continue
                     engine_name = _clip_text(row.get("engine") or "chatgpt", 40)
+                    raw_steps = row.get("action_plan") or row.get("steps") or row.get("fix_steps") or []
+                    if isinstance(raw_steps, str):
+                        action_steps = [_crisp_line(raw_steps, max_words=18, max_chars=150)]
+                    elif isinstance(raw_steps, list):
+                        action_steps = [
+                            _crisp_line(step, max_words=18, max_chars=150)
+                            for step in raw_steps
+                            if str(step or "").strip()
+                        ][:4]
+                    else:
+                        action_steps = []
+                    if not action_steps:
+                        fallback_action = _clip_text(row.get("action") or action_text, 180)
+                        action_steps = [fallback_action] if fallback_action else []
                     # Confidence is derived from the real evidence base, NOT a constant.
                     confidence = confidence_from_evidence(
                         n_responses_supporting=n_responses or 1,
@@ -2022,8 +2071,8 @@ RULES - non-negotiable:
                     normalized_rows.append(
                         {
                             "title": action_text,
-                            "trigger_signal": f"Engine {engine_name} evidence: {_clip_text(row.get('expected_impact') or action_text, 140)}",
-                            "action_plan": [action_text],
+                            "trigger_signal": _clip_text(row.get("trigger_signal"), 160) or f"Engine {engine_name} evidence: {_clip_text(row.get('expected_impact') or action_text, 140)}",
+                            "action_plan": action_steps,
                             "owner_hint": "Content + SEO",
                             "time_to_value": _clip_text(row.get("timeframe") or "this month", 28),
                             "priority": _normalize_priority(row.get("priority"), "medium"),
@@ -2031,9 +2080,10 @@ RULES - non-negotiable:
                             "confidence": confidence,
                             "evidence_basis": f"AI-synthesized across {n_responses or 'tracked'} model answers"
                                 if n_responses else f"AI-synthesized from {engine_name}",
+                            "evidence_quote": _clip_text(row.get("evidence_quote"), 220),
                             "n_responses_supporting": n_responses or 0,
                             "n_engines_supporting": max(1, n_engines),
-                            "detail": _clip_text(row.get("expected_impact") or action_text, 180),
+                            "detail": _clip_text(row.get("why_it_matters") or row.get("expected_impact") or action_text, 180),
                         }
                     )
                 cleaned = _sanitize_opportunity_contract(normalized_rows, focus_brand, default_priority="medium")
@@ -2154,6 +2204,33 @@ def generate_project_summary(
 
     low_visibility_prompts = _dedupe(low_visibility_prompts)[:6]
     top_visibility_prompts = _dedupe(top_visibility_prompts)[:6]
+    competitor_rows = [
+        row
+        for row in (project_metadata.get("competitors") or [])
+        if isinstance(row, dict) and not row.get("is_focus")
+    ]
+    top_competitors = [
+        {
+            "brand": str(row.get("brand") or "").strip(),
+            "visibility_pct": row.get("visibility_pct"),
+            "avg_rank": row.get("avg_rank"),
+            "mentions": row.get("mentions"),
+        }
+        for row in competitor_rows[:5]
+        if str(row.get("brand") or "").strip()
+    ]
+    engine_rows = [
+        row
+        for row in (project_metadata.get("engine_visibility") or [])
+        if isinstance(row, dict)
+    ]
+    weak_engines = [
+        row for row in engine_rows if float(row.get("visibility_pct") or 0) < 50
+    ][:4]
+    strong_engines = [
+        row for row in engine_rows if float(row.get("visibility_pct") or 0) >= 75
+    ][:4]
+    official_site_cited_pct = project_metadata.get("official_site_cited_pct")
 
     # --- LLM-driven narrative, constrained by computed_health ---
     _tp_for_prompt = (
@@ -2162,7 +2239,7 @@ def generate_project_summary(
         else (low_visibility_prompts[:2] if computed_health == "Critical" else low_visibility_prompts[:1] + top_visibility_prompts[:1])
     )
     prompt = f"""You are a top-tier marketing strategy analyst reviewing {focus_brand}'s visibility in AI search engines.
-Your audience is the founder/executive team. They want sharp, conversational, and deeply strategic insights—NOT a robotic recitation of metrics.
+Your audience is the founder/executive team. They want sharp, conversational, and deeply strategic insights - not a robotic recitation of metrics.
 Do NOT use variable names like "coverage_ratio" or "avg_rank" in your text. Instead, translate these numbers into plain English (e.g., "You're showing up in all our tracked queries", or "Your average position is #1").
 Write naturally, using an engaging, human-like tone.
 
@@ -2171,6 +2248,7 @@ MEASURED DATA (do not alter overall_health):
 - Share of tracked queries where brand appears: {coverage_ratio * 100:.0f}%
 - Average position when mentioned: {avg_rank if avg_rank is not None else "not ranked"} (1 = first mentioned)
 - Sample size: {n_responses} model answer(s), confidence tier "{confidence_tier(n_responses)}"
+- Official site cited in model answers: {official_site_cited_pct if official_site_cited_pct is not None else "not measured"}%
 
 BRAND: "{focus_brand}"
 Category / industry: {project_metadata.get('category') or 'infer from context'}
@@ -2181,6 +2259,12 @@ QUERIES WHERE BRAND RANKS WELL (avg_rank ≤3.0):
 
 QUERIES WHERE BRAND IS MISSING OR RANKS POORLY (avg_rank >5.0 or absent):
 {low_visibility_prompts or ['none yet']}
+
+TOP COMPETITOR SIGNALS:
+{json.dumps(top_competitors)}
+
+ENGINE VISIBILITY GAPS:
+{json.dumps({"weak_engines": weak_engines, "strong_engines": strong_engines})}
 
 Return ONLY valid JSON.
 {{
@@ -2211,8 +2295,9 @@ Return ONLY valid JSON.
 VALIDATION RULES:
 1. overall_health MUST equal "{computed_health}" exactly.
 2. Never use variable names like 'coverage_ratio', 'avg_rank', or underscore formatting. Use human language.
-3. Be specific to the brand's industry and queries. Do NOT write generic filler.
-4. If the confidence tier is insufficient, call this an early signal and avoid broad trend claims or absolute conclusions.
+3. Be specific to the brand's industry, queries, competitor signals, and engine gaps. Do NOT write generic filler.
+4. If the confidence tier is low, call this an early read and avoid broad trend claims or absolute conclusions.
+5. Every roadmap action must be understandable to a non-technical founder and specific enough to assign this week.
 """
 
     raw = chat("chatgpt", prompt, temperature=0.25)
@@ -2256,19 +2341,41 @@ VALIDATION RULES:
     _tp = _tp_for_prompt
     _weak = low_visibility_prompts[0] if low_visibility_prompts else None
     _strong = top_visibility_prompts[0] if top_visibility_prompts else None
+    _competitor = top_competitors[0]["brand"] if top_competitors else None
+    _weak_engine = str(weak_engines[0].get("engine") or "") if weak_engines else ""
+    _rank_text = f" with an average position of #{avg_rank:.1f}" if avg_rank else ""
     fallback_bullets = [
-        f"{focus_brand} appears in AI answers on {coverage_ratio:.0%} of tracked queries" + (f" with an average rank of {avg_rank:.1f}." if avg_rank else "."),
-        f"Biggest gap: {_weak!r} is the query where the brand is absent or ranked poorly — fix this first." if _weak else f"No low-rank queries found. Monitor if rank holds at {avg_rank:.1f} across all tracked prompts.",
-        f"This week: build or update a page that directly answers {_weak!r} with real facts, not marketing copy." if _weak else f"Double down on {_strong!r} — publish supporting content to defend that rank position.",
+        f"{focus_brand} appears in {coverage_ratio:.0%} of tracked prompts{_rank_text}, based on {n_responses} model answer{'s' if n_responses != 1 else ''}.",
+        f"The biggest weak spot is {_weak!r}; models either miss the brand or place it too low for this buyer intent." if _weak else f"The strongest prompt is {_strong!r}; protect it by keeping proof, pricing, and comparison details current.",
+        f"This week, update the page that best answers {_weak!r} and add two verifiable claims that make {focus_brand} easier to cite." if _weak else f"This week, reinforce {_strong!r} with fresh proof and a comparison block so competitors cannot displace it.",
     ]
     if tracked_prompts:
         fallback_bullets = _strip_prompt_echoes(fallback_bullets, tracked_prompts) or fallback_bullets
+    fallback_summary = (
+        f"Early read: {focus_brand} has {computed_health.lower()} AI visibility across "
+        f"{n_responses} model answer{'s' if n_responses != 1 else ''}; "
+        f"{coverage_ratio:.0%} of tracked prompts currently include the brand."
+    )
+    fallback_roadmap = [
+        {
+            "phase": "This Week",
+            "action": f"Fix {_weak!r} with a direct answer section, proof points, and competitor comparison." if _weak else f"Refresh the page supporting {_strong!r} so the current ranking has fresh evidence.",
+        },
+        {
+            "phase": "Next 2-4 Weeks",
+            "action": f"Close the {_weak_engine} gap by mirroring the message that works on stronger engines." if _weak_engine else "Expand the same evidence pattern across the next two highest-value prompts.",
+        },
+    ]
+    fallback_threats = [
+        f"{_competitor} is the clearest competitor to watch in the measured answers." if _competitor else "No single competitor dominates yet; the risk is generic category answers taking the recommendation slot.",
+        f"{_weak_engine} is currently a weak engine for the brand." if _weak_engine else "Without fresh citation support, strong prompts can drift as models update their source mix.",
+    ]
     return {
         "overall_health": computed_health,
         "executive_bullets": fallback_bullets,
-        "executive_summary": f"Early signal: {computed_health.lower()} visibility across {n_responses} model answer{'s' if n_responses != 1 else ''} — {coverage_ratio:.0%} of prompts ranked" + (f", avg rank {avg_rank:.1f}." if avg_rank else "."),
-        "strategic_roadmap": [],
-        "competitive_threats": [],
+        "executive_summary": fallback_summary,
+        "strategic_roadmap": fallback_roadmap,
+        "competitive_threats": fallback_threats,
         "top_priority_prompts": _tp,
         "has_data": True,
         "confidence_tier": confidence_tier(n_responses),
@@ -2363,7 +2470,7 @@ def generate_action_playbook(
 ) -> dict[str, Any]:
     """Generate a concise playbook with crisp, executable steps."""
 
-    prompt = f"""You are writing a short how-to for "{focus_brand}" ({industry or 'general'}). The reader is busy. Every line must be an action or a fact—no motivation speeches.
+    prompt = f"""You are writing a short how-to for "{focus_brand}" ({industry or 'general'}). The reader is busy. Every line must be an action or a fact - no motivation speeches.
 
 Task (what they are trying to do):
 TITLE: {action_title}
@@ -2474,15 +2581,13 @@ def generate_global_audit(
     all_competitor_framings: list[dict] | None = None,
     engine: str = "chatgpt",
 ) -> list[dict]:
-    """Find cross-prompt patterns from actual LLM response text.
+    """Find portfolio-level or single-query visibility issues from real responses.
 
-    Gated: we will not even ask the LLM unless at least
-    ``MIN_QUERIES_FOR_RECURRING_ISSUES`` distinct queries have responses.
     Every returned item is verified deterministically against the raw response
-    corpus -- the LLM must cite verbatim evidence and at least two supporting
-    queries, or the item is dropped.
+    corpus. With one query, findings are directional; with multiple queries, the
+    same contract naturally surfaces recurring patterns.
     """
-    if not all_raw_responses or len(all_raw_responses) < MIN_QUERIES_FOR_RECURRING_ISSUES:
+    if not all_raw_responses:
         return []
 
     query_texts: list[str] = []
@@ -2497,7 +2602,7 @@ def generate_global_audit(
         engine_lines = "\n".join(f"{eng}: {text[:600]}" for eng, text in (engines or {}).items())
         prompt_blocks.append(f"QUERY: {prompt_text}\n{engine_lines}")
 
-    if len(response_corpus) < MIN_QUERIES_FOR_RECURRING_ISSUES:
+    if not response_corpus:
         return []
 
     competitor_block = "\n".join(
@@ -2506,7 +2611,12 @@ def generate_global_audit(
     )
 
     query_choices_text = "\n".join(f'- "{q}"' for q in query_texts)
-    prompt = f"""You are an AI search auditor reviewing what LLMs said about "{focus_brand}" across {len(response_corpus)} different buyer queries.
+    query_mode = "one buyer query" if len(response_corpus) == 1 else f"{len(response_corpus)} different buyer queries"
+    support_requirement = "the verified query" if len(response_corpus) == 1 else "every query where the pattern is visible"
+    pattern_scope = (
+        "single-query visibility signals" if len(response_corpus) == 1 else "cross-cutting patterns"
+    )
+    prompt = f"""You are an AI search auditor reviewing what LLMs said about "{focus_brand}" across {query_mode}.
 This brand could be ANY type of business -- do NOT assume tech or electronics. Infer the sector from the query phrasing and brand name.
 
 ACTUAL LLM RESPONSES (excerpts per query):
@@ -2515,15 +2625,15 @@ ACTUAL LLM RESPONSES (excerpts per query):
 COMPETITOR FRAMING (how competing brands were described):
 {competitor_block or 'None recorded.'}
 
-Find the 4 most important cross-cutting patterns that hurt or help "{focus_brand}"'s visibility across multiple queries.
+Find the 4 most important {pattern_scope} that hurt or help "{focus_brand}"'s visibility.
 
 RULES -- strictly enforced:
-- Pattern must appear in at least 2 different queries to qualify.
+- With one query, produce directional findings from that query. With multiple queries, prefer repeated patterns and name the affected queries.
 - "title" must name {focus_brand} + the specific issue (e.g. "{focus_brand} absent on comparison queries"), not a generic issue title.
 - "root_cause" must cite the specific engine name AND the verbatim language that revealed the pattern.
 - "solution" must be an action a real person can take this week -- no "optimize your content", no "build a content strategy", no generic SEO advice.
 - "evidence" must copy-paste one to two sentences verbatim from the response excerpts above.
-- "queries_supporting" must be a JSON array of at least 2 query strings drawn EXACTLY from this list (case-sensitive):
+- "queries_supporting" must be a JSON array of {support_requirement} drawn EXACTLY from this list (case-sensitive):
 {query_choices_text}
 - "avoid" must name a specific mistake this brand should avoid given the evidence.
 - NEVER write advice that would apply equally to any random brand.
@@ -2569,7 +2679,8 @@ Return ONLY valid JSON list with keys: title, root_cause, solution, avoid, prior
             continue
 
         # queries_supporting must be present, drawn from the real query set,
-        # and cover at least MIN_QUERIES_FOR_RECURRING_ISSUES distinct queries.
+        # and cover the verified evidence. A single query is enough for a
+        # directional audit; more queries improve confidence rather than gate it.
         supporting_raw = original.get("queries_supporting")
         supporting: list[str] = []
         if isinstance(supporting_raw, list):
@@ -2585,7 +2696,7 @@ Return ONLY valid JSON list with keys: title, root_cause, solution, avoid, prior
         for q in evidence_match_queries:
             if q not in supporting:
                 supporting.append(q)
-        if len(supporting) < MIN_QUERIES_FOR_RECURRING_ISSUES:
+        if not supporting:
             continue
 
         item["evidence_quote"] = evidence_quote

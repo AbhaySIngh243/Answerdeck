@@ -732,7 +732,7 @@ Return ONLY valid JSON list:
 
 STRICT RULES — ENFORCED BY VALIDATOR:
 1. "evidence" must be a verbatim or near-verbatim quote from displacement_context or engine context above. Paraphrasing disqualifies the item.
-2. "root_cause" must contain at least one proper noun from the evidence (competitor name, engine name, domain name).
+2. "root_cause" must contain a proper noun from the evidence (competitor name, engine name, domain name).
 3. "fix_steps[0]" must reference the specific competitor, domain, or framing pattern from evidence. "optimize your content" alone will be rejected.
 4. Priority "high" = affects 2+ engines OR blocks rank 1 slot. "low" = single engine issue.
 5. Do not generate items not supported by evidence. 3 real items beats 5 generic ones.

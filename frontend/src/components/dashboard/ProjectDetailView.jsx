@@ -55,7 +55,7 @@ const lbl = 'text-[11px] font-semibold text-slate-400';
 
 function DataBadge({ type }) {
   if (type === 'measured') return <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-emerald-600"><span className="h-1 w-1 rounded-full bg-emerald-500" />Measured</span>;
-  return <span className="inline-flex items-center gap-1 rounded-md bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-violet-600"><span className="h-1 w-1 rounded-full bg-violet-500" />AI-generated</span>;
+  return <span className="inline-flex items-center gap-1 rounded-md bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-violet-600"><span className="h-1 w-1 rounded-full bg-violet-500" />AI analysis</span>;
 }
 
 function isHttpUrl(value) {
@@ -132,7 +132,6 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
 
   const detailText = item.detail || (Array.isArray(item.action_plan) ? item.action_plan.join(' ') : '');
   const { prose, urls } = useMemo(() => splitProseAndUrls(detailText), [detailText]);
-  const isTemplated = String(item.source_type || '').toLowerCase() === 'templated';
   const nResponsesSupporting = Number(item.n_responses_supporting || 0);
   const nEnginesSupporting = Number(item.n_engines_supporting || 0);
   const evidenceBasis = String(item.evidence_basis || '').trim();
@@ -144,9 +143,6 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
         <div className="mb-2 flex items-start justify-between gap-3">
           <div className="flex flex-wrap items-center gap-1.5">
             <h4 className="text-[13px] font-semibold leading-snug text-slate-800">{item.title}</h4>
-            {isTemplated && (
-              <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-500" title="Templated suggestion \u2014 not synthesized from a specific evidence cluster">Template</span>
-            )}
           </div>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${item.priority === 'high' ? 'bg-red-50 text-red-500' : 'bg-brand-primary/10 text-brand-primary'}`}>
             {item.priority}
@@ -905,17 +901,17 @@ const ProjectDetailView = () => {
                         <div className="glass-card-v2 overflow-hidden">
                           <div className="px-6 py-5">
                             <div className="flex flex-wrap items-center gap-2">
-                              <h2 className="text-base font-semibold tracking-tight text-slate-900">Recurring issues</h2>
+                              <h2 className="text-base font-semibold tracking-tight text-slate-900">Visibility audit</h2>
                               <DataBadge type="ai" />
                               {auditCoverage && <CoverageBadge coverage={auditCoverage} />}
                             </div>
-                            <p className="mt-0.5 text-sm text-slate-500">Problems that show up in more than one prompt</p>
+                            <p className="mt-0.5 text-sm text-slate-500">Evidence-backed issues and fixes from the answers collected so far</p>
                           </div>
                           <div className="space-y-4 px-6 pb-6">
                             {gated ? (
                               <CoverageEmptyState
                                 coverage={auditCoverage}
-                                message="Recurring issues need at least 2 different queries with model answers so we can spot a repeated pattern, not a one-off."
+                                message="Run one prompt with model answers to generate the visibility audit."
                               />
                             ) : (
                               items.map((item, idx) => {
@@ -1099,7 +1095,7 @@ const ProjectDetailView = () => {
                             <th className="px-4 py-3 text-left text-[10px] font-semibold text-slate-400" title="% of (prompt \u00d7 engine) cells where the brand was named.">Visibility</th>
                             <th className="px-4 py-3 text-right text-[10px] font-semibold text-slate-400" title="Share of all brand-mention events across model answers in the tracked portfolio.">AI Share</th>
                             <th className="px-4 py-3 text-right text-[10px] font-semibold text-slate-400" title="Composite of mention rate, rank, and sentiment. Hover a row to see the sub-components.">Quality</th>
-                            <th className="px-6 py-3 text-right text-[10px] font-semibold text-slate-400" title="Mean rank when the brand was named (only shown with \u22653 ranked appearances).">Avg Rank</th>
+                            <th className="px-6 py-3 text-right text-[10px] font-semibold text-slate-400" title="Mean rank when the brand was named in measured answers.">Avg Rank</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
@@ -1120,7 +1116,9 @@ const ProjectDetailView = () => {
                             const rankSamples = Number(item.rank_samples || 0);
                             const rankTooltip = item.avg_rank != null
                               ? `Across ${rankSamples} ranked mention${rankSamples === 1 ? '' : 's'}${item.rank_p25 != null && item.rank_p75 != null ? ` (p25 #${item.rank_p25} \u2013 p75 #${item.rank_p75})` : ''}`
-                              : `Need at least 3 ranked mentions${rankSamples ? ` (have ${rankSamples})` : ''}`;
+                              : rankSamples
+                                ? `Rank was not available in the latest extracted mentions (${rankSamples} sampled)`
+                                : 'Rank was not available in the latest extracted mentions';
                             const supportTooltip = `Seen in ${item.n_responses_with_brand ?? 0} answer(s) across ${item.n_prompts_with_brand ?? 0} prompt(s) \u00d7 ${item.n_engines_with_brand ?? 0} engine(s)`;
                             return (
                               <React.Fragment key={rowKey}>
@@ -1347,8 +1345,6 @@ const ProjectDetailView = () => {
                   </>
                 ) : (() => {
                   const allActions = toArray(deepAnalysis?.action_plan);
-                  const measuredActions = allActions.filter((a) => String(a?.source_type || '').toLowerCase() !== 'templated');
-                  const templatedActions = allActions.filter((a) => String(a?.source_type || '').toLowerCase() === 'templated');
                   const opportunitiesCoverage = deepAnalysis?.coverage;
                   const planEmpty = allActions.length === 0;
                   const handleDraft = (action) => {
@@ -1381,23 +1377,10 @@ const ProjectDetailView = () => {
                           </div>
                         ) : (
                           <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
-                            {measuredActions.map((item, idx) => (
-                              <ActionPlanCard key={`m-${idx}`} item={item} projectId={id} onGenerateDraft={handleDraft} />
+                            {allActions.map((item, idx) => (
+                              <ActionPlanCard key={`action-${idx}`} item={item} projectId={id} onGenerateDraft={handleDraft} />
                             ))}
                           </div>
-                        )}
-                        {templatedActions.length > 0 && (
-                          <details className="border-t border-slate-100/80 px-5 py-4">
-                            <summary className="cursor-pointer text-[11px] font-semibold text-slate-400 hover:text-slate-600">
-                              Suggested templates ({templatedActions.length})
-                              <span className="ml-2 font-normal normal-case text-slate-400">Generic next moves \u2014 not synthesized from a specific evidence cluster.</span>
-                            </summary>
-                            <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
-                              {templatedActions.map((item, idx) => (
-                                <ActionPlanCard key={`t-${idx}`} item={item} projectId={id} onGenerateDraft={handleDraft} />
-                              ))}
-                            </div>
-                          </details>
                         )}
                       </div>
                       {deepAnalysis?.search_intel?.enabled && (() => {
@@ -1540,6 +1523,41 @@ const ProjectDetailView = () => {
             <p className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 p-12 text-center text-sm text-slate-500">No detail found for this prompt.</p>
           ) : (
               <div className="space-y-10">
+                {promptDetailData.analysis_brief && (
+                  <div className="glass-card-v2 p-6">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <h5 className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                        <CheckCircle2 className="h-4 w-4 text-brand-primary" /> Answer brief
+                      </h5>
+                      <span className="rounded-full bg-brand-primary/10 px-2.5 py-1 text-[10px] font-semibold text-brand-primary">
+                        {Math.round(Number(promptDetailData.analysis_brief.visibility_pct || 0))}% visible
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+                      <div className="glass-inset rounded-xl p-4">
+                        <p className={`${lbl} mb-1`}>What happened</p>
+                        <p className="text-sm leading-relaxed text-slate-800">{promptDetailData.analysis_brief.what_happened}</p>
+                      </div>
+                      <div className="glass-inset rounded-xl p-4">
+                        <p className={`${lbl} mb-1`}>Why it matters</p>
+                        <p className="text-sm leading-relaxed text-slate-700">{promptDetailData.analysis_brief.why_it_matters}</p>
+                      </div>
+                      <div className="glass-inset rounded-xl p-4">
+                        <p className={`${lbl} mb-1`}>Next move</p>
+                        <p className="text-sm leading-relaxed text-slate-700">{promptDetailData.analysis_brief.next_move}</p>
+                      </div>
+                    </div>
+                    {toArray(promptDetailData.analysis_brief.evidence_points).length > 0 && (
+                      <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2">
+                        {toArray(promptDetailData.analysis_brief.evidence_points).slice(0, 6).map((point, idx) => (
+                          <div key={idx} className="rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2 text-xs leading-relaxed text-slate-600">
+                            {point}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="glass-card-v2 p-6">
                   <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                     <h5 className="flex items-center gap-2 text-xs font-semibold text-slate-700"><FileText className="h-4 w-4 text-slate-500" /> Raw LLM responses</h5>
@@ -1573,7 +1591,7 @@ const ProjectDetailView = () => {
                 <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_1.2fr]">
                   <div className="space-y-6">
                     <div className="glass-card-v2 p-6">
-                      <h5 className="mb-6 flex items-center gap-2 text-[10px] font-bold tracking-tight text-slate-500"><BarChart2 className="h-4 w-4" /> Market Share & Positioning</h5>
+                      <h5 className="mb-6 flex items-center gap-2 text-[10px] font-bold tracking-tight text-slate-500"><BarChart2 className="h-4 w-4" /> Brand rankings in this answer set</h5>
                       <div className="space-y-4">{toArray(promptDetailData.brand_ranking).slice(0, 6).map((item) => (<div key={item.name} className={`flex items-center justify-between rounded-xl p-3 transition-all ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'bg-brand-primary/8 border border-brand-primary/20' : 'hover:bg-slate-50'}`}><span className={`font-bold ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'text-brand-primary' : 'text-slate-900'}`}>{item.name}</span><div className="flex items-center gap-4"><span className="text-[10px] font-bold text-slate-500">{item.mentions} Citations</span><span className={`text-sm font-bold tabular-nums ${item.avg_rank === 1 ? 'text-yellow-400' : 'text-slate-500'}`}>#{item.avg_rank ?? '-'}</span></div></div>))}</div>
                     </div>
                     <div className="glass-card-v2 p-6">
@@ -1595,9 +1613,9 @@ const ProjectDetailView = () => {
                     </div>
                   </div>
                   <div className="glass-card-v2 p-6">
-                    <h5 className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-700"><CheckCircle2 className="h-4 w-4 text-slate-500" /> Project check</h5>
+                    <h5 className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-700"><CheckCircle2 className="h-4 w-4 text-slate-500" /> Evidence audit</h5>
                     <div className="space-y-4">
-                      {toArray(promptDetailData.audit).length === 0 && <p className="text-sm text-slate-500">No audit findings yet. Run this prompt to generate audit results.</p>}
+                      {toArray(promptDetailData.audit).length === 0 && <p className="text-sm text-slate-500">No audit findings were extracted from the current model answers.</p>}
                       {toArray(promptDetailData.audit).map((item, idx) => (
                         <div key={idx} className="glass-inset rounded-xl p-4">
                           <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
@@ -1617,7 +1635,12 @@ const ProjectDetailView = () => {
                             </div>
                           )}
                           {item.expected_impact && <p className="mt-3 text-xs text-slate-500"><span className="font-medium text-slate-600">Expected impact:</span> {item.expected_impact}</p>}
-                          {(item.confidence || item.source_type) && <p className="mt-2 text-[10px] text-slate-400">{item.source_type === 'measured' ? 'Measured' : 'AI-generated'}{item.confidence ? ` · ${Math.round(Number(item.confidence) * 100)}% confidence` : ''}</p>}
+                          {(item.confidence || item.source_type) && (
+                            <p className="mt-2 text-[10px] text-slate-400">
+                              {item.source_type === 'measured' ? 'Measured' : item.source_type === 'evidence_derived' ? 'Evidence-derived' : 'AI analysis'}
+                              {item.confidence ? ` - ${Math.round(Number(item.confidence) * 100)}% confidence` : ''}
+                            </p>
+                          )}
                           {item.avoid && <p className="mt-3 text-xs text-slate-500"><span className="font-medium text-slate-600">Avoid:</span> {item.avoid}</p>}
                         </div>
                       ))}

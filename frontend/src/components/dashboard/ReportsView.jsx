@@ -68,7 +68,7 @@ const ReportsView = () => {
             <FileText className="h-7 w-7" />
           </div>
           <h3 className="text-lg font-semibold text-slate-800">Reports unavailable</h3>
-          <p className="mt-1 max-w-sm text-sm text-slate-400">Create a project and run analysis to unlock reports.</p>
+          <p className="mt-1 max-w-sm text-sm text-slate-400">Create a project and run analysis to populate reports.</p>
         </motion.div>
       ) : (
         <motion.div variants={item}>

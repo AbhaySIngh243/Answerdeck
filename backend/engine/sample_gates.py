@@ -1,21 +1,18 @@
-"""Sample-size gates for analysis confidence.
+"""Evidence confidence helpers for reporting.
 
-Every metric and LLM-generated narrative in the reporting layer must be guarded by
-a minimum amount of underlying evidence. Profound-style products always show the
-underlying ``n`` and refuse to render insights when ``n`` is too small. These
-helpers are the single source of truth for those thresholds so the API, the
-prompt-orchestration layer, and the UI all agree on what counts as
-"insufficient", "low", "moderate", or "high" confidence.
+The product should never hide analysis behind arbitrary sample-size gates.
+One model answer is enough to produce a directional read; the confidence tier
+communicates how mature the evidence is without suppressing the insight.
 """
 
 from __future__ import annotations
 
 from typing import Any, Iterable
 
-MIN_RESPONSES_FOR_COMPETITOR_TABLE = 6
-MIN_RESPONSES_FOR_NARRATIVE = 8
-MIN_RESPONSES_FOR_AVG_RANK_PER_BRAND = 3
-MIN_QUERIES_FOR_RECURRING_ISSUES = 2
+MIN_RESPONSES_FOR_COMPETITOR_TABLE = 1
+MIN_RESPONSES_FOR_NARRATIVE = 1
+MIN_RESPONSES_FOR_AVG_RANK_PER_BRAND = 1
+MIN_QUERIES_FOR_RECURRING_ISSUES = 1
 
 LOW_CONFIDENCE_RESPONSES = 15
 HIGH_CONFIDENCE_RESPONSES = 30
@@ -27,7 +24,7 @@ def confidence_tier(n_responses: int) -> str:
         n = int(n_responses or 0)
     except (TypeError, ValueError):
         n = 0
-    if n < MIN_RESPONSES_FOR_NARRATIVE:
+    if n <= 0:
         return "insufficient"
     if n < LOW_CONFIDENCE_RESPONSES:
         return "low"
@@ -61,17 +58,13 @@ def coverage_meta(
     )
     tier = confidence_tier(responses)
 
-    needs = 0
-    if tier == "insufficient":
-        needs = max(0, MIN_RESPONSES_FOR_NARRATIVE - responses)
-
     return {
         "n_prompts": prompts,
         "n_engines": engines,
         "n_responses": responses,
         "n_queries_with_responses": queries_with_responses,
         "tier": tier,
-        "responses_needed_for_narrative": needs,
+        "responses_needed_for_narrative": 0,
         "thresholds": {
             "min_responses_for_competitor_table": MIN_RESPONSES_FOR_COMPETITOR_TABLE,
             "min_responses_for_narrative": MIN_RESPONSES_FOR_NARRATIVE,

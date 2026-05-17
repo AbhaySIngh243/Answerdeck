@@ -16,6 +16,7 @@ from auth import require_auth
 from engine.analyzer import (
     _clean_json,
     calculate_visibility_score,
+    generate_detailed_audit,
     generate_action_playbook,
     generate_content_piece,
     generate_global_audit,
@@ -36,7 +37,6 @@ from engine.perplexity_search import is_perplexity_search_enabled, search_web
 from engine.sample_gates import (
     HIGH_CONFIDENCE_RESPONSES,
     LOW_CONFIDENCE_RESPONSES,
-    MIN_QUERIES_FOR_RECURRING_ISSUES,
     MIN_RESPONSES_FOR_AVG_RANK_PER_BRAND,
     confidence_tier,
     coverage_meta,
@@ -617,6 +617,16 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     focus_brand = project.name if project else ""
     responses = Response.query.filter_by(prompt_id=prompt_id).order_by(Response.timestamp.asc()).all()
     if not responses:
+        empty_brief = {
+            "status": "no_data",
+            "what_happened": "No model answers have been collected for this prompt yet.",
+            "why_it_matters": "The analysis needs one answered prompt before it can identify visibility, competitors, citations, or fixes.",
+            "next_move": "Run this prompt once across the selected models.",
+            "evidence_points": [],
+            "visibility_pct": 0.0,
+            "engines_mentioned": [],
+            "engines_missing": [],
+        }
         return {
             "prompt_id": prompt.id,
             "prompt_text": prompt.prompt_text,
@@ -626,7 +636,8 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             "sentiment": {"positive": 0, "neutral": 0, "negative": 0, "not_mentioned": 0},
             "sources": [],
             "competitors": [],
-            "audit": [{"title": "No analysis yet", "detail": "Run analysis for this prompt to generate detailed audit findings."}],
+            "audit": [],
+            "analysis_brief": empty_brief,
             "recommended_actions": [],
             "raw_responses": [],
         }
@@ -658,6 +669,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     competitor_framings = _competitor_framings_for_prompt(prompt_id)
 
     competitor_scores: dict[str, dict] = defaultdict(lambda: {"mentions": 0, "ranks": []})
+    focus_score: dict[str, Any] = {"mentions": 0, "ranks": []}
     sentiment = {"positive": 0, "neutral": 0, "negative": 0, "not_mentioned": 0}
     source_count: dict[str, int] = defaultdict(int)
     source_links: dict[str, set[str]] = defaultdict(set)
@@ -691,6 +703,9 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         focus = next((m for m in mentions if m.is_focus), None)
         if focus:
             sentiment[focus.sentiment if focus.sentiment in sentiment else "neutral"] += 1
+            focus_score["mentions"] += 1
+            if focus.rank is not None:
+                focus_score["ranks"].append(focus.rank)
         else:
             sentiment["not_mentioned"] += 1
 
@@ -718,10 +733,20 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             source_links[domain].add(normalized_source)
 
     brand_ranking = []
+    if focus_brand:
+        focus_ranks = focus_score["ranks"]
+        brand_ranking.append(
+            {
+                "name": focus_brand,
+                "mentions": int(focus_score["mentions"] or 0),
+                "avg_rank": round(sum(focus_ranks) / len(focus_ranks), 2) if focus_ranks else None,
+                "is_focus": True,
+            }
+        )
     for brand, row in competitor_scores.items():
         avg_rank = round(sum(row["ranks"]) / len(row["ranks"]), 2) if row["ranks"] else None
-        brand_ranking.append({"name": brand, "mentions": row["mentions"], "avg_rank": avg_rank})
-    brand_ranking.sort(key=lambda item: (-item["mentions"], item["avg_rank"] if item["avg_rank"] is not None else 999))
+        brand_ranking.append({"name": brand, "mentions": row["mentions"], "avg_rank": avg_rank, "is_focus": False})
+    brand_ranking.sort(key=lambda item: (0 if item.get("is_focus") else 1, -item["mentions"], item["avg_rank"] if item["avg_rank"] is not None else 999))
 
     focus_mentioned = (sentiment["positive"] + sentiment["neutral"] + sentiment["negative"]) > 0
     audit = []
@@ -783,13 +808,12 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         if persisted_audit:
             audit = persisted_audit[:5]
         else:
-            audit = [
-                {
-                    "title": "No persisted audit yet",
-                    "detail": "The raw responses are available, but detailed audit items were not saved for this run.",
-                    "priority": "medium",
-                }
-            ]
+            audit = generate_detailed_audit(
+                focus_brand,
+                prompt.prompt_text,
+                analyses=analyses,
+                known_competitors=project.get_competitors_list() if project else [],
+            )
         _cache_set(audit_cache_key, audit)
 
     recommended_specs: list[dict[str, Any]] = []
@@ -917,10 +941,81 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             "is_target": True
         })
 
+    total_models = len(latest_by_engine)
+    mentioned_engines = [
+        engine
+        for engine, data in sorted(analyses.items(), key=lambda item: item[0].lower())
+        if data.get("focus_brand_mentioned")
+    ]
+    missing_engines = [
+        engine
+        for engine, data in sorted(analyses.items(), key=lambda item: item[0].lower())
+        if not data.get("focus_brand_mentioned")
+    ]
+    rank_values = [
+        int(data.get("focus_brand_rank"))
+        for data in analyses.values()
+        if isinstance(data.get("focus_brand_rank"), int)
+    ]
+    avg_focus_rank = round(sum(rank_values) / len(rank_values), 2) if rank_values else None
+    visibility_pct = round((len(mentioned_engines) / total_models) * 100, 1) if total_models else 0.0
+    top_competitor = next((row for row in brand_ranking if not row.get("is_focus")), None)
+    top_source = next(iter(sorted(source_count.items(), key=lambda item: item[1], reverse=True)), None)
+
+    if total_models <= 0:
+        what_happened = "No model answers have been collected for this prompt yet."
+        why_it_matters = "The prompt needs one answered run before Answerdeck can diagnose visibility."
+        next_move = "Run this prompt across the selected models."
+    elif not mentioned_engines:
+        comp_note = f" {top_competitor['name']} is currently the strongest extracted competitor." if top_competitor else ""
+        what_happened = f"{focus_brand} did not appear in any of the {total_models} model answer{'s' if total_models != 1 else ''} for this prompt.{comp_note}"
+        why_it_matters = "The models are satisfying this buyer intent without your brand, so the recommendation slot is being filled by competitors, publishers, or generic category advice."
+        next_move = f"Create or update one page that answers this exact prompt in the first section, then add proof points that make {focus_brand} easy to cite."
+    elif len(mentioned_engines) < total_models:
+        rank_note = f" Average position when named: #{avg_focus_rank}." if avg_focus_rank else ""
+        what_happened = f"{focus_brand} appeared in {len(mentioned_engines)} of {total_models} model answers.{rank_note}"
+        why_it_matters = f"The brand is recognized by some engines but not by {', '.join(missing_engines[:3])}, which means visibility is fragile across AI search surfaces."
+        next_move = f"Use the engines that already mention {focus_brand} as the message pattern, then close the missing-engine gap with a query-specific answer page and cited proof."
+    else:
+        rank_note = f" Average position: #{avg_focus_rank}." if avg_focus_rank else ""
+        what_happened = f"{focus_brand} appeared in every measured model answer for this prompt.{rank_note}"
+        why_it_matters = "The brand has a defensible recommendation position here; the risk is losing citation support or being outranked by a better-evidenced competitor page."
+        next_move = "Protect this prompt by refreshing the cited pages, adding comparison proof, and watching for rank or sentiment drift."
+
+    evidence_points: list[str] = []
+    if mentioned_engines:
+        evidence_points.append(f"Mentioned by: {', '.join(mentioned_engines[:6])}.")
+    if missing_engines:
+        evidence_points.append(f"Missing from: {', '.join(missing_engines[:6])}.")
+    if top_competitor:
+        comp_rank = f", average rank #{top_competitor['avg_rank']}" if top_competitor.get("avg_rank") is not None else ""
+        evidence_points.append(f"Top competitor signal: {top_competitor['name']} with {top_competitor['mentions']} mention{'s' if top_competitor['mentions'] != 1 else ''}{comp_rank}.")
+    if top_source:
+        evidence_points.append(f"Top cited domain: {top_source[0]} appeared {top_source[1]} time{'s' if top_source[1] != 1 else ''}.")
+    sentiment_parts = [f"{label} {count}" for label, count in sentiment.items() if count]
+    if sentiment_parts:
+        evidence_points.append(f"Sentiment mix: {', '.join(sentiment_parts)}.")
+
+    analysis_brief = {
+        "status": "ready" if total_models else "no_data",
+        "what_happened": what_happened,
+        "why_it_matters": why_it_matters,
+        "next_move": next_move,
+        "evidence_points": evidence_points,
+        "visibility_pct": visibility_pct,
+        "avg_rank": avg_focus_rank,
+        "engines_mentioned": mentioned_engines,
+        "engines_missing": missing_engines,
+        "top_competitor": top_competitor,
+        "top_source": {"domain": top_source[0], "count": top_source[1]} if top_source else None,
+    }
+
     return {
         "prompt_id": prompt.id,
         "prompt_text": prompt.prompt_text,
         "project_id": prompt.project_id,
+        "analysis_brief": analysis_brief,
+        "visibility_pct": visibility_pct,
         "brand_ranking": brand_ranking[:10],
         "trend": trend,
         "sentiment": sentiment,
@@ -1004,8 +1099,7 @@ def _build_competitor_visibility(project_id: int) -> dict:
     full (prompt x engine) cell count of the latest run — not against the number
     of cells that happened to produce a response — so brands no longer hit 100%
     just because every response happened to mention them. ``avg_rank`` is None
-    until a brand has at least ``MIN_RESPONSES_FOR_AVG_RANK_PER_BRAND`` ranked
-    samples, and ``quality_score`` is now returned with its sub-components and
+    when no ranked samples exist, and ``quality_score`` is now returned with its sub-components and
     is uncapped (callers may clamp for display if they want).
     """
     project = Project.query.get(project_id)
@@ -1752,7 +1846,7 @@ def _project_context_state(project: Project) -> dict[str, Any]:
         "onboarding_completed": bool(getattr(project, "onboarding_completed", False)),
         "onboarding_current_step": onboarding.get("current_step", 1) if isinstance(onboarding, dict) else 1,
         "onboarding_completed_steps": sorted(set(normalized_steps)),
-        "limited_context_reason": "" if context_ready else "Complete onboarding to unlock full context-aware recommendations.",
+        "limited_context_reason": "" if context_ready else "Complete onboarding to enable full context-aware recommendations.",
     }
 
 
@@ -2213,6 +2307,8 @@ def get_project_intel_summary(project_id):
 
     coverage = dashboard.get("coverage") or coverage_meta()
     n_responses = int((coverage or {}).get("n_responses") or 0)
+    competitors = dashboard.get("competitors") or []
+    engine_visibility = dashboard.get("engine_visibility") or []
     tracked_prompts = [
         str(row.get("prompt_text") or "").strip()
         for row in prompt_rankings
@@ -2238,6 +2334,10 @@ def get_project_intel_summary(project_id):
         "region": project.region,
         "n_responses": n_responses,
         "tracked_prompts": tracked_prompts,
+        "competitors": competitors[:8] if isinstance(competitors, list) else [],
+        "engine_visibility": engine_visibility[:8] if isinstance(engine_visibility, list) else [],
+        "visibility_pct_current": dashboard.get("visibility_pct_current"),
+        "official_site_cited_pct": dashboard.get("official_site_cited_pct"),
     }
     computed_health = _compute_overall_health(prompt_rankings)
     summary = generate_project_summary(project.name, project_meta, prompt_rankings)
@@ -2276,7 +2376,7 @@ def get_project_global_audit(project_id):
         n_queries_with_responses=len(all_raw_responses),
     )
 
-    if len(all_raw_responses) < MIN_QUERIES_FOR_RECURRING_ISSUES:
+    if not all_raw_responses:
         return jsonify({"items": [], "coverage": cov, "has_data": False})
 
     global_audit = generate_global_audit(project.name, all_raw_responses, _project_competitor_framings(project_id))
