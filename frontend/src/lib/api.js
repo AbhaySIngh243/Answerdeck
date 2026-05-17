@@ -131,7 +131,7 @@ async function request(path, options = {}) {
       const isJson = contentType.includes('application/json');
       const payload = isJson ? await response.json() : await response.text();
 
-      if (response.status === 401 && !forcedRefreshUsed && !options.headers?.Authorization) {
+      if (response.status === 401 && !forcedRefreshUsed) {
         const refreshedToken = await getAuthToken(true);
         if (refreshedToken) {
           headers.Authorization = `Bearer ${refreshedToken}`;

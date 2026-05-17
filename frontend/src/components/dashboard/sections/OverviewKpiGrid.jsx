@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { MessageSquare, Cpu, Eye, Crown, BarChart3 } from 'lucide-react';
+import { FileText, Waypoints, Eye, Trophy, BarChart3 } from 'lucide-react';
 import { MetricTile } from '../ui/MetricTile';
 
 const container = {
@@ -39,8 +39,7 @@ export default function OverviewKpiGrid({
       label: 'Prompts',
       value: promptCount,
       sub: 'Active queries tracked',
-      icon: MessageSquare,
-      accent: 'blue',
+      icon: FileText,
     },
     {
       label: 'AI Models',
@@ -48,15 +47,13 @@ export default function OverviewKpiGrid({
       sub: enabledEngines.length > 0
         ? enabledEngines.map((e) => e.name).join(', ')
         : 'No engines enabled',
-      icon: Cpu,
-      accent: 'purple',
+      icon: Waypoints,
     },
     {
       label: 'Visibility',
       value: `${visibilityPct}%`,
       sub: 'Across all prompts',
       icon: Eye,
-      accent: 'green',
     },
     {
       label: 'Top Competitor',
@@ -71,15 +68,14 @@ export default function OverviewKpiGrid({
               )
             )} visibility pts`
           : 'Run analysis to populate',
-      icon: Crown,
-      accent: 'amber',
+      icon: Trophy,
+      valueClassName: 'truncate',
     },
     {
       label: 'Your Avg Position',
       value: avgPosition,
       sub: 'Across all prompts',
       icon: BarChart3,
-      accent: 'blue',
     },
   ];
 
@@ -88,7 +84,7 @@ export default function OverviewKpiGrid({
       variants={container}
       initial="hidden"
       animate="visible"
-      className="grid grid-cols-2 gap-4 lg:grid-cols-5"
+      className="grid grid-cols-2 gap-3 lg:grid-cols-5"
     >
       {cards.map((c) => (
         <MetricTile
@@ -97,7 +93,7 @@ export default function OverviewKpiGrid({
           value={c.value}
           sub={c.sub}
           icon={c.icon}
-          accent={c.accent}
+          valueClassName={c.valueClassName}
         />
       ))}
     </motion.div>
