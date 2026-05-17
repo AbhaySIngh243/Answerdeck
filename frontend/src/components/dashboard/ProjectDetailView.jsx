@@ -289,18 +289,30 @@ const ProjectDetailView = () => {
   const { data: projectData, isLoading, error } = useQuery({
     queryKey: ['project-data', 'v2', id],
     queryFn: async () => {
-      const [project, prompts, dashboard, engines] = await Promise.all([
-        api.getProject(id), api.getPrompts(id), api.getProjectDashboard(id), api.getEngines(),
+      // Use allSettled so a slow secondary endpoint (engines) never kills the whole page.
+      const [projectRes, promptsRes, dashboardRes, enginesRes] = await Promise.allSettled([
+        api.getProject(id),
+        api.getPrompts(id),
+        api.getProjectDashboard(id),
+        api.getEngines(),
       ]);
+      // Core data (project + dashboard) must succeed — throw to trigger retry if either fails.
+      if (projectRes.status === 'rejected') throw projectRes.reason;
+      if (dashboardRes.status === 'rejected') throw dashboardRes.reason;
+      const engines = enginesRes.status === 'fulfilled' ? enginesRes.value : {};
+      const prompts = promptsRes.status === 'fulfilled' ? promptsRes.value : [];
       return {
-        project,
+        project: projectRes.value,
         prompts,
-        dashboard,
+        dashboard: dashboardRes.value,
         enabledEngines: toArray(engines.enabled_engines),
         availableEngines: toArray(engines.available_engines),
         searchLayer: engines.search_layer || {},
       };
     },
+    staleTime: 60_000,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1500 * Math.pow(2, attempt), 10_000),
   });
 
   // Warm the same heavy payload the Opportunities tab uses so switching tabs feels instant.
@@ -325,13 +337,17 @@ const ProjectDetailView = () => {
     return s || 'auto';
   }, [projectData?.searchLayer?.provider]);
 
+  const primaryLoaded = Boolean(projectData);
   const needsPromptAnalysis = activeSection === 'dashboard' || activeSection === 'prompts';
   const needsDeepAnalysis = activeSection === 'opportunities' || activeSection === 'execute';
+  // sources and competitor detail tabs only — don't fire on dashboard load to reduce token pressure
+  const needsSourcesIntel = primaryLoaded && (activeSection === 'sources' || Boolean(selectedPromptId));
+  const needsCompetitorIntel = primaryLoaded && activeSection === 'competitors';
 
-  const { data: promptAnalysis, isLoading: promptAnalysisLoading } = useQuery({ queryKey: ['prompt-analysis', id], queryFn: () => api.getPromptAnalysis(id), enabled: Boolean(id) && needsPromptAnalysis, staleTime: 60_000 });
-  const { data: deepAnalysis, isLoading: deepAnalysisLoading } = useQuery({ queryKey: ['deep-analysis', id], queryFn: () => api.getDeepAnalysis(id), enabled: Boolean(id) && needsDeepAnalysis, staleTime: 60_000 });
-  const { data: sourcesIntel, isLoading: sourcesIntelLoading } = useQuery({ queryKey: ['sources-intelligence', id], queryFn: () => api.getSourcesIntelligence(id), enabled: Boolean(id), staleTime: 60_000 });
-  const { data: competitorIntel, isLoading: competitorIntelLoading } = useQuery({ queryKey: ['competitor-intelligence', id], queryFn: () => api.getCompetitorIntelligence(id), enabled: Boolean(id), staleTime: 60_000 });
+  const { data: promptAnalysis, isLoading: promptAnalysisLoading } = useQuery({ queryKey: ['prompt-analysis', id], queryFn: () => api.getPromptAnalysis(id), enabled: Boolean(id) && primaryLoaded && needsPromptAnalysis, staleTime: 60_000, retry: 2 });
+  const { data: deepAnalysis, isLoading: deepAnalysisLoading } = useQuery({ queryKey: ['deep-analysis', id], queryFn: () => api.getDeepAnalysis(id), enabled: Boolean(id) && needsDeepAnalysis, staleTime: 60_000, retry: 1 });
+  const { data: sourcesIntel, isLoading: sourcesIntelLoading } = useQuery({ queryKey: ['sources-intelligence', id], queryFn: () => api.getSourcesIntelligence(id), enabled: needsSourcesIntel, staleTime: 60_000, retry: 2 });
+  const { data: competitorIntel, isLoading: competitorIntelLoading } = useQuery({ queryKey: ['competitor-intelligence', id], queryFn: () => api.getCompetitorIntelligence(id), enabled: needsCompetitorIntel, staleTime: 60_000, retry: 2 });
   const { data: promptDetailData, isLoading: promptDetailLoading, isError: promptDetailIsError, error: promptDetailError } = useQuery({
     queryKey: ['prompt-detail', selectedPromptId],
     queryFn: () => api.getPromptDetail(selectedPromptId),
@@ -378,8 +394,8 @@ const ProjectDetailView = () => {
     () => Math.max(...competitorTopRows.map((r) => Number(r?.__vis ?? r?.visibility_pct ?? r?.visibility ?? 0) || 0), 1),
     [competitorTopRows]
   );
-  const { data: intelSummary, isLoading: intelSummaryLoading } = useQuery({ queryKey: ['intel-summary', id], queryFn: () => api.getIntelSummary(id), enabled: Boolean(id) && activeSection === 'dashboard' && !selectedPromptId });
-  const { data: globalAudit, isLoading: globalAuditLoading } = useQuery({ queryKey: ['global-audit', id], queryFn: () => api.getGlobalAudit(id), enabled: Boolean(id) && activeSection === 'dashboard' && !selectedPromptId });
+  const { data: intelSummary, isLoading: intelSummaryLoading } = useQuery({ queryKey: ['intel-summary', id], queryFn: () => api.getIntelSummary(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 2 });
+  const { data: globalAudit, isLoading: globalAuditLoading } = useQuery({ queryKey: ['global-audit', id], queryFn: () => api.getGlobalAudit(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 2 });
 
   useEffect(() => {
     setActiveSection((prev) => (prev === 'audit' ? 'dashboard' : prev));
@@ -648,14 +664,31 @@ const ProjectDetailView = () => {
 
   if (isLoading) {
     return (
-      <div className="flex h-64 items-center justify-center">
+      <div className="flex h-64 flex-col items-center justify-center gap-3">
         <Loader2 className="h-8 w-8 animate-spin text-brand-primary" />
+        <p className="text-sm text-slate-400">Loading dashboard…</p>
       </div>
     );
   }
 
   if (error || !projectData) {
-    return <div className="glass-card-v2 border-red-200/60 bg-red-50/60 p-5 text-sm text-red-600">{error?.message || 'Failed to load project'}</div>;
+    const msg = error?.message || 'Failed to load project';
+    const isAuth = msg.toLowerCase().includes('session') || msg.toLowerCase().includes('expired') || msg.toLowerCase().includes('401') || msg.toLowerCase().includes('unauthorized');
+    return (
+      <div className="glass-card-v2 border-red-200/60 bg-red-50/60 p-6 text-sm">
+        <p className="font-semibold text-red-700">
+          {isAuth ? 'Session expired — please refresh the page' : 'Failed to load project'}
+        </p>
+        <p className="mt-1 text-xs text-red-500">{msg}</p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="mt-4 inline-flex items-center gap-2 rounded-lg bg-brand-primary px-4 py-2 text-xs font-semibold text-white hover:bg-brand-primary/90"
+        >
+          Refresh page
+        </button>
+      </div>
+    );
   }
 
   const { project, prompts, dashboard, enabledEngines, availableEngines } = projectData;
