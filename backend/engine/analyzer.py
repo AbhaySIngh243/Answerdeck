@@ -1410,12 +1410,55 @@ def research_prompt_sources(query: str) -> dict[str, Any]:
     }
 
 
+def _measured_recommendation_items(
+    focus_brand: str,
+    competitor_framings: list[dict],
+    synthesis: dict,
+) -> list[dict]:
+    """Evidence-backed recommendations from stored analysis — no LLM round-trip."""
+    items: list[dict] = []
+    for cf in (competitor_framings or [])[:4]:
+        competitor = str(cf.get("competitor_brand") or "").strip()
+        quote = _clip_text(cf.get("verbatim_sentence"), 220)
+        if not competitor:
+            continue
+        items.append(
+            {
+                "action": f"Publish a direct {focus_brand} vs {competitor} proof page that addresses the exact claim models repeat.",
+                "engine": str(cf.get("engine") or "measured engines"),
+                "priority": "high",
+                "evidence": quote or f"{competitor} displaced {focus_brand} in measured model answers.",
+                "source_type": "measured",
+            }
+        )
+    top_domains = (synthesis or {}).get("top_cited_domains") if isinstance(synthesis, dict) else []
+    if isinstance(top_domains, list):
+        for row in top_domains[: max(0, 4 - len(items))]:
+            if not isinstance(row, dict):
+                continue
+            domain = str(row.get("domain") or "").strip()
+            if not domain:
+                continue
+            items.append(
+                {
+                    "action": f"Earn or update a citation on {domain} with a concise {focus_brand} description and verifiable proof points.",
+                    "engine": "citation analysis",
+                    "priority": "medium",
+                    "evidence": f"{domain} appears in the measured citation set.",
+                    "source_type": "measured",
+                }
+            )
+    return items[:4]
+
+
 def generate_recommendations(
     focus_brand: str,
     raw_responses: dict[str, str],
     competitor_framings: list[dict],
     synthesis: dict,
     engine: str = "chatgpt",
+    *,
+    skip_llm: bool = False,
 ) -> dict[str, Any]:
     if not raw_responses:
         return {
@@ -1425,12 +1468,15 @@ def generate_recommendations(
             "recommendation_items": [],
             "has_data": False,
         }
-    response_block = "\n".join(f"{eng.upper()}: {text[:1500]}" for eng, text in raw_responses.items())
-    competitor_block = "\n".join(
-        f"- {cf.get('competitor_brand')}: {cf.get('verbatim_sentence')}"
-        for cf in (competitor_framings or [])[:5]
-    )
-    prompt = f"""You are analyzing how AI engines describe {focus_brand}.
+
+    items: list[dict] = []
+    if not skip_llm:
+        response_block = "\n".join(f"{eng.upper()}: {text[:1500]}" for eng, text in raw_responses.items())
+        competitor_block = "\n".join(
+            f"- {cf.get('competitor_brand')}: {cf.get('verbatim_sentence')}"
+            for cf in (competitor_framings or [])[:5]
+        )
+        prompt = f"""You are analyzing how AI engines describe {focus_brand}.
 Here is what each AI engine said about {focus_brand} for this query:
 {response_block}
 
@@ -1447,43 +1493,15 @@ Generate exactly 4 recommendations. Rules:
 - Each recommendation must differ; do not repeat the same advice in different words
 Return ONLY valid JSON list:
 [{{"action": "specific action", "engine": "engine name", "priority": "high|medium|low", "evidence": "exact quote from above that motivates this action"}}]"""
-    try:
-        parsed = _clean_json(chat(engine, prompt, temperature=0.4))
-    except Exception:
-        parsed = []
-    items = [row for row in parsed if isinstance(row, dict)] if isinstance(parsed, list) else []
+        try:
+            parsed = _clean_json(chat(engine, prompt, temperature=0.4))
+        except Exception:
+            parsed = []
+        items = [row for row in parsed if isinstance(row, dict)] if isinstance(parsed, list) else []
+
     if not items:
-        for cf in (competitor_framings or [])[:4]:
-            competitor = str(cf.get("competitor_brand") or "").strip()
-            quote = _clip_text(cf.get("verbatim_sentence"), 220)
-            if not competitor:
-                continue
-            items.append(
-                {
-                    "action": f"Publish a direct {focus_brand} vs {competitor} proof page that addresses the exact claim models repeat.",
-                    "engine": str(cf.get("engine") or "measured engines"),
-                    "priority": "high",
-                    "evidence": quote or f"{competitor} displaced {focus_brand} in measured model answers.",
-                    "source_type": "measured",
-                }
-            )
-        top_domains = (synthesis or {}).get("top_cited_domains") if isinstance(synthesis, dict) else []
-        if isinstance(top_domains, list):
-            for row in top_domains[: max(0, 4 - len(items))]:
-                if not isinstance(row, dict):
-                    continue
-                domain = str(row.get("domain") or "").strip()
-                if not domain:
-                    continue
-                items.append(
-                    {
-                        "action": f"Earn or update a citation on {domain} with a concise {focus_brand} description and verifiable proof points.",
-                        "engine": "citation analysis",
-                        "priority": "medium",
-                        "evidence": f"{domain} appears in the measured citation set.",
-                        "source_type": "measured",
-                    }
-                )
+        items = _measured_recommendation_items(focus_brand, competitor_framings, synthesis)
+
     return {
         "missing_from_prompts": [],
         "competitor_sources": [str(cf.get("competitor_brand") or "") for cf in (competitor_framings or []) if cf.get("competitor_brand")],
@@ -1954,6 +1972,8 @@ def generate_strategic_action_plan(
     competitor_framings: list[dict] | None = None,
     n_responses: int = 0,
     n_engines: int = 0,
+    *,
+    skip_llm: bool = False,
 ) -> list[dict]:
     """Generate non-repetitive opportunities based on real project evidence.
 
@@ -1963,6 +1983,17 @@ def generate_strategic_action_plan(
     """
     if int(n_responses or 0) <= 0:
         return []
+    if skip_llm:
+        return _build_heuristic_strategic_action_plan(
+            focus_brand,
+            project_name,
+            llm_rows,
+            missing_prompts,
+            upload_targets,
+            competitor_framings or [],
+            n_responses=n_responses,
+            n_engines=n_engines,
+        )[:6]
     context = {
         "project_name": project_name,
         "focus_brand": focus_brand,
@@ -2140,10 +2171,69 @@ def _strip_prompt_echoes(items: list[str], prompt_texts: list[str], threshold: f
     return kept
 
 
+def _measured_project_summary(
+    focus_brand: str,
+    project_metadata: dict,
+    prompt_rankings: list[dict],
+    *,
+    computed_health: str,
+    coverage_ratio: float,
+    avg_rank: float | None,
+    n_responses: int,
+    tracked_prompts: list[str],
+    low_visibility_prompts: list[str],
+    top_visibility_prompts: list[str],
+    top_competitors: list[dict],
+    weak_engines: list[dict],
+    top_priority_prompts: list[str],
+) -> dict[str, Any]:
+    _weak = low_visibility_prompts[0] if low_visibility_prompts else None
+    _strong = top_visibility_prompts[0] if top_visibility_prompts else None
+    _competitor = top_competitors[0]["brand"] if top_competitors else None
+    _weak_engine = str(weak_engines[0].get("engine") or "") if weak_engines else ""
+    _rank_text = f" with an average position of #{avg_rank:.1f}" if avg_rank else ""
+    fallback_bullets = [
+        f"{focus_brand} appears in {coverage_ratio:.0%} of tracked prompts{_rank_text}, based on {n_responses} model answer{'s' if n_responses != 1 else ''}.",
+        f"The biggest weak spot is {_weak!r}; models either miss the brand or place it too low for this buyer intent." if _weak else f"The strongest prompt is {_strong!r}; protect it by keeping proof, pricing, and comparison details current.",
+        f"This week, update the page that best answers {_weak!r} and add two verifiable claims that make {focus_brand} easier to cite." if _weak else f"This week, reinforce {_strong!r} with fresh proof and a comparison block so competitors cannot displace it.",
+    ]
+    if tracked_prompts:
+        fallback_bullets = _strip_prompt_echoes(fallback_bullets, tracked_prompts) or fallback_bullets
+    return {
+        "overall_health": computed_health,
+        "executive_bullets": fallback_bullets,
+        "executive_summary": (
+            f"Early read: {focus_brand} has {computed_health.lower()} AI visibility across "
+            f"{n_responses} model answer{'s' if n_responses != 1 else ''}; "
+            f"{coverage_ratio:.0%} of tracked prompts currently include the brand."
+        ),
+        "strategic_roadmap": [
+            {
+                "phase": "This Week",
+                "action": f"Fix {_weak!r} with a direct answer section, proof points, and competitor comparison." if _weak else f"Refresh the page supporting {_strong!r} so the current ranking has fresh evidence.",
+            },
+            {
+                "phase": "Next 2-4 Weeks",
+                "action": f"Close the {_weak_engine} gap by mirroring the message that works on stronger engines." if _weak_engine else "Expand the same evidence pattern across the next two highest-value prompts.",
+            },
+        ],
+        "competitive_threats": [
+            f"{_competitor} is the clearest competitor to watch in the measured answers." if _competitor else "No single competitor dominates yet; the risk is generic category answers taking the recommendation slot.",
+            f"{_weak_engine} is currently a weak engine for the brand." if _weak_engine else "Without fresh citation support, strong prompts can drift as models update their source mix.",
+        ],
+        "top_priority_prompts": top_priority_prompts,
+        "has_data": True,
+        "confidence_tier": confidence_tier(n_responses),
+        "n_responses": n_responses,
+    }
+
+
 def generate_project_summary(
     focus_brand: str,
     project_metadata: dict,
     prompt_rankings: list[dict],
+    *,
+    skip_llm: bool = False,
 ) -> dict[str, Any]:
     """Synthesize overall project performance into a strategic executive summary.
 
@@ -2232,12 +2322,30 @@ def generate_project_summary(
     ][:4]
     official_site_cited_pct = project_metadata.get("official_site_cited_pct")
 
-    # --- LLM-driven narrative, constrained by computed_health ---
     _tp_for_prompt = (
         top_visibility_prompts[:2]
         if computed_health == "Strong"
         else (low_visibility_prompts[:2] if computed_health == "Critical" else low_visibility_prompts[:1] + top_visibility_prompts[:1])
     )
+
+    if skip_llm:
+        return _measured_project_summary(
+            focus_brand,
+            project_metadata,
+            prompt_rankings,
+            computed_health=computed_health,
+            coverage_ratio=coverage_ratio,
+            avg_rank=avg_rank,
+            n_responses=n_responses,
+            tracked_prompts=tracked_prompts,
+            low_visibility_prompts=low_visibility_prompts,
+            top_visibility_prompts=top_visibility_prompts,
+            top_competitors=top_competitors,
+            weak_engines=weak_engines,
+            top_priority_prompts=_tp_for_prompt,
+        )
+
+    # --- LLM-driven narrative, constrained by computed_health ---
     prompt = f"""You are a top-tier marketing strategy analyst reviewing {focus_brand}'s visibility in AI search engines.
 Your audience is the founder/executive team. They want sharp, conversational, and deeply strategic insights - not a robotic recitation of metrics.
 Do NOT use variable names like "coverage_ratio" or "avg_rank" in your text. Instead, translate these numbers into plain English (e.g., "You're showing up in all our tracked queries", or "Your average position is #1").
@@ -2338,49 +2446,21 @@ VALIDATION RULES:
     except Exception:
         pass
 
-    _tp = _tp_for_prompt
-    _weak = low_visibility_prompts[0] if low_visibility_prompts else None
-    _strong = top_visibility_prompts[0] if top_visibility_prompts else None
-    _competitor = top_competitors[0]["brand"] if top_competitors else None
-    _weak_engine = str(weak_engines[0].get("engine") or "") if weak_engines else ""
-    _rank_text = f" with an average position of #{avg_rank:.1f}" if avg_rank else ""
-    fallback_bullets = [
-        f"{focus_brand} appears in {coverage_ratio:.0%} of tracked prompts{_rank_text}, based on {n_responses} model answer{'s' if n_responses != 1 else ''}.",
-        f"The biggest weak spot is {_weak!r}; models either miss the brand or place it too low for this buyer intent." if _weak else f"The strongest prompt is {_strong!r}; protect it by keeping proof, pricing, and comparison details current.",
-        f"This week, update the page that best answers {_weak!r} and add two verifiable claims that make {focus_brand} easier to cite." if _weak else f"This week, reinforce {_strong!r} with fresh proof and a comparison block so competitors cannot displace it.",
-    ]
-    if tracked_prompts:
-        fallback_bullets = _strip_prompt_echoes(fallback_bullets, tracked_prompts) or fallback_bullets
-    fallback_summary = (
-        f"Early read: {focus_brand} has {computed_health.lower()} AI visibility across "
-        f"{n_responses} model answer{'s' if n_responses != 1 else ''}; "
-        f"{coverage_ratio:.0%} of tracked prompts currently include the brand."
+    return _measured_project_summary(
+        focus_brand,
+        project_metadata,
+        prompt_rankings,
+        computed_health=computed_health,
+        coverage_ratio=coverage_ratio,
+        avg_rank=avg_rank,
+        n_responses=n_responses,
+        tracked_prompts=tracked_prompts,
+        low_visibility_prompts=low_visibility_prompts,
+        top_visibility_prompts=top_visibility_prompts,
+        top_competitors=top_competitors,
+        weak_engines=weak_engines,
+        top_priority_prompts=_tp_for_prompt,
     )
-    fallback_roadmap = [
-        {
-            "phase": "This Week",
-            "action": f"Fix {_weak!r} with a direct answer section, proof points, and competitor comparison." if _weak else f"Refresh the page supporting {_strong!r} so the current ranking has fresh evidence.",
-        },
-        {
-            "phase": "Next 2-4 Weeks",
-            "action": f"Close the {_weak_engine} gap by mirroring the message that works on stronger engines." if _weak_engine else "Expand the same evidence pattern across the next two highest-value prompts.",
-        },
-    ]
-    fallback_threats = [
-        f"{_competitor} is the clearest competitor to watch in the measured answers." if _competitor else "No single competitor dominates yet; the risk is generic category answers taking the recommendation slot.",
-        f"{_weak_engine} is currently a weak engine for the brand." if _weak_engine else "Without fresh citation support, strong prompts can drift as models update their source mix.",
-    ]
-    return {
-        "overall_health": computed_health,
-        "executive_bullets": fallback_bullets,
-        "executive_summary": fallback_summary,
-        "strategic_roadmap": fallback_roadmap,
-        "competitive_threats": fallback_threats,
-        "top_priority_prompts": _tp,
-        "has_data": True,
-        "confidence_tier": confidence_tier(n_responses),
-        "n_responses": n_responses,
-    }
 
 
 def generate_content_piece(

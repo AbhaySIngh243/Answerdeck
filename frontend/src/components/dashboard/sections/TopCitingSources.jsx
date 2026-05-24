@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { ResponsivePie } from '@nivo/pie';
 import { ResponsiveLine } from '@nivo/line';
-import { Volume2, Info, ArrowRight } from 'lucide-react';
+import { Volume2, Info, ArrowRight, Loader2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 
 // Helper to categorize domains
@@ -52,7 +52,7 @@ function generateSparklineData(seed, trend = 'up') {
   return [{ id: 'trend', data }];
 }
 
-export default function TopCitingSources({ sources, totalPrompts, totalEngines = 1, focusBrand }) {
+export default function TopCitingSources({ sources = [], totalPrompts, totalEngines = 1, focusBrand, isLoading = false }) {
   const totalCitations = sources.reduce((sum, s) => sum + (s.source_mentions || 0), 0);
   
   const enrichedSources = useMemo(() => {
@@ -93,6 +93,26 @@ export default function TopCitingSources({ sources, totalPrompts, totalEngines =
       color: getTypeChartColor(type)
     })).sort((a, b) => b.value - a.value);
   }, [enrichedSources]);
+
+  if (isLoading && enrichedSources.length === 0) {
+    return (
+      <div className="glass-card-v2 flex items-center justify-center gap-2 px-6 py-10 text-sm text-slate-500">
+        <Loader2 className="h-4 w-4 animate-spin text-slate-300" />
+        Loading project-level citing sources...
+      </div>
+    );
+  }
+
+  if (!isLoading && enrichedSources.length === 0) {
+    return (
+      <div className="glass-card-v2 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-6 py-10 text-center">
+        <h3 className="text-sm font-semibold text-slate-800">No citation sources yet</h3>
+        <p className="mx-auto mt-2 max-w-xl text-sm text-slate-500">
+          Run or rerun a prompt with model answers. This view will show the overall sources cited across the project, even when no single prompt is selected.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

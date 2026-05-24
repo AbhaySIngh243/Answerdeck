@@ -342,6 +342,14 @@ export const api = {
     }),
   getOverview: (options = {}) => request('/reports/overview', options),
 
+  submitDemoRequest: (body) =>
+    request('/contact/demo-request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      retries: 0,
+    }),
+
   getBillingMe: () => request('/billing/me'),
   getBillingHealth: () => request('/billing/health'),
   createSubscription: (planKey) =>

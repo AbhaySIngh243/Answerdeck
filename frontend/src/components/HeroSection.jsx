@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import PlatformRow from './PlatformRow';
+import RequestDemoDialog from './RequestDemoDialog';
 
 const IMG = {
   chatgpt: 'https://upload.wikimedia.org/wikipedia/commons/e/ef/ChatGPT-Logo.svg',
@@ -53,6 +54,8 @@ function HeroIllustration() {
 }
 
 const HeroSection = () => {
+  const [demoOpen, setDemoOpen] = useState(false);
+
   return (
     <section className="relative overflow-hidden hero-gradient pb-20 pt-12 md:pb-28 md:pt-16">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#e2e8f0] to-transparent opacity-80" aria-hidden />
@@ -73,16 +76,20 @@ const HeroSection = () => {
             <Link to="/signup" className="btn-primary text-center sm:w-auto">
               Start for free →
             </Link>
-            <a href="#pricing" className="btn-secondary text-center sm:w-auto">
-              Talk to founder →
-            </a>
+            <button
+              type="button"
+              onClick={() => setDemoOpen(true)}
+              className="btn-secondary text-center sm:w-auto"
+            >
+              Request demo →
+            </button>
           </div>
-          <p className="mt-4 text-sm font-medium text-[#64748b]">7-day free trial. Cancel anytime.</p>
         </div>
 
         <HeroIllustration />
       </div>
       <PlatformRow />
+      <RequestDemoDialog open={demoOpen} onOpenChange={setDemoOpen} />
     </section>
   );
 };

@@ -286,25 +286,20 @@ const ProjectDetailView = () => {
   const launchJobsHandledRef = useRef(false);
   const MAX_POLL_ATTEMPTS = 120; // 5 minutes at 2.5s intervals
 
-  const { data: projectData, isLoading, error } = useQuery({
-    queryKey: ['project-data', 'v2', id],
+  const { data: projectCore, isLoading: coreLoading, error: coreError } = useQuery({
+    queryKey: ['project-core', id],
     queryFn: async () => {
-      // Use allSettled so a slow secondary endpoint (engines) never kills the whole page.
-      const [projectRes, promptsRes, dashboardRes, enginesRes] = await Promise.allSettled([
+      const [projectRes, promptsRes, enginesRes] = await Promise.allSettled([
         api.getProject(id),
         api.getPrompts(id),
-        api.getProjectDashboard(id),
         api.getEngines(),
       ]);
-      // Core data (project + dashboard) must succeed — throw to trigger retry if either fails.
       if (projectRes.status === 'rejected') throw projectRes.reason;
-      if (dashboardRes.status === 'rejected') throw dashboardRes.reason;
       const engines = enginesRes.status === 'fulfilled' ? enginesRes.value : {};
       const prompts = promptsRes.status === 'fulfilled' ? promptsRes.value : [];
       return {
         project: projectRes.value,
         prompts,
-        dashboard: dashboardRes.value,
         enabledEngines: toArray(engines.enabled_engines),
         availableEngines: toArray(engines.available_engines),
         searchLayer: engines.search_layer || {},
@@ -315,15 +310,22 @@ const ProjectDetailView = () => {
     retryDelay: (attempt) => Math.min(1500 * Math.pow(2, attempt), 10_000),
   });
 
-  // Warm the same heavy payload the Opportunities tab uses so switching tabs feels instant.
-  useEffect(() => {
-    if (!id || !projectData?.project) return;
-    queryClient.prefetchQuery({
-      queryKey: ['deep-analysis', id],
-      queryFn: () => api.getDeepAnalysis(id),
-      staleTime: 60_000,
-    });
-  }, [id, projectData?.project, queryClient]);
+  const { data: dashboardMetrics, isLoading: dashboardLoading, error: dashboardError } = useQuery({
+    queryKey: ['project-dashboard', id],
+    queryFn: () => api.getProjectDashboard(id),
+    enabled: Boolean(id) && Boolean(projectCore?.project),
+    staleTime: 60_000,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1500 * Math.pow(2, attempt), 10_000),
+  });
+
+  const projectData = useMemo(() => {
+    if (!projectCore) return null;
+    return { ...projectCore, dashboard: dashboardMetrics || null };
+  }, [projectCore, dashboardMetrics]);
+
+  const isLoading = coreLoading;
+  const error = coreError;
 
   const { data: billing } = useQuery({
     queryKey: ['billing', 'me'],
@@ -340,11 +342,11 @@ const ProjectDetailView = () => {
   const primaryLoaded = Boolean(projectData);
   const needsPromptAnalysis = activeSection === 'dashboard' || activeSection === 'prompts';
   const needsDeepAnalysis = activeSection === 'opportunities' || activeSection === 'execute';
-  // sources and competitor detail tabs only — don't fire on dashboard load to reduce token pressure
+  // Keep tab queries scoped; project-level sources are prefetched below after the primary data loads.
   const needsSourcesIntel = primaryLoaded && (activeSection === 'sources' || Boolean(selectedPromptId));
   const needsCompetitorIntel = primaryLoaded && activeSection === 'competitors';
 
-  const { data: promptAnalysis, isLoading: promptAnalysisLoading } = useQuery({ queryKey: ['prompt-analysis', id], queryFn: () => api.getPromptAnalysis(id), enabled: Boolean(id) && primaryLoaded && needsPromptAnalysis, staleTime: 60_000, retry: 2 });
+  const { data: promptAnalysis, isLoading: promptAnalysisLoading, error: promptAnalysisError } = useQuery({ queryKey: ['prompt-analysis', id], queryFn: () => api.getPromptAnalysis(id), enabled: Boolean(id) && primaryLoaded && needsPromptAnalysis, staleTime: 60_000, retry: 2 });
   const { data: deepAnalysis, isLoading: deepAnalysisLoading } = useQuery({ queryKey: ['deep-analysis', id], queryFn: () => api.getDeepAnalysis(id), enabled: Boolean(id) && needsDeepAnalysis, staleTime: 60_000, retry: 1 });
   const { data: sourcesIntel, isLoading: sourcesIntelLoading } = useQuery({ queryKey: ['sources-intelligence', id], queryFn: () => api.getSourcesIntelligence(id), enabled: needsSourcesIntel, staleTime: 60_000, retry: 2 });
   const { data: competitorIntel, isLoading: competitorIntelLoading } = useQuery({ queryKey: ['competitor-intelligence', id], queryFn: () => api.getCompetitorIntelligence(id), enabled: needsCompetitorIntel, staleTime: 60_000, retry: 2 });
@@ -365,7 +367,6 @@ const ProjectDetailView = () => {
     });
     return mergeSourcesByDomainKey(normalized);
   }, [selectedPromptId, promptDetailData?.sources, sourcesIntel?.domains]);
-  const strictSourceRows = useMemo(() => (Array.isArray(sourcesIntel?.sources) ? sourcesIntel.sources : []), [sourcesIntel?.sources]);
   const contextState = useMemo(
     () => (
       projectData?.dashboard?.context_state ||
@@ -394,8 +395,25 @@ const ProjectDetailView = () => {
     () => Math.max(...competitorTopRows.map((r) => Number(r?.__vis ?? r?.visibility_pct ?? r?.visibility ?? 0) || 0), 1),
     [competitorTopRows]
   );
-  const { data: intelSummary, isLoading: intelSummaryLoading } = useQuery({ queryKey: ['intel-summary', id], queryFn: () => api.getIntelSummary(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 2 });
-  const { data: globalAudit, isLoading: globalAuditLoading } = useQuery({ queryKey: ['global-audit', id], queryFn: () => api.getGlobalAudit(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 2 });
+  const { data: intelSummary, isLoading: intelSummaryLoading, error: intelSummaryError } = useQuery({ queryKey: ['intel-summary', id], queryFn: () => api.getIntelSummary(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 2 });
+  const { data: globalAudit, isLoading: globalAuditLoading, error: globalAuditError } = useQuery({ queryKey: ['global-audit', id], queryFn: () => api.getGlobalAudit(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 2 });
+
+  const sessionExpired = useMemo(() => {
+    const candidates = [error, dashboardError, intelSummaryError, globalAuditError, promptAnalysisError];
+    return candidates.some((err) => {
+      const msg = String(err?.message || '').toLowerCase();
+      return err?.status === 401 || msg.includes('401') || msg.includes('unauthorized') || msg.includes('session expired');
+    });
+  }, [error, dashboardError, intelSummaryError, globalAuditError, promptAnalysisError]);
+
+  useEffect(() => {
+    if (!id || !primaryLoaded) return;
+    queryClient.prefetchQuery({
+      queryKey: ['sources-intelligence', id],
+      queryFn: () => api.getSourcesIntelligence(id),
+      staleTime: 60_000,
+    });
+  }, [id, primaryLoaded, queryClient]);
 
   useEffect(() => {
     setActiveSection((prev) => (prev === 'audit' ? 'dashboard' : prev));
@@ -443,49 +461,53 @@ const ProjectDetailView = () => {
   }, [projectData]);
 
   const dashboardIntelLayout = useMemo(() => {
-    if (!intelSummary) return null;
-    const eb = intelSummary.executive_bullets;
-    let happening = '';
-    if (Array.isArray(eb) && eb.length) {
-      happening = String(eb[0]).trim();
-    } else if (intelSummary.executive_summary) {
-      const s = String(intelSummary.executive_summary).trim();
-      const first = s.split(/(?<=[.!?])\s+/)[0];
-      happening = (first && first.length <= 280 ? first : s.slice(0, 220)).trim();
+    if (intelSummary) {
+      const eb = intelSummary.executive_bullets;
+      let happening = '';
+      if (Array.isArray(eb) && eb.length) {
+        happening = String(eb[0]).trim();
+      } else if (intelSummary.executive_summary) {
+        const s = String(intelSummary.executive_summary).trim();
+        const first = s.split(/(?<=[.!?])\s+/)[0];
+        happening = (first && first.length <= 280 ? first : s.slice(0, 220)).trim();
+      }
+      const promptEchoes = new Set(
+        toArray(projectData?.prompts)
+          .map((p) => String(p?.prompt_text || '').trim().toLowerCase())
+          .filter(Boolean),
+      );
+      const fromRoadmap = toArray(intelSummary.strategic_roadmap)
+        .map((step) => String(step.action || '').trim())
+        .filter(Boolean);
+      const fromBullets = Array.isArray(intelSummary.executive_bullets)
+        ? intelSummary.executive_bullets.slice(1).map((b) => String(b).trim()).filter(Boolean)
+        : [];
+      const seen = new Set();
+      const priorities = [];
+      for (const t of [...fromRoadmap, ...fromBullets]) {
+        const k = t.toLowerCase();
+        if (!k || seen.has(k)) continue;
+        if (promptEchoes.has(k)) continue;
+        seen.add(k);
+        priorities.push(t);
+        if (priorities.length >= 5) break;
+      }
+      const losing = toArray(intelSummary.competitive_threats)
+        .map((t) => String(t).trim())
+        .filter((t) => t && !promptEchoes.has(t.toLowerCase()));
+      return { happening, priorities, losing, fromIntel: true };
     }
-    // Priorities = roadmap actions + later bullets, deduped. We DO NOT mix
-    // in tracked prompt strings here -- those have their own "Prompts to watch"
-    // column. Echoing prompts into "Do these first" produced the duplication
-    // we saw in the screenshots (e.g. "best smart TVs in India 2025" appearing
-    // as both a priority and a watched prompt).
-    const promptEchoes = new Set(
-      toArray(projectData?.prompts)
-        .map((p) => String(p?.prompt_text || '').trim().toLowerCase())
-        .filter(Boolean),
-    );
-    const fromRoadmap = toArray(intelSummary.strategic_roadmap)
-      .map((step) => String(step.action || '').trim())
-      .filter(Boolean);
-    const fromBullets = Array.isArray(intelSummary.executive_bullets)
-      ? intelSummary.executive_bullets.slice(1).map((b) => String(b).trim()).filter(Boolean)
-      : [];
-    const seen = new Set();
-    const priorities = [];
-    for (const t of [...fromRoadmap, ...fromBullets]) {
-      const k = t.toLowerCase();
-      if (!k || seen.has(k)) continue;
-      // Belt-and-suspenders: even if the backend forgot to filter, we drop
-      // priorities that are identical to a tracked prompt string.
-      if (promptEchoes.has(k)) continue;
-      seen.add(k);
-      priorities.push(t);
-      if (priorities.length >= 5) break;
-    }
-    const losing = toArray(intelSummary.competitive_threats)
-      .map((t) => String(t).trim())
-      .filter((t) => t && !promptEchoes.has(t.toLowerCase()));
-    return { happening, priorities, losing };
-  }, [intelSummary, projectData?.prompts]);
+    const dash = projectData?.dashboard;
+    if (!dash) return null;
+    const vis = dash.visibility_pct_current;
+    const visText = vis != null ? `${vis}% visibility across measured answers` : 'Measured dashboard data is available';
+    return {
+      happening: `${projectData?.project?.name || 'Your brand'}: ${visText}.`,
+      priorities: [],
+      losing: [],
+      fromIntel: false,
+    };
+  }, [intelSummary, projectData?.prompts, projectData?.dashboard, projectData?.project?.name]);
 
   const [expandedCompetitor, setExpandedCompetitor] = useState({});
   const [execContent, setExecContent] = useState(null);
@@ -666,7 +688,7 @@ const ProjectDetailView = () => {
     return (
       <div className="flex h-64 flex-col items-center justify-center gap-3">
         <Loader2 className="h-8 w-8 animate-spin text-brand-primary" />
-        <p className="text-sm text-slate-400">Loading dashboard…</p>
+        <p className="text-sm text-slate-400">Loading project…</p>
       </div>
     );
   }
@@ -784,6 +806,19 @@ const ProjectDetailView = () => {
         </div>
       )}
 
+      {sessionExpired && (
+        <div className="rounded-xl border border-red-200/70 bg-red-50/70 px-4 py-3 text-sm text-red-900">
+          <p className="font-semibold">Session expired — refresh the page to reload dashboard panels.</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-primary/90"
+          >
+            Refresh page
+          </button>
+        </div>
+      )}
+
       {/* Horizontal tab bar */}
       <div className="border-b border-slate-200/60">
         <nav className="-mb-px flex gap-1 overflow-x-auto">
@@ -821,25 +856,46 @@ const ProjectDetailView = () => {
             {/* ===== DASHBOARD TAB ===== */}
             {activeSection === 'dashboard' && (
               <motion.div key="dashboard" {...sectionMotion} className="space-y-5">
-                <OverviewKpiGrid dashboard={dashboard} prompts={prompts} enabledEngines={enabledEngines} />
-                <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.5fr_1fr]">
-                  <PerformancePanel range={dashChartMode} onRangeChange={setDashChartMode} dashboard={dashboard} />
-                  <CompetitorSnapshot competitors={toArray(dashboard?.competitors)} onViewAll={() => setActiveSection('competitors')} />
-                </div>
+                <OverviewKpiGrid dashboard={dashboard} prompts={prompts} enabledEngines={enabledEngines} metricsLoading={dashboardLoading} />
+                {dashboardLoading ? (
+                  <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.5fr_1fr]">
+                    <div className="glass-card-v2 animate-pulse rounded-2xl p-6">
+                      <div className="mb-4 h-4 w-40 rounded bg-slate-100" />
+                      <div className="h-48 rounded-xl bg-slate-50" />
+                    </div>
+                    <div className="glass-card-v2 animate-pulse rounded-2xl p-6">
+                      <div className="mb-4 h-4 w-32 rounded bg-slate-100" />
+                      <div className="h-48 rounded-xl bg-slate-50" />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.5fr_1fr]">
+                    <PerformancePanel range={dashChartMode} onRangeChange={setDashChartMode} dashboard={dashboard} />
+                    <CompetitorSnapshot competitors={toArray(dashboard?.competitors)} onViewAll={() => setActiveSection('competitors')} />
+                  </div>
+                )}
                 <PromptPerformanceTable loading={promptAnalysisLoading} rows={toArray(promptAnalysis?.rows)} onViewAll={() => setActiveSection('prompts')} />
 
                 {!selectedPromptId && (
                   <>
-                    {intelSummaryLoading ? (
-                      <div className="glass-card-v2 animate-pulse p-6">
-                        <div className="mb-6 space-y-3"><div className="h-5 w-64 rounded bg-slate-100" /><div className="h-3 w-44 rounded bg-slate-100" /></div>
-                        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1.4fr_1fr]"><div className="space-y-4"><div className="h-20 rounded-xl bg-slate-50" /><div className="h-28 rounded-xl bg-slate-50" /></div><div className="h-52 rounded-xl bg-slate-50" /></div>
-                      </div>
-                    ) : intelSummary && dashboardIntelLayout && (() => {
+                    {(() => {
+                      if (intelSummaryLoading && !dashboardIntelLayout) {
+                        return (
+                          <div className="glass-card-v2 flex items-center gap-2 px-6 py-4 text-sm text-slate-500">
+                            <Loader2 className="h-4 w-4 animate-spin text-slate-300" />
+                            Loading summary from measured data…
+                          </div>
+                        );
+                      }
+                      if (!dashboardIntelLayout) return null;
+
                       const summaryCoverage = intelSummary?.coverage || dashboard?.coverage;
                       const summaryResponseCount = Number(summaryCoverage?.n_responses ?? 0) || 0;
-                      const noSummaryData = intelSummary?.has_data === false && summaryResponseCount <= 0;
-                      const overallHealth = intelSummary.overall_health || (noSummaryData ? 'No data' : 'Neutral');
+                      const noSummaryData = intelSummary
+                        ? intelSummary.has_data === false && summaryResponseCount <= 0
+                        : summaryResponseCount <= 0 && !dashboardIntelLayout.fromIntel;
+                      const overallHealth = intelSummary?.overall_health
+                        || (noSummaryData ? 'No data' : 'Neutral');
                       const healthBadgeStyle = overallHealth === 'Strong'
                         ? 'bg-emerald-50 text-emerald-700'
                         : overallHealth === 'Critical'
@@ -847,6 +903,8 @@ const ProjectDetailView = () => {
                           : overallHealth === 'No data'
                             ? 'bg-amber-50 text-amber-700'
                             : 'bg-slate-100 text-slate-600';
+                      const priorityPrompts = toArray(intelSummary?.top_priority_prompts);
+
                       return (
                         <div className="glass-card-v2 overflow-hidden">
                           <div className="flex flex-wrap items-start justify-between gap-4 px-6 py-5">
@@ -855,7 +913,16 @@ const ProjectDetailView = () => {
                                 <h2 className="text-base font-semibold tracking-tight text-slate-900">Summary</h2>
                                 <DataBadge type="ai" />
                                 {summaryCoverage && <CoverageBadge coverage={summaryCoverage} />}
+                                {intelSummaryLoading && (
+                                  <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                    Updating…
+                                  </span>
+                                )}
                               </div>
+                              {intelSummaryError && !intelSummary && (
+                                <p className="mt-1 text-xs text-slate-500">Using measured dashboard metrics — full summary unavailable.</p>
+                              )}
                             </div>
                             <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${healthBadgeStyle}`}>{overallHealth}</span>
                           </div>
@@ -895,8 +962,8 @@ const ProjectDetailView = () => {
                                 <div>
                                   <p className={`${lbl} mb-2`}>Prompts to watch</p>
                                   <div className="space-y-2">
-                                    {toArray(intelSummary.top_priority_prompts).length === 0 && <p className="text-sm text-slate-500">None yet. Run analysis first.</p>}
-                                    {toArray(intelSummary.top_priority_prompts).map((q, idx) => (
+                                    {priorityPrompts.length === 0 && <p className="text-sm text-slate-500">None yet. Run analysis first.</p>}
+                                    {priorityPrompts.map((q, idx) => (
                                       <div key={idx} className="glass-inset rounded-lg px-3 py-2 text-sm text-slate-700">{q}</div>
                                     ))}
                                   </div>
@@ -917,8 +984,11 @@ const ProjectDetailView = () => {
                         </div>
                       );
                     })()}
-                    {globalAuditLoading ? (
-                      <div className="glass-card-v2 flex justify-center py-14"><Loader2 className="h-6 w-6 animate-spin text-slate-300" /></div>
+                    {globalAuditLoading && !globalAudit ? (
+                      <div className="glass-card-v2 flex items-center justify-center gap-2 px-6 py-4 text-sm text-slate-500">
+                        <Loader2 className="h-4 w-4 animate-spin text-slate-300" />
+                        Checking measured visibility audit...
+                      </div>
                     ) : (() => {
                       // The backend now returns { items, coverage, has_data } from this endpoint.
                       // Fall back gracefully if a cached older array shape lands here.
@@ -1233,6 +1303,7 @@ const ProjectDetailView = () => {
               <motion.div key="sources" {...sectionMotion}>
                 <TopCitingSources 
                   sources={mergedSourcesRows} 
+                  isLoading={sourcesIntelLoading && mergedSourcesRows.length === 0}
                   totalPrompts={projectData?.dashboard?.prompt_rankings?.length || projectData?.prompts?.length || 1} 
                   totalEngines={Object.keys(modelIdToName || {}).length || 1}
                   focusBrand={project.name} 

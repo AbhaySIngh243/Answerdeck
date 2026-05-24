@@ -19,6 +19,7 @@ from routes.projects import projects_bp
 from routes.prompts import prompts_bp
 from routes.reports import reports_bp
 from routes.billing import billing_bp
+from routes.contact import contact_bp
 
 
 def create_app() -> Flask:
@@ -62,6 +63,7 @@ def create_app() -> Flask:
     app.register_blueprint(analysis_bp, url_prefix="/api/analysis")
     app.register_blueprint(reports_bp, url_prefix="/api/reports")
     app.register_blueprint(billing_bp, url_prefix="/api/billing")
+    app.register_blueprint(contact_bp, url_prefix="/api/contact")
 
     register_error_handlers(app)
     register_health_route(app)

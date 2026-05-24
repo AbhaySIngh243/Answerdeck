@@ -12,13 +12,16 @@ export default function OverviewKpiGrid({
   dashboard,
   prompts,
   enabledEngines,
+  metricsLoading = false,
 }) {
-  const visibilityPct = Number(
-    dashboard?.visibility_pct_current ?? dashboard?.current_visibility_score ?? 0
-  );
+  const visibilityPct = metricsLoading
+    ? null
+    : Number(
+        dashboard?.visibility_pct_current ?? dashboard?.current_visibility_score ?? 0
+      );
   const promptCount = prompts.length;
   const engineCount = enabledEngines.length;
-  const competitors = Array.isArray(dashboard?.competitors) ? dashboard.competitors : [];
+  const competitors = metricsLoading ? [] : (Array.isArray(dashboard?.competitors) ? dashboard.competitors : []);
   const topCompetitor = competitors.length
     ? [...competitors].sort(
         (a, b) =>
@@ -27,10 +30,11 @@ export default function OverviewKpiGrid({
       )[0]
     : null;
 
-  const rankings = Array.isArray(dashboard?.prompt_rankings) ? dashboard.prompt_rankings : [];
+  const rankings = metricsLoading ? [] : (Array.isArray(dashboard?.prompt_rankings) ? dashboard.prompt_rankings : []);
   const rankedEntries = rankings.filter((r) => r.avg_rank != null);
-  const avgPosition =
-    rankedEntries.length > 0
+  const avgPosition = metricsLoading
+    ? '…'
+    : rankedEntries.length > 0
       ? (rankedEntries.reduce((s, r) => s + Number(r.avg_rank), 0) / rankedEntries.length).toFixed(2)
       : '—';
 
@@ -51,20 +55,21 @@ export default function OverviewKpiGrid({
     },
     {
       label: 'Visibility',
-      value: `${visibilityPct}%`,
-      sub: 'Across all prompts',
+      value: metricsLoading ? '…' : `${visibilityPct}%`,
+      sub: metricsLoading ? 'Loading metrics…' : 'Across all prompts',
       icon: Eye,
     },
     {
       label: 'Top Competitor',
-      value: topCompetitor?.brand || '—',
-      sub:
-        topCompetitor != null
+      value: metricsLoading ? '…' : (topCompetitor?.brand || '—'),
+      sub: metricsLoading
+        ? 'Loading metrics…'
+        : topCompetitor != null
           ? `Outranks you by ${Math.max(
               0,
               Math.round(
                 (Number(topCompetitor.visibility_pct ?? topCompetitor.visibility ?? 0) || 0) -
-                  visibilityPct
+                  (visibilityPct ?? 0)
               )
             )} visibility pts`
           : 'Run analysis to populate',
