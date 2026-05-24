@@ -2,8 +2,8 @@ import React from 'react';
 
 const features = [
   {
-    title: 'Prompt Monitoring',
-    desc: 'Track prompts across AI engines to understand user intent and brand mentions.',
+    title: 'Buyer-prompt tracking',
+    desc: 'Track the questions real buyers ask in your category. See mention rate, average position, and engine-by-engine results for each prompt.',
     icon: (
       <svg className="h-6 w-6 text-brand-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -12,8 +12,8 @@ const features = [
     ),
   },
   {
-    title: 'AI Brand Detection',
-    desc: 'Detect exactly when and where your brand appears in AI answers across every engine.',
+    title: 'Multi-engine visibility',
+    desc: 'One dashboard for ChatGPT, Gemini, Perplexity, and Claude — visibility trends, KPIs, and which models mention you vs. skip you.',
     icon: (
       <svg className="h-6 w-6 text-brand-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path
@@ -26,8 +26,8 @@ const features = [
     ),
   },
   {
-    title: 'Competitor Visibility',
-    desc: 'See which competitors AI assistants recommend consistently over you — engine by engine.',
+    title: 'Competitors & citations',
+    desc: 'See who outranks you, how visibility shifts over time, and which domains models cite — with URL checks so broken sources do not pollute your audit.',
     icon: (
       <svg className="h-6 w-6 text-brand-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -35,8 +35,8 @@ const features = [
     ),
   },
   {
-    title: 'Actionable Reports',
-    desc: 'Not just scores — ranked action items with estimated impact so you can prioritize what to fix first.',
+    title: 'Recommendations & Content Studio',
+    desc: 'Engine-specific next actions with evidence quotes, Opportunities with weekly plans, and drafts you can edit before publishing — built from your actual run data.',
     icon: (
       <svg className="h-6 w-6 text-brand-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
@@ -51,11 +51,12 @@ const FeaturesSection = () => {
     <section className="border-y border-[#e2e8f0]/50 bg-white py-24" id="features">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="mb-14 text-center">
-          <p className="landing-eyebrow">Features</p>
-          <h2 className="heading-section mt-2">Clarity, then action</h2>
+          <p className="landing-eyebrow">What you get</p>
+          <h2 className="heading-section mt-2">Built to close gaps, not just report them</h2>
           <div className="accent-heading-rule" />
           <p className="mx-auto mt-6 max-w-[600px] text-base leading-relaxed text-[#64748b] sm:text-[17px]">
-            Every insight is tied to what to do next — ranked by impact — so you can actually move your AI visibility.
+            Every module in Answrdeck points at something you can ship: a comparison page, a citation to earn, a prompt to
+            re-run, or a draft ready for your site.
           </p>
         </div>
 

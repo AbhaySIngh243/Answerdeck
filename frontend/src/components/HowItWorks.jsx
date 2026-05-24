@@ -3,18 +3,18 @@ import React from 'react';
 const steps = [
   {
     step: '01',
-    title: 'Track',
-    desc: 'Monitor every question customers ask AI assistants about your category — across ChatGPT, Gemini, Perplexity, and Claude.',
+    title: 'Set up your project',
+    desc: 'Add your brand, site, competitors, and the buyer prompts you want to win — we help suggest prompts during onboarding.',
   },
   {
     step: '02',
-    title: 'Analyze',
-    desc: "See exactly where your brand appears, where it doesn't, and which competitors dominate each engine.",
+    title: 'Run cross-engine analysis',
+    desc: 'Answrdeck queries ChatGPT, Gemini, Perplexity, and Claude, then maps visibility %, rankings, competitor displacement, and cited sources per prompt.',
   },
   {
     step: '03',
-    title: 'Act',
-    desc: 'Get a prioritized action plan: specific content changes, schema updates, and positioning moves ranked by impact.',
+    title: 'Execute the fixes',
+    desc: 'Use prioritized recommendations, Opportunities (weekly action plans), and Content Studio drafts tied to real engine quotes — not generic SEO advice.',
     ksp: true,
   },
 ];
@@ -25,10 +25,10 @@ const HowItWorks = () => {
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="mb-12 text-center">
           <p className="landing-eyebrow">How it works</p>
-          <h2 className="heading-section mt-2">From invisible to recommended</h2>
+          <h2 className="heading-section mt-2">From measurement to shipped changes</h2>
           <div className="accent-heading-rule" />
           <p className="mx-auto mt-6 max-w-[560px] text-base leading-relaxed text-[#64748b] sm:text-[17px]">
-            Three steps that actually move the needle.
+            Three steps that match what you do inside the product today.
           </p>
         </div>
 

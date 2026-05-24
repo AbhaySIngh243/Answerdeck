@@ -35,12 +35,12 @@ const CTASection = () => {
 
       <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
         <div id="book-demo" className="mx-auto max-w-3xl text-center">
-          <p className="landing-eyebrow">Pricing &amp; trial</p>
-          <h2 className="heading-section mt-2">Your competitors are already optimizing for AI search.</h2>
+          <p className="landing-eyebrow">Pricing</p>
+          <h2 className="heading-section mt-2">Start measuring free. Scale when you are ready.</h2>
           <div className="accent-heading-rule mx-auto" />
           <p className="mx-auto mt-6 max-w-xl text-base leading-relaxed text-[#64748b] sm:text-[17px]">
-            Every day you wait, they lock in another recommendation slot. Start tracking your AI visibility now — it
-            takes 30 seconds.
+            Run your first prompts on the free plan, then upgrade when you need more projects and buyer questions
+            tracked — same dashboard, recommendations, and Content Studio on every tier.
           </p>
 
           <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
@@ -66,7 +66,7 @@ const CTASection = () => {
               <span className="text-3xl font-bold tracking-tight">₹1,999</span>
               <span className="text-sm font-medium text-[#64748b]">/mo</span>
             </p>
-            <p className="mt-2 text-sm text-[#64748b]">For solo brands getting started with AI visibility.</p>
+            <p className="mt-2 text-sm text-[#64748b]">One brand, full analysis stack — recommendations and drafts included.</p>
             <ul className="mt-5 space-y-2.5 text-sm text-[#334155]">
               <li className="flex gap-2">
                 <span className="text-brand-primary">✓</span>
@@ -78,7 +78,7 @@ const CTASection = () => {
               </li>
               <li className="flex gap-2">
                 <span className="text-brand-primary">✓</span>
-                <span>Full dashboard &amp; reports</span>
+                <span>Dashboard, Sources, Opportunities &amp; Content Studio</span>
               </li>
             </ul>
             <button
@@ -91,10 +91,7 @@ const CTASection = () => {
           </div>
 
           {/* Pro */}
-          <div className="relative flex flex-col rounded-2xl border-2 border-brand-primary/40 bg-gradient-to-b from-[#eff6ff] to-white p-6 shadow-md md:-mt-2 md:mb-2 md:pb-8">
-            <span className="absolute right-4 top-4 rounded-full bg-brand-primary px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
-              Most popular
-            </span>
+          <div className="flex flex-col rounded-2xl border-2 border-brand-primary/40 bg-gradient-to-b from-[#eff6ff] to-white p-6 shadow-md md:-mt-2 md:mb-2 md:pb-8">
             <p className="text-xs font-bold uppercase tracking-wider text-brand-primary">Pro</p>
             <p className="mt-3 flex items-baseline gap-1 text-[#0f172a]">
               <span className="text-3xl font-bold tracking-tight">₹3,999</span>
@@ -128,7 +125,7 @@ const CTASection = () => {
           <div className="flex flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
             <p className="text-xs font-bold uppercase tracking-wider text-[#64748b]">Custom</p>
             <p className="mt-3 text-3xl font-bold tracking-tight text-[#0f172a]">Let&apos;s talk</p>
-            <p className="mt-2 text-sm text-[#64748b]">Volume, SSO, or bespoke analysis — we&apos;ll scope it together.</p>
+            <p className="mt-2 text-sm text-[#64748b]">Higher volume, invoice billing, or hands-on onboarding — we&apos;ll scope it together.</p>
             <ul className="mt-5 space-y-2.5 text-sm text-[#334155]">
               <li className="flex gap-2">
                 <span className="text-brand-primary">✓</span>

@@ -31,8 +31,8 @@ const Footer = () => {
               </Link>
             </div>
             <p className="max-w-xs text-[13px] leading-relaxed text-[#64748b]">
-              Stop guessing. Start appearing. Answrdeck helps brands understand and optimize how AI
-              recommends products.
+              Answrdeck measures how AI assistants recommend your brand, then gives you evidence-backed actions and
+              drafts so you can fix gaps — not just find them.
             </p>
           </div>
 
