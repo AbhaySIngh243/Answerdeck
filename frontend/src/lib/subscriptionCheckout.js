@@ -1,22 +1,22 @@
 import { api } from './api';
 
-const SCRIPT_URL = 'https://checkout.razorpay.com/v1/checkout.js';
+const SCRIPT_URL = 'https://sdk.cashfree.com/js/v3/cashfree.js';
 
-export const PENDING_RAZORPAY_PLAN_KEY = 'pendingRazorpayPlan';
+export const PENDING_CASHFREE_PLAN_KEY = 'pendingCashfreePlan';
 
-function loadRazorpayScript() {
+function loadCashfreeScript() {
   if (typeof window === 'undefined') {
-    return Promise.reject(new Error('Razorpay requires a browser'));
+    return Promise.reject(new Error('Cashfree requires a browser'));
   }
   return new Promise((resolve, reject) => {
-    if (window.Razorpay) {
-      resolve(window.Razorpay);
+    if (window.Cashfree) {
+      resolve(window.Cashfree);
       return;
     }
     const existing = document.querySelector(`script[src="${SCRIPT_URL}"]`);
     if (existing) {
-      const onLoad = () => resolve(window.Razorpay);
-      const onErr = () => reject(new Error('Failed to load Razorpay'));
+      const onLoad = () => resolve(window.Cashfree);
+      const onErr = () => reject(new Error('Failed to load Cashfree'));
       existing.addEventListener('load', onLoad);
       existing.addEventListener('error', onErr);
       return;
@@ -24,44 +24,97 @@ function loadRazorpayScript() {
     const s = document.createElement('script');
     s.src = SCRIPT_URL;
     s.async = true;
-    s.onload = () => resolve(window.Razorpay);
-    s.onerror = () => reject(new Error('Failed to load Razorpay'));
+    s.onload = () => resolve(window.Cashfree);
+    s.onerror = () => reject(new Error('Failed to load Cashfree'));
     document.body.appendChild(s);
   });
 }
 
-/**
- * Opens Razorpay subscription checkout. Resolves "paid" on success, "dismissed" if modal closed.
- * @param {string} planKey "standard" | "pro"
- */
-export async function startSubscriptionCheckout(planKey) {
-  const key = import.meta.env.VITE_RAZORPAY_KEY_ID;
-  if (!key) {
-    throw new Error('Missing VITE_RAZORPAY_KEY_ID (use the same publishable key id as RAZORPAY_KEY_ID).');
-  }
-  const { subscription_id: subscriptionId } = await api.createSubscription(planKey);
-  const Razorpay = await loadRazorpayScript();
+function resolveCashfreeMode() {
+  const mode = (import.meta.env.VITE_CASHFREE_MODE || 'sandbox').trim().toLowerCase();
+  return mode === 'production' ? 'production' : 'sandbox';
+}
 
-  return new Promise((resolve, reject) => {
-    const rzp = new Razorpay({
-      key,
-      subscription_id: subscriptionId,
-      name: 'Answerdeck',
-      description: `${planKey.charAt(0).toUpperCase() + planKey.slice(1)} — monthly`,
-      theme: { color: '#2563eb' },
-      handler() {
-        resolve('paid');
-      },
-      modal: {
-        ondismiss() {
-          resolve('dismissed');
-        },
-      },
-    });
-    rzp.on('payment.failed', (response) => {
-      const msg = response?.error?.description || response?.error?.reason || 'Payment failed';
-      reject(new Error(msg));
-    });
-    rzp.open();
+function normalizePhone(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.startsWith('91') && digits.length === 12) {
+    return digits.slice(2);
+  }
+  return digits;
+}
+
+function resolveCustomerContact(user, overrides = {}) {
+  const email =
+    overrides.customerEmail ||
+    user?.primaryEmailAddress?.emailAddress ||
+    user?.emailAddresses?.[0]?.emailAddress ||
+    '';
+  let phone =
+    overrides.customerPhone ||
+    user?.primaryPhoneNumber?.phoneNumber ||
+    user?.phoneNumbers?.[0]?.phoneNumber ||
+    '';
+  phone = normalizePhone(phone);
+
+  if (!email) {
+    throw new Error('Add an email address to your account before subscribing.');
+  }
+  if (!/^[6-9]\d{9}$/.test(phone)) {
+    const entered = window.prompt(
+      'Cashfree requires a 10-digit Indian mobile number for subscription checkout.\nEnter your phone number:'
+    );
+    phone = normalizePhone(entered);
+    if (!/^[6-9]\d{9}$/.test(phone)) {
+      throw new Error('A valid 10-digit Indian mobile number is required.');
+    }
+  }
+
+  const customerName =
+    overrides.customerName ||
+    user?.fullName ||
+    user?.firstName ||
+    email.split('@')[0] ||
+    'Answerdeck User';
+
+  return { customerEmail: email, customerPhone: phone, customerName };
+}
+
+/**
+ * Opens Cashfree subscription checkout. Resolves "paid" on success, "dismissed" if closed.
+ * @param {string} planKey "standard" | "pro"
+ * @param {object} [options]
+ * @param {object} [options.user] Clerk user object
+ */
+export async function startSubscriptionCheckout(planKey, options = {}) {
+  const { user, ...overrides } = options;
+  const customer = resolveCustomerContact(user, overrides);
+
+  const { subscription_session_id: subscriptionSessionId } = await api.createSubscription(
+    planKey,
+    customer
+  );
+
+  if (!subscriptionSessionId) {
+    throw new Error('Missing subscription session from server.');
+  }
+
+  const CashfreeFactory = await loadCashfreeScript();
+  const cashfree = CashfreeFactory({ mode: resolveCashfreeMode() });
+
+  const result = await cashfree.checkout({
+    paymentSessionId: subscriptionSessionId,
+    redirectTarget: '_modal',
   });
+
+  if (result?.error) {
+    const msg =
+      result.error.message || result.error.code || 'Payment failed';
+    throw new Error(msg);
+  }
+
+  if (result?.paymentDetails || result?.redirect) {
+    return 'paid';
+  }
+
+  return 'dismissed';
 }

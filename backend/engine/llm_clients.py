@@ -456,6 +456,43 @@ def _prompt_expects_json(prompt: str) -> bool:
     return any(m.lower() in lowered for m in markers)
 
 
+def llm_response_is_error(text: str) -> bool:
+    """True when chat() returned a placeholder error string instead of model output."""
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return True
+    lowered = cleaned.lower()
+    if cleaned.startswith("[") and (
+        " error:" in lowered
+        or " not configured]" in lowered
+        or "unknown engine:" in lowered
+        or "web-search required" in lowered
+    ):
+        return True
+    return False
+
+
+def chat_with_fallback(
+    prompt: str,
+    *,
+    temperature: float | None = None,
+    json_mode: bool | None = None,
+    engines: list[str] | None = None,
+) -> str:
+    """Try configured engines in order until one returns usable text."""
+    order = engines or _selected_engine_order()
+    last = ""
+    for engine in order:
+        cfg = ENGINE_CONFIG.get(engine)
+        if not cfg or cfg.get("client") is None:
+            continue
+        raw = chat(engine, prompt, temperature=temperature, json_mode=json_mode)
+        if not llm_response_is_error(raw):
+            return raw
+        last = raw
+    return last
+
+
 def chat(
     engine: str,
     prompt: str,
@@ -607,7 +644,8 @@ def _build_engine_user_prompt(
             "Provide a ranked list of brands/products where possible.\n"
             "Include short reasoning and any sources/websites/publications used.\n"
             "If the question is region-specific (for example includes 'in India'), ground recommendations in that region.\n"
-            "Always include a final section exactly named 'Sources:' and list direct URLs (one URL per bullet)."
+            "Use plain text section titles only; do not use Markdown heading markers (#), code fences, or decorative symbols.\n"
+            "Always include a final section exactly named 'Sources:' and list direct URLs (one URL per line)."
         )
         return f"{system_prompt}\n\nQuestion: {query_variant}"
     buyer_stage = getattr(intent_context, "buyer_stage", None) or "consideration"
@@ -626,7 +664,8 @@ def _build_engine_user_prompt(
         "A user typed this into your search bar. Answer exactly as you would to that real user.\n"
         "Provide a ranked list of options where relevant. Be specific about WHY each brand is or is not recommended.\n"
         "Cite sources, review sites, or documentation when you know them.\n"
-        "Always include a final section exactly named 'Sources:' and list direct URLs (one URL per bullet)."
+        "Use plain text section titles only; do not use Markdown heading markers (#), code fences, or decorative symbols.\n"
+        "Always include a final section exactly named 'Sources:' and list direct URLs (one URL per line)."
     )
     return f"{system_prefix}\n\nQuestion: {query_variant}"
 

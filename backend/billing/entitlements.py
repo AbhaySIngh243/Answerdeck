@@ -1,4 +1,4 @@
-"""Plan limits keyed off Clerk user id and Razorpay-backed UserBilling rows."""
+"""Plan limits keyed off Clerk user id and Cashfree-backed UserBilling rows."""
 
 from __future__ import annotations
 
@@ -14,12 +14,11 @@ STANDARD_MAX_PROMPTS_PER_PROJECT = 10
 PRO_MAX_PROJECTS = 3
 PRO_MAX_PROMPTS_PER_PROJECT = 10
 
-# Subscription states that unlock paid limits (Razorpay naming).
+# Subscription states that unlock paid limits (Cashfree naming, stored lowercase).
 ACTIVE_SUBSCRIPTION_STATUSES = frozenset(
     {
         "active",
-        "authenticated",
-        "charged",
+        "bank_approval_pending",
     }
 )
 
@@ -27,8 +26,8 @@ ACTIVE_SUBSCRIPTION_STATUSES = frozenset(
 def _plan_id_to_key(plan_id: str | None) -> str | None:
     if not plan_id:
         return None
-    std = (os.getenv("RAZORPAY_PLAN_STANDARD_ID") or "").strip()
-    pro = (os.getenv("RAZORPAY_PLAN_PRO_ID") or "").strip()
+    std = (os.getenv("CASHFREE_PLAN_STANDARD_ID") or "").strip()
+    pro = (os.getenv("CASHFREE_PLAN_PRO_ID") or "").strip()
     if std and plan_id == std:
         return "standard"
     if pro and plan_id == pro:
@@ -43,7 +42,7 @@ def get_limits(clerk_user_id: str) -> tuple[int, int]:
         return (FREE_MAX_PROJECTS, FREE_MAX_PROMPTS_PER_PROJECT)
     key = row.internal_plan if row.internal_plan in ("standard", "pro") else None
     if not key:
-        key = _plan_id_to_key(row.razorpay_plan_id)
+        key = _plan_id_to_key(row.gateway_plan_id)
     if key == "standard":
         return (STANDARD_MAX_PROJECTS, STANDARD_MAX_PROMPTS_PER_PROJECT)
     if key == "pro":
@@ -58,7 +57,7 @@ def effective_plan(clerk_user_id: str) -> str:
         return "free"
     key = row.internal_plan if row.internal_plan in ("standard", "pro") else None
     if not key:
-        key = _plan_id_to_key(row.razorpay_plan_id)
+        key = _plan_id_to_key(row.gateway_plan_id)
     if key in ("standard", "pro"):
         return key
     return "free"

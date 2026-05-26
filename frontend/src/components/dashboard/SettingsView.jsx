@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, CreditCard, Settings, Save } from 'lucide-react';
@@ -7,6 +7,7 @@ import DashboardCard from './DashboardCard';
 import { Button } from '../ui/button';
 import { api } from '../../lib/api';
 import { startSubscriptionCheckout } from '../../lib/subscriptionCheckout';
+import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../ui/toast';
 
 const container = {
@@ -22,6 +23,8 @@ const item = {
 const SettingsView = () => {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data: billing, isLoading: billingLoading } = useQuery({
     queryKey: ['billing', 'me'],
     queryFn: api.getBillingMe,
@@ -44,6 +47,16 @@ const SettingsView = () => {
   );
   const [saved, setSaved] = useState(false);
 
+  useEffect(() => {
+    if (searchParams.get('billing') !== 'return') return;
+    queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
+    toast.info('Payment submitted', 'We are syncing your subscription status.');
+    const next = new URLSearchParams(searchParams);
+    next.delete('billing');
+    setSearchParams(next, { replace: true });
+  }, [queryClient, searchParams, setSearchParams, toast]);
+
   const save = () => {
     localStorage.setItem('ranklore_timezone', timezone);
     localStorage.setItem('ranklore_default_country', defaultCountry);
@@ -55,7 +68,7 @@ const SettingsView = () => {
   const runUpgrade = async (planKey) => {
     setCheckoutBusy(planKey);
     try {
-      const outcome = await startSubscriptionCheckout(planKey);
+      const outcome = await startSubscriptionCheckout(planKey, { user });
       if (outcome === 'paid') {
         queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
         queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -95,8 +108,8 @@ const SettingsView = () => {
                 <div>
                   <p className="font-semibold">Billing is fully configured.</p>
                   <p>
-                    Payments are collected in {billingHealth.currency}. Upgrade or cancel at any
-                    time from your Razorpay subscription portal.
+                    Payments are collected in {billingHealth.currency} via Cashfree. Renewals and
+                    cancellations are handled through Cashfree subscription notifications.
                   </p>
                 </div>
               </div>
@@ -107,18 +120,18 @@ const SettingsView = () => {
                   <p className="font-semibold">Billing needs attention.</p>
                   <ul className="mt-0.5 list-disc pl-4">
                     {!billingHealth.keys_configured ? (
-                      <li>Razorpay keys are missing on the server.</li>
+                      <li>Cashfree API keys are missing on the server.</li>
                     ) : null}
                     {billingHealth.keys_configured && !billingHealth.plans_configured ? (
                       <li>
                         Plans are not configured yet — the first upgrade click will auto-provision
-                        INR plans via the Razorpay API.
+                        INR plans via the Cashfree API.
                       </li>
                     ) : null}
                     {!billingHealth.webhook_secret_configured ? (
                       <li>
                         Webhook secret is not set in env (a dev secret is auto-generated — paste it
-                        into the Razorpay Dashboard webhook config before going live).
+                        into the Cashfree Dashboard webhook config before going live).
                       </li>
                     ) : null}
                   </ul>
@@ -173,9 +186,8 @@ const SettingsView = () => {
                 </div>
               ) : (
                 <p className="text-xs text-slate-500">
-                  Manage renewals and payment methods in your Razorpay account emails and customer portal when enabled.
-                  For plan changes, contact support or use the pricing page after cancelling the current subscription in
-                  Razorpay.
+                  Manage renewals and payment methods via Cashfree subscription emails. For plan
+                  changes, contact support or cancel your current subscription first.
                 </p>
               )}
             </div>

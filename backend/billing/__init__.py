@@ -1,1 +1,1 @@
-"""Billing helpers (entitlements, Razorpay plan limits)."""
+"""Billing helpers (entitlements, Cashfree plan limits)."""

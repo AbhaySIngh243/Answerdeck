@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -15,13 +15,14 @@ import {
   X,
 } from 'lucide-react';
 
-import { api } from '../../lib/api';
+import { api, waitForAnalysisJob } from '../../lib/api';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Select } from '../ui/select';
 import { Badge } from '../ui/badge';
 import { Textarea } from '../ui/textarea';
 import BrandLogo from '../BrandLogo';
+import AnalysisLaunchScreen from './AnalysisLaunchScreen';
 
 const TOTAL_STEPS = 5;
 const STEP_FLOW = [1, 3, 4, 5];
@@ -299,7 +300,8 @@ function OnboardingHelpPanel({ projectId, step, context }) {
         </form>
         {askMutation.isError ? (
           <p className="mt-2 text-[11px] text-red-300">
-            Assistant is offline right now — you can still keep moving.
+            {askMutation.error?.message ||
+              'Assistant is offline right now — you can still keep moving.'}
           </p>
         ) : (
           <p className="mt-2 text-[11px] text-slate-400">
@@ -500,15 +502,36 @@ function promptQualityScore(prompt, brandName) {
   return { score: clamped, label, reasons };
 }
 
+async function invalidateProjectQueries(queryClient, projectId, promptId) {
+  const keys = [
+    ['project', projectId],
+    ['project-core', projectId],
+    ['project-dashboard', projectId],
+    ['prompts', projectId],
+    ['prompt-analysis', projectId],
+    ['deep-analysis', projectId],
+    ['sources-intelligence', projectId],
+    ['competitor-intelligence', projectId],
+    ['intel-summary', projectId],
+    ['global-audit', projectId],
+    ['billing', 'me'],
+  ];
+  if (promptId) keys.push(['prompt-detail', promptId]);
+  await Promise.all(keys.map((queryKey) => queryClient.invalidateQueries({ queryKey })));
+}
+
 export default function ProjectOnboardingWizard() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [form, setForm] = useState(null);
   const [suggestedPrompts, setSuggestedPrompts] = useState([]);
   const [suggestedCompetitors, setSuggestedCompetitors] = useState([]);
+  const [suggestionsFetchState, setSuggestionsFetchState] = useState('idle');
   const [customPrompt, setCustomPrompt] = useState('');
   const [customStage, setCustomStage] = useState('awareness');
   const [launchingAnalysis, setLaunchingAnalysis] = useState(false);
+  const [launchDetail, setLaunchDetail] = useState('');
   const [promptError, setPromptError] = useState('');
 
   const currentStep = form?.step || 1;
@@ -550,22 +573,54 @@ export default function ProjectOnboardingWizard() {
   });
 
   const launchMutation = useMutation({
-    mutationFn: async () => {
+    onMutate: () => {
       setLaunchingAnalysis(true);
+      setLaunchDetail('Saving your setup and preparing the first prompt.');
+    },
+    mutationFn: async () => {
       await saveStepMutation.mutateAsync({ step: TOTAL_STEPS, data: buildStepPayload(TOTAL_STEPS) });
-      await api.completeOnboarding(id);
-      return api.runAllPromptAnalysis(id, {
+      const completed = await api.completeOnboarding(id);
+      const prompts = Array.isArray(completed?.prompts) ? completed.prompts : [];
+      const firstPrompt = prompts[0];
+      if (!firstPrompt?.id) {
+        throw new Error('No onboarding prompt was available to run.');
+      }
+
+      setLaunchDetail('Running the first prompt across your selected engines.');
+      const firstRun = await api.runPromptAnalysis(firstPrompt.id, {
         searchProvider: form.step4.search_provider,
       });
+      if (firstRun?.job_id) {
+        await waitForAnalysisJob(firstRun.job_id);
+      }
+      setLaunchDetail('Refreshing your dashboard with the first result.');
+      await invalidateProjectQueries(queryClient, id, firstPrompt.id);
+
+      const remainingPrompts = prompts.slice(1).filter((prompt) => prompt?.id);
+      const backgroundRuns = await Promise.allSettled(
+        remainingPrompts.map((prompt) =>
+          api
+            .runPromptAnalysis(prompt.id, { searchProvider: form.step4.search_provider })
+            .then((run) => ({ prompt_id: prompt.id, job_id: run?.job_id }))
+        )
+      );
+      const analysisJobs = backgroundRuns
+        .filter((result) => result.status === 'fulfilled' && result.value?.job_id)
+        .map((result) => result.value);
+
+      return { analysisJobs, firstPromptId: firstPrompt.id };
     },
     onSuccess: (payload) => {
       navigate(`/dashboard/project/${id}`, {
         state: {
-          analysisJobs: Array.isArray(payload?.results) ? payload.results : [],
+          analysisJobs: Array.isArray(payload?.analysisJobs) ? payload.analysisJobs : [],
         },
       });
     },
-    onSettled: () => setLaunchingAnalysis(false),
+    onSettled: () => {
+      setLaunchingAnalysis(false);
+      setLaunchDetail('');
+    },
   });
 
   const buildSuggestionContext = useCallback(() => {
@@ -582,7 +637,11 @@ export default function ProjectOnboardingWizard() {
 
   const suggestionsMutation = useMutation({
     mutationFn: () => api.getOnboardingSuggestions(id, buildSuggestionContext()),
+    onMutate: () => {
+      setSuggestionsFetchState('loading');
+    },
     onSuccess: (payload) => {
+      setSuggestionsFetchState('success');
       setSuggestedPrompts(payload?.suggested_prompts || []);
       const incomingCompetitors = dedupeTrimmed(payload?.suggested_competitors || [], 8);
       setSuggestedCompetitors(incomingCompetitors);
@@ -607,6 +666,9 @@ export default function ProjectOnboardingWizard() {
         }
         return next;
       });
+    },
+    onError: () => {
+      setSuggestionsFetchState('error');
     },
   });
 
@@ -672,13 +734,14 @@ export default function ProjectOnboardingWizard() {
 
   useEffect(() => {
     if (!form || suggestionsMutation.isPending) return;
-    const hasBrandAndIndustry = form.step1?.brand_name && form.step1?.industry;
-    if (!hasBrandAndIndustry) return;
+    const hasBrandAndSite = form.step1?.brand_name?.trim() && form.step1?.domain?.trim();
+    if (!hasBrandAndSite) return;
 
     if (
       currentStep === 1 &&
       suggestedCompetitors.length === 0 &&
-      suggestionsRequestedForStep !== currentStep
+      suggestionsRequestedForStep !== currentStep &&
+      suggestionsFetchState !== 'error'
     ) {
       const timer = setTimeout(() => {
         setSuggestionsRequestedForStep(currentStep);
@@ -690,7 +753,8 @@ export default function ProjectOnboardingWizard() {
     if (
       currentStep === 3 &&
       form.step3?.seed_prompts?.length === 0 &&
-      suggestionsRequestedForStep !== 3
+      suggestionsRequestedForStep !== 3 &&
+      suggestionsFetchState !== 'error'
     ) {
       setSuggestionsRequestedForStep(3);
       suggestionsMutation.mutate();
@@ -698,9 +762,13 @@ export default function ProjectOnboardingWizard() {
   }, [
     currentStep,
     form?.step1?.brand_name,
+    form?.step1?.domain,
     form?.step1?.industry,
     suggestedCompetitors.length,
     form?.step3?.seed_prompts?.length,
+    suggestionsMutation.isPending,
+    suggestionsRequestedForStep,
+    suggestionsFetchState,
   ]);
 
   function togglePromptSelection(prompt, stage = form?.step3?.funnel_stage || 'awareness') {
@@ -798,6 +866,16 @@ export default function ProjectOnboardingWizard() {
     );
   }
 
+  if (launchingAnalysis) {
+    return (
+      <AnalysisLaunchScreen
+        title="Your first prompt is under analysis."
+        subtitle="It might take 1 to 2 minutes."
+        detail={launchDetail}
+      />
+    );
+  }
+
   const isBusy =
     saveStepMutation.isPending || completeMutation.isPending || launchingAnalysis;
 
@@ -882,6 +960,12 @@ export default function ProjectOnboardingWizard() {
                     <option key={ind} value={ind} />
                   ))}
                 </datalist>
+                {suggestionsMutation.isPending && !form.step1.industry?.trim() && (
+                  <p className="flex items-center gap-2 text-xs text-brand-primary">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Inferring industry from your website…
+                  </p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-slate-700">Region *</label>
@@ -915,6 +999,19 @@ export default function ProjectOnboardingWizard() {
                   Finding likely competitors from your brand and site...
                 </div>
               )}
+              {suggestionsFetchState === 'error' && suggestedCompetitors.length === 0 && (
+                <p className="pt-1 text-xs text-amber-700">
+                  Could not reach AI suggestions right now. Add competitors manually or tap the
+                  button below to retry.
+                </p>
+              )}
+              {suggestionsFetchState === 'success' &&
+                suggestedCompetitors.length === 0 &&
+                !suggestionsMutation.isPending && (
+                  <p className="pt-1 text-xs text-slate-500">
+                    No competitor suggestions yet — type names above or retry with AI.
+                  </p>
+                )}
               {suggestedCompetitors.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 pt-1">
                   <span className="text-xs text-slate-400">AI-suggested:</span>
@@ -935,12 +1032,13 @@ export default function ProjectOnboardingWizard() {
                     ))}
                 </div>
               )}
-              {form.step1.brand_name && form.step1.industry && !suggestionsMutation.isPending && (
+              {form.step1.brand_name && form.step1.domain && !suggestionsMutation.isPending && (
                 <Button
                   type="button"
                   variant="secondary"
                   size="sm"
                   onClick={() => {
+                    setSuggestionsFetchState('idle');
                     setSuggestionsRequestedForStep(0);
                     suggestionsMutation.mutate();
                   }}

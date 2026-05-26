@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import random
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from html import unescape
 from typing import Any
@@ -12,9 +13,9 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-from engine.llm_clients import chat
+from engine.llm_clients import chat, chat_with_fallback
 
-HTTP_TIMEOUT_SECONDS = 6
+HTTP_TIMEOUT_SECONDS = 3
 MAX_PAGE_CHARS = 120_000
 
 _STOPWORDS = {
@@ -341,21 +342,24 @@ def _collect_site_snapshot(website_url: str) -> dict[str, Any]:
         "text_excerpt": _clean_text(_strip_html(homepage_html), limit=520),
     }
 
-    links = _extract_internal_links(url, homepage_html, max_links=12)
+    links = _extract_internal_links(url, homepage_html, max_links=8)
     pages: list[dict[str, str]] = []
-    for link in links[:3]:
-        html = _fetch_html(link)
-        if not html:
-            continue
-        pages.append(
-            {
-                "url": link,
-                "title": _extract_first(r"<title[^>]*>(.*?)</title>", html),
-                "meta_description": _extract_meta_description(html),
-                "h1": _extract_first(r"<h1[^>]*>(.*?)</h1>", html),
-                "text_excerpt": _clean_text(_strip_html(html), limit=340),
-            }
-        )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {pool.submit(_fetch_html, link): link for link in links[:2]}
+        for future in as_completed(futures):
+            link = futures[future]
+            html = future.result()
+            if not html:
+                continue
+            pages.append(
+                {
+                    "url": link,
+                    "title": _extract_first(r"<title[^>]*>(.*?)</title>", html),
+                    "meta_description": _extract_meta_description(html),
+                    "h1": _extract_first(r"<h1[^>]*>(.*?)</h1>", html),
+                    "text_excerpt": _clean_text(_strip_html(html), limit=340),
+                }
+            )
 
     keyword_inputs = [homepage.get("title", ""), homepage.get("meta_description", ""), homepage.get("h1", "")]
     for page in pages:
@@ -368,6 +372,10 @@ def _collect_site_snapshot(website_url: str) -> dict[str, Any]:
         "keywords": keywords,
         "link_count": len(links),
     }
+
+
+def collect_site_snapshot(website_url: str) -> dict[str, Any]:
+    return _collect_site_snapshot(website_url)
 
 
 def _normalize_words(value: str) -> str:
@@ -421,6 +429,17 @@ def _build_fallback_prompts(project: dict[str, Any]) -> list[str]:
     ]
     brand = project.get("name") or ""
     return [c for c in candidates if _is_valid_prompt(c, brand)][:3]
+
+
+def build_fallback_prompt_suggestions(project: dict[str, Any]) -> dict[str, Any]:
+    fallback = _build_fallback_prompts(project)
+    if len(fallback) < 3:
+        fallback = [
+            "Which are the best software options",
+            "Recommended software tools for growing teams",
+            "Best software options for tight budgets",
+        ]
+    return {"prompts": fallback[:3], "source": "strict-rule-fallback"}
 
 
 def _build_site_context_for_llm(snapshot: dict[str, Any]) -> str:
@@ -674,21 +693,58 @@ Return ONLY valid JSON:
 }}"""
 
 
-def generate_competitor_suggestions(project: dict[str, Any], max_items: int = 6) -> list[str]:
+def _dedupe_competitor_names(
+    names: list[Any],
+    *,
+    project_name: str,
+    existing: list[str],
+    max_items: int,
+) -> list[str]:
+    existing_lower = {e.lower() for e in existing}
+    existing_lower.add(project_name.lower())
+    results: list[str] = []
+    for item in names:
+        name = str(item or "").strip()
+        if not name or name.lower() in existing_lower or len(name) >= 60:
+            continue
+        results.append(name)
+        existing_lower.add(name.lower())
+        if len(results) >= max_items:
+            break
+    return results
+
+
+def _parse_competitor_names_from_llm(raw: str) -> list[str]:
+    parsed = _extract_json(raw)
+    if isinstance(parsed, dict):
+        for key in ("competitors", "names", "brands", "items"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return [str(item or "").strip() for item in value if str(item or "").strip()]
+    if isinstance(parsed, list):
+        return [str(item or "").strip() for item in parsed if str(item or "").strip()]
+    return []
+
+
+def generate_competitor_suggestions(
+    project: dict[str, Any],
+    max_items: int = 6,
+    snapshot: dict[str, Any] | None = None,
+) -> list[str]:
     """Use LLM + website context to suggest competitors when no Mention data exists."""
     project_name = str(project.get("name") or "").strip()
     category = _short_category(project.get("category") or "")
     region = str(project.get("region") or "").strip()
     existing = [str(c).strip() for c in (project.get("competitors") or []) if c]
 
-    snapshot = _collect_site_snapshot(project.get("website_url") or "")
+    snapshot = snapshot if isinstance(snapshot, dict) else _collect_site_snapshot(project.get("website_url") or "")
     site_context = _build_site_context_for_llm(snapshot)
 
     existing_clause = ""
     if existing:
         existing_clause = f"\nAlready known competitors (do not repeat): {', '.join(existing[:8])}"
 
-    prompt = f"""List {max_items} real competitor brand names in the same market. JSON array of strings only.
+    prompt = f"""List {max_items} real competitor brand names in the same market.
 Given the brand and site context:
 
 Brand: {project_name}
@@ -697,34 +753,33 @@ Region: {region or "global"}
 {existing_clause}
 
 Website context:
-{site_context}
+{site_context or "No website context available."}
 
 Rules:
 - Return only real brand/company names that compete in the same market segment.
 - Do not include the brand itself.
 - Short names only (1-3 words each, the brand name people search for).
 
-Return ONLY a valid JSON array of strings, e.g. ["Competitor A", "Competitor B"]"""
+Return ONLY valid JSON: {{"competitors": ["Competitor A", "Competitor B"]}}"""
 
     try:
-        raw = chat("chatgpt", prompt, temperature=0.3)
-        parsed = _extract_json(raw)
-        if isinstance(parsed, list):
-            existing_lower = {e.lower() for e in existing}
-            existing_lower.add(project_name.lower())
-            results = []
-            for item in parsed:
-                name = str(item or "").strip()
-                if name and name.lower() not in existing_lower and len(name) < 60:
-                    results.append(name)
-                    existing_lower.add(name.lower())
-            return results[:max_items]
+        raw = chat_with_fallback(prompt, temperature=0.3, json_mode=True)
+        parsed_names = _parse_competitor_names_from_llm(raw)
+        results = _dedupe_competitor_names(
+            parsed_names,
+            project_name=project_name,
+            existing=existing,
+            max_items=max_items,
+        )
+        if results:
+            return results
     except Exception:
         pass
+
     return []
 
 
-def suggest_industry_label(project: dict[str, Any]) -> str:
+def suggest_industry_label(project: dict[str, Any], snapshot: dict[str, Any] | None = None) -> str:
     """
     Best-effort industry inference for onboarding.
     Preference:
@@ -735,7 +790,7 @@ def suggest_industry_label(project: dict[str, Any]) -> str:
     if category:
         return category
 
-    snapshot = _collect_site_snapshot(project.get("website_url") or "")
+    snapshot = snapshot if isinstance(snapshot, dict) else _collect_site_snapshot(project.get("website_url") or "")
     site_context = _build_site_context_for_llm(snapshot)
     if not site_context:
         return ""
@@ -749,7 +804,7 @@ Website context:
 Return ONLY the label text."""
 
     try:
-        raw = chat("chatgpt", prompt, temperature=0.1)
+        raw = chat_with_fallback(prompt, temperature=0.1)
         label = _clean_text(raw, limit=80).strip()
         label = re.sub(r"^[-*\u2022\s]+", "", label).strip()
         # Guardrails: avoid empty / overly verbose outputs.
@@ -760,13 +815,17 @@ Return ONLY the label text."""
         return ""
 
 
-def generate_project_prompt_suggestions(project: dict[str, Any], max_prompts: int = 10) -> dict[str, Any]:
+def generate_project_prompt_suggestions(
+    project: dict[str, Any],
+    max_prompts: int = 10,
+    snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     _ = max_prompts
     project_name = str(project.get("name") or "").strip()
     category = _short_category(project.get("category") or "")
     region = str(project.get("region") or "").strip()
 
-    snapshot = _collect_site_snapshot(project.get("website_url") or "")
+    snapshot = snapshot if isinstance(snapshot, dict) else _collect_site_snapshot(project.get("website_url") or "")
     site_context = _build_site_context_for_llm(snapshot)
     theme_tokens = _cohesion_theme_tokens(project, snapshot)
     theme_hint = ", ".join(sorted(theme_tokens)[:14]) if theme_tokens else category
@@ -777,7 +836,7 @@ def generate_project_prompt_suggestions(project: dict[str, Any], max_prompts: in
 
     def attempt_llm(extra: str, temperature: float) -> list[str] | None:
         body = f"{base_prompt}{extra}"
-        raw = chat("chatgpt", body, temperature=temperature)
+        raw = chat_with_fallback(body, temperature=temperature, json_mode=True)
         triple = _extract_ordered_prompt_triple(raw, brand=project_name)
         if len(triple) != 3:
             return None
@@ -802,11 +861,4 @@ def generate_project_prompt_suggestions(project: dict[str, Any], max_prompts: in
     except Exception:
         pass
 
-    fallback = _build_fallback_prompts(project)
-    if len(fallback) < 3:
-        fallback = [
-            "Which are the best software options",
-            "Recommended software tools for growing teams",
-            "Best software options for tight budgets",
-        ]
-    return {"prompts": fallback[:3], "source": "strict-rule-fallback"}
+    return build_fallback_prompt_suggestions(project)

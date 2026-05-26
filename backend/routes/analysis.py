@@ -21,6 +21,7 @@ from engine.analyzer import (
     generate_detailed_audit,
     is_focus_brand_match,
     is_spurious_brand_mention,
+    sanitize_display_response_text,
 )
 from engine.brain_pipeline import (
     BrandContext,
@@ -1300,6 +1301,7 @@ def get_results(prompt_id):
                 "prompt_id": response.prompt_id,
                 "engine": response.engine,
                 "response_text": response.response_text,
+                "display_response_text": sanitize_display_response_text(response.response_text),
                 "timestamp": response.timestamp,
                 "sources": sources,
                 "mentions": [
@@ -1410,6 +1412,7 @@ def run_test_prompt(project_id):
                 {
                     "engine": engine,
                     "response_text": text,
+                    "display_response_text": sanitize_display_response_text(text),
                     "analysis": analyses.get(engine, {}),
                 }
                 for engine, text in responses.items()

@@ -12,4 +12,4 @@ gunicorn
 psycopg2-binary
 PyJWT
 cryptography
-razorpay
+cashfree_pg

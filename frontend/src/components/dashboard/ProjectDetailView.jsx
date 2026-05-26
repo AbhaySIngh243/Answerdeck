@@ -559,7 +559,11 @@ const ProjectDetailView = () => {
 
   const refreshAll = async () => {
     const keys = [
-      ['project-data', 'v2', id],
+      ['project', id],
+      ['project-core', id],
+      ['project-dashboard', id],
+      ['billing', 'me'],
+      ['reports-overview'],
       ['prompts', id],
       ['prompt-analysis', id],
       ['deep-analysis', id],
@@ -633,7 +637,10 @@ const ProjectDetailView = () => {
         activePollsRef.current.delete(jobId);
         // Invalidate all relevant caches to ensure fresh data
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['project-data', 'v2', id] }),
+          queryClient.invalidateQueries({ queryKey: ['project', id] }),
+          queryClient.invalidateQueries({ queryKey: ['project-core', id] }),
+          queryClient.invalidateQueries({ queryKey: ['project-dashboard', id] }),
+          queryClient.invalidateQueries({ queryKey: ['prompts', id] }),
           queryClient.invalidateQueries({ queryKey: ['prompt-analysis', id] }),
           queryClient.invalidateQueries({ queryKey: ['prompt-detail', promptId] }),
           queryClient.invalidateQueries({ queryKey: ['deep-analysis', id] }),
@@ -1678,7 +1685,7 @@ const ProjectDetailView = () => {
                             <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
                           </summary>
                           <div className="border-t border-slate-200/60 px-4 py-4">
-                            <p className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-lg bg-white/70 p-4 text-xs leading-relaxed text-slate-700">{response.response_text}</p>
+                            <p className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-lg bg-white/70 p-4 text-xs leading-relaxed text-slate-700">{response.display_response_text || response.response_text}</p>
                             {toArray(response.sources).length > 0 && (
                               <div className="mt-3 flex flex-wrap gap-1.5">
                                 {toArray(response.sources).slice(0, 6).map((source) => (

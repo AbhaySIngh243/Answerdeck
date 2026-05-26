@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Show, SignInButton, SignUpButton, UserButton } from '@clerk/react';
@@ -12,14 +12,15 @@ import PrivacyPage from './components/PrivacyPage';
 import TermsPage from './components/TermsPage';
 import AboutPage from './components/AboutPage';
 import ContactPage from './components/ContactPage';
-import DashboardLayout from './components/dashboard/DashboardLayout';
-import DashboardHome from './components/dashboard/DashboardHome';
-import ProjectsView from './components/dashboard/ProjectsView';
-import ProjectDetailView from './components/dashboard/ProjectDetailView';
-import ProjectPromptSetupView from './components/dashboard/ProjectPromptSetupView';
-import ProjectOnboardingWizard from './components/dashboard/ProjectOnboardingWizard';
-import ReportsView from './components/dashboard/ReportsView';
-import SettingsView from './components/dashboard/SettingsView';
+
+const DashboardLayout = lazy(() => import('./components/dashboard/DashboardLayout'));
+const DashboardHome = lazy(() => import('./components/dashboard/DashboardHome'));
+const ProjectsView = lazy(() => import('./components/dashboard/ProjectsView'));
+const ProjectDetailView = lazy(() => import('./components/dashboard/ProjectDetailView'));
+const ProjectPromptSetupView = lazy(() => import('./components/dashboard/ProjectPromptSetupView'));
+const ProjectOnboardingWizard = lazy(() => import('./components/dashboard/ProjectOnboardingWizard'));
+const ReportsView = lazy(() => import('./components/dashboard/ReportsView'));
+const SettingsView = lazy(() => import('./components/dashboard/SettingsView'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -91,21 +92,40 @@ function AppRoutes() {
           path="/dashboard/project/:id/onboarding"
           element={
             <ProtectedRoute>
-              <ProjectOnboardingWizard />
+              <Suspense fallback={<RouteLoader />}>
+                <ProjectOnboardingWizard />
+              </Suspense>
             </ProtectedRoute>
           }
         />
-        <Route path="/dashboard" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
-          <Route index element={<DashboardHome />} />
-          <Route path="projects" element={<ProjectsView />} />
-          <Route path="project/:id" element={<ProjectDetailView />} />
-          <Route path="project/:id/prompts/setup" element={<ProjectPromptSetupView />} />
-          <Route path="reports" element={<ReportsView />} />
-          <Route path="settings" element={<SettingsView />} />
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<RouteLoader />}>
+                <DashboardLayout />
+              </Suspense>
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Suspense fallback={<RouteLoader />}><DashboardHome /></Suspense>} />
+          <Route path="projects" element={<Suspense fallback={<RouteLoader />}><ProjectsView /></Suspense>} />
+          <Route path="project/:id" element={<Suspense fallback={<RouteLoader />}><ProjectDetailView /></Suspense>} />
+          <Route path="project/:id/prompts/setup" element={<Suspense fallback={<RouteLoader />}><ProjectPromptSetupView /></Suspense>} />
+          <Route path="reports" element={<Suspense fallback={<RouteLoader />}><ReportsView /></Suspense>} />
+          <Route path="settings" element={<Suspense fallback={<RouteLoader />}><SettingsView /></Suspense>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>
+  );
+}
+
+function RouteLoader() {
+  return (
+    <div className="flex min-h-[50dvh] items-center justify-center bg-slate-50">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-brand-primary border-t-transparent" />
+    </div>
   );
 }
 

@@ -1,14 +1,8 @@
-"""Auto-provision Razorpay subscription plans and webhook secret in INR.
+"""Auto-provision Cashfree subscription plans and webhook secret in INR.
 
-The test Razorpay account does not have plans pre-created, so the first time
-we need one we call the Plans API, persist the resulting plan_id in the
-`billing_config` table, and cache it in memory for the rest of the process
-lifetime. If an env var (RAZORPAY_PLAN_STANDARD_ID etc.) is set, we honour it
-directly and never hit the API.
-
-This module is tolerant of a missing DB row (returns empty strings), of an
-unreachable Razorpay (raises with a human-readable error), and of duplicate
-concurrent callers (uses a process lock around the create/persist path).
+If env vars (CASHFREE_PLAN_STANDARD_ID etc.) are set, we honour them directly.
+Otherwise the first upgrade call creates plans via SubsCreatePlan and persists
+plan ids in billing_config.
 """
 
 from __future__ import annotations
@@ -17,33 +11,41 @@ import logging
 import os
 import secrets
 import threading
+import uuid
 from datetime import datetime, timezone
 
-import razorpay
+from cashfree_pg.models.create_plan_request import CreatePlanRequest
 
+from billing.cashfree_client import (
+    get_cashfree_client,
+    resolve_credentials,
+    resolve_environment,
+    response_to_dict,
+)
 from models import BillingConfig, db
 
 log = logging.getLogger(__name__)
 
-# In-memory caches to avoid DB round-trips on hot paths.
 _CACHE_LOCK = threading.Lock()
 _PLAN_CACHE: dict[str, str] = {}
 _WEBHOOK_SECRET_CACHE: str | None = None
 
 PLAN_DEFINITIONS = {
     "standard": {
-        "env_name": "RAZORPAY_PLAN_STANDARD_ID",
+        "env_name": "CASHFREE_PLAN_STANDARD_ID",
         "config_key": "plan_id_standard",
-        "amount_paise": 199900,  # ₹1,999.00
+        "plan_id": "answerdeck_standard_monthly",
+        "recurring_amount": 1999.0,
         "name": "Answerdeck Standard (Monthly)",
-        "description": "1 project, 10 prompts per project, full dashboard and reports.",
+        "note": "1 project, 10 prompts per project, full dashboard and reports.",
     },
     "pro": {
-        "env_name": "RAZORPAY_PLAN_PRO_ID",
+        "env_name": "CASHFREE_PLAN_PRO_ID",
         "config_key": "plan_id_pro",
-        "amount_paise": 399900,  # ₹3,999.00
+        "plan_id": "answerdeck_pro_monthly",
+        "recurring_amount": 3999.0,
         "name": "Answerdeck Pro (Monthly)",
-        "description": "3 projects, 10 prompts per project, everything in Standard.",
+        "note": "3 projects, 10 prompts per project, everything in Standard.",
     },
 }
 
@@ -52,27 +54,6 @@ WEBHOOK_SECRET_CONFIG_KEY = "webhook_secret_autogen"
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _resolve_credentials() -> tuple[str, str]:
-    key = (
-        os.getenv("RAZORPAY_KEY_ID")
-        or os.getenv("TEST_PAYMENT_API")
-        or ""
-    ).strip()
-    secret = (
-        os.getenv("RAZORPAY_KEY_SECRET")
-        or os.getenv("TEST_KEY_SECRET")
-        or ""
-    ).strip()
-    return key, secret
-
-
-def _get_client() -> razorpay.Client:
-    key, secret = _resolve_credentials()
-    if not key or not secret:
-        raise RuntimeError("Razorpay credentials are not configured.")
-    return razorpay.Client(auth=(key, secret))
 
 
 def _read_config(key: str) -> str:
@@ -92,7 +73,7 @@ def _write_config(key: str, value: str) -> None:
 
 
 def get_plan_id_if_known(plan_key: str) -> str | None:
-    """Return the plan id if we already know it (env or DB), without calling Razorpay."""
+    """Return the plan id if we already know it (env or DB), without calling Cashfree."""
     plan = PLAN_DEFINITIONS.get(plan_key)
     if not plan:
         return None
@@ -120,7 +101,7 @@ def get_plan_id_if_known(plan_key: str) -> str | None:
 
 
 def ensure_plan_id(plan_key: str) -> str:
-    """Return a usable Razorpay plan id, creating one on Razorpay if needed."""
+    """Return a usable Cashfree plan id, creating one on Cashfree if needed."""
     existing = get_plan_id_if_known(plan_key)
     if existing:
         return existing
@@ -130,28 +111,32 @@ def ensure_plan_id(plan_key: str) -> str:
         raise ValueError(f"Unknown plan key: {plan_key}")
 
     with _CACHE_LOCK:
-        # Re-check inside the lock in case a concurrent call created it.
         cached = _PLAN_CACHE.get(plan_key)
         if cached:
             return cached
 
-        client = _get_client()
-        response = client.plan.create(
-            {
-                "period": "monthly",
-                "interval": 1,
-                "item": {
-                    "name": plan["name"],
-                    "amount": plan["amount_paise"],
-                    "currency": "INR",
-                    "description": plan["description"],
-                },
-                "notes": {"internal_plan": plan_key, "source": "answerdeck_autoprovision"},
-            }
+        client = get_cashfree_client()
+        amount = float(plan["recurring_amount"])
+        request = CreatePlanRequest(
+            plan_id=plan["plan_id"],
+            plan_name=plan["name"],
+            plan_type="PERIODIC",
+            plan_currency="INR",
+            plan_recurring_amount=amount,
+            plan_max_amount=amount,
+            plan_max_cycles=1200,
+            plan_intervals=1,
+            plan_interval_type="MONTH",
+            plan_note=plan["note"],
         )
-        plan_id = str(response.get("id") or "").strip()
+        response = client.SubsCreatePlan(
+            create_plan_request=request,
+            x_idempotency_key=str(uuid.uuid4()),
+        )
+        payload = response_to_dict(response)
+        plan_id = str(payload.get("plan_id") or plan["plan_id"]).strip()
         if not plan_id:
-            raise RuntimeError(f"Razorpay plan.create returned no id for {plan_key}.")
+            raise RuntimeError(f"Cashfree SubsCreatePlan returned no id for {plan_key}.")
 
         try:
             _write_config(plan["config_key"], plan_id)
@@ -159,20 +144,15 @@ def ensure_plan_id(plan_key: str) -> str:
             log.warning("Failed to persist plan id for %s: %s", plan_key, exc)
 
         _PLAN_CACHE[plan_key] = plan_id
-        log.info("Auto-provisioned Razorpay plan %s -> %s", plan_key, plan_id)
+        log.info("Auto-provisioned Cashfree plan %s -> %s", plan_key, plan_id)
         return plan_id
 
 
 def get_webhook_secret() -> str:
-    """Return the webhook secret from env, or an auto-generated value from DB.
-
-    The autogen value is intended for local/dev. In production you should paste
-    the same secret in the Razorpay dashboard and set RAZORPAY_WEBHOOK_SECRET
-    explicitly in your environment.
-    """
+    """Return the webhook secret from env, or an auto-generated value from DB."""
     global _WEBHOOK_SECRET_CACHE
 
-    env_value = (os.getenv("RAZORPAY_WEBHOOK_SECRET") or "").strip()
+    env_value = (os.getenv("CASHFREE_WEBHOOK_SECRET") or "").strip()
     if env_value:
         return env_value
 
@@ -191,8 +171,8 @@ def get_webhook_secret() -> str:
             try:
                 _write_config(WEBHOOK_SECRET_CONFIG_KEY, stored)
                 log.warning(
-                    "Auto-generated Razorpay webhook secret (first boot). "
-                    "Paste this value into the Razorpay Dashboard → Webhooks "
+                    "Auto-generated Cashfree webhook secret (first boot). "
+                    "Paste this value into the Cashfree Dashboard → Webhooks "
                     "for signature verification to succeed: %s",
                     stored,
                 )
@@ -204,8 +184,8 @@ def get_webhook_secret() -> str:
 
 def diagnose_configuration() -> dict:
     """Report whether keys, plans, and webhook are configured (for /billing/health)."""
-    key, secret = _resolve_credentials()
-    keys_configured = bool(key and secret)
+    app_id, secret = resolve_credentials()
+    keys_configured = bool(app_id and secret)
 
     plan_status: dict[str, dict] = {}
     for plan_key in PLAN_DEFINITIONS:
@@ -215,7 +195,7 @@ def diagnose_configuration() -> dict:
             "plan_id": known or "",
         }
 
-    env_secret = bool((os.getenv("RAZORPAY_WEBHOOK_SECRET") or "").strip())
+    env_secret = bool((os.getenv("CASHFREE_WEBHOOK_SECRET") or "").strip())
     autogen_secret = False
     try:
         autogen_secret = bool(_read_config(WEBHOOK_SECRET_CONFIG_KEY))
@@ -230,4 +210,6 @@ def diagnose_configuration() -> dict:
         "webhook_secret_autogen_present": autogen_secret,
         "ready_for_checkout": keys_configured,
         "currency": "INR",
+        "gateway": "cashfree",
+        "environment": resolve_environment(),
     }

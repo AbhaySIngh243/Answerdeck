@@ -103,6 +103,15 @@ def _ensure_runtime_schema(engine):
             if "framing_adjectives" not in mention_columns:
                 statements.append("ALTER TABLE mentions ADD COLUMN framing_adjectives VARCHAR DEFAULT ''")
 
+        if "user_billing" in inspector.get_table_names():
+            billing_columns = {col["name"] for col in inspector.get_columns("user_billing")}
+            if "razorpay_subscription_id" in billing_columns and "gateway_subscription_id" not in billing_columns:
+                statements.append(
+                    "ALTER TABLE user_billing RENAME COLUMN razorpay_subscription_id TO gateway_subscription_id"
+                )
+            if "razorpay_plan_id" in billing_columns and "gateway_plan_id" not in billing_columns:
+                statements.append("ALTER TABLE user_billing RENAME COLUMN razorpay_plan_id TO gateway_plan_id")
+
         if not statements:
             return
         with engine.begin() as conn:

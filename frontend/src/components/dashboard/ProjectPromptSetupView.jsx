@@ -3,11 +3,12 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CheckCircle2, Loader2, PlusCircle } from 'lucide-react';
 
-import { api } from '../../lib/api';
+import { api, waitForAnalysisJob } from '../../lib/api';
 import { SectionScaffold, StatePanel } from './ui/SectionScaffold';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Textarea } from '../ui/textarea';
+import AnalysisLaunchScreen from './AnalysisLaunchScreen';
 
 function buildSuggestedPrompts(project) {
   const categoryTokens = String(project?.category || 'software')
@@ -21,6 +22,24 @@ function buildSuggestedPrompts(project) {
     `Recommended ${category} tools for teams like us`,
     `Best ${category} options for tight budgets`,
   ];
+}
+
+async function invalidateProjectQueries(queryClient, projectId, promptId) {
+  const keys = [
+    ['project', projectId],
+    ['project-core', projectId],
+    ['project-dashboard', projectId],
+    ['prompts', projectId],
+    ['prompt-analysis', projectId],
+    ['deep-analysis', projectId],
+    ['sources-intelligence', projectId],
+    ['competitor-intelligence', projectId],
+    ['intel-summary', projectId],
+    ['global-audit', projectId],
+    ['billing', 'me'],
+  ];
+  if (promptId) keys.push(['prompt-detail', promptId]);
+  await Promise.all(keys.map((queryKey) => queryClient.invalidateQueries({ queryKey })));
 }
 
 export default function ProjectPromptSetupView() {
@@ -71,25 +90,55 @@ export default function ProjectPromptSetupView() {
   }, [project, suggestedPayload?.prompts]);
   const [selectedPromptIndexes, setSelectedPromptIndexes] = useState(() => new Set([0, 1, 2]));
   const [customPromptsInput, setCustomPromptsInput] = useState('');
+  const [launchDetail, setLaunchDetail] = useState('');
 
   const savePromptsMutation = useMutation({
     mutationFn: async (promptTexts) => {
       const selectedModels = [];
-      await Promise.all(
-        promptTexts.map((text) =>
-          api.createPrompt(id, {
-            prompt_text: text,
-            country: project?.region || '',
-            selected_models: selectedModels,
-            prompt_type: 'Auto',
-            is_active: true,
-          })
+      setLaunchDetail('Saving selected prompts.');
+      const createdPrompts = [];
+      for (const text of promptTexts) {
+        const created = await api.createPrompt(id, {
+          prompt_text: text,
+          country: project?.region || '',
+          selected_models: selectedModels,
+          prompt_type: 'Auto',
+          is_active: true,
+        });
+        createdPrompts.push(created);
+      }
+
+      const firstPrompt = createdPrompts[0];
+      if (!firstPrompt?.id) throw new Error('No prompt was available to run.');
+      setLaunchDetail('Running the first prompt across your selected engines.');
+      const firstRun = await api.runPromptAnalysis(firstPrompt.id);
+      if (firstRun?.job_id) {
+        await waitForAnalysisJob(firstRun.job_id);
+      }
+      setLaunchDetail('Refreshing your dashboard with the first result.');
+      await invalidateProjectQueries(queryClient, id, firstPrompt.id);
+
+      const backgroundRuns = await Promise.allSettled(
+        createdPrompts.slice(1).map((prompt) =>
+          api.runPromptAnalysis(prompt.id).then((run) => ({ prompt_id: prompt.id, job_id: run?.job_id }))
         )
       );
+
+      return {
+        analysisJobs: backgroundRuns
+          .filter((result) => result.status === 'fulfilled' && result.value?.job_id)
+          .map((result) => result.value),
+      };
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
-      navigate(`/dashboard/project/${id}`);
+    onSuccess: (payload) => {
+      navigate(`/dashboard/project/${id}`, {
+        state: {
+          analysisJobs: Array.isArray(payload?.analysisJobs) ? payload.analysisJobs : [],
+        },
+      });
+    },
+    onSettled: () => {
+      setLaunchDetail('');
     },
   });
 
@@ -133,6 +182,16 @@ export default function ProjectPromptSetupView() {
 
   if (error || !project) {
     return <StatePanel variant="danger" title="Failed to load project details" description={error?.message || 'Please try again.'} />;
+  }
+
+  if (savePromptsMutation.isPending) {
+    return (
+      <AnalysisLaunchScreen
+        title="Your first prompt is under analysis."
+        subtitle="It might take 1 to 2 minutes."
+        detail={launchDetail}
+      />
+    );
   }
 
   return (
@@ -245,7 +304,7 @@ export default function ProjectPromptSetupView() {
             onClick={() => savePromptsMutation.mutate(combinedPrompts)}
           >
             {savePromptsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlusCircle className="h-3.5 w-3.5" />}
-            Save prompts and continue
+            Save prompts and run first analysis
           </Button>
         </div>
         </CardContent>

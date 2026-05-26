@@ -30,8 +30,8 @@ export default function PrivacyPage() {
       <section>
         <h2 className="text-xl font-semibold text-slate-900">Payments</h2>
         <p>
-          Subscriptions are processed by Razorpay. We never see or store your card details;
-          Razorpay returns a subscription id which we associate with your Clerk user id so we can
+          Subscriptions are processed by Cashfree. We never see or store your card details;
+          Cashfree returns a subscription id which we associate with your Clerk user id so we can
           honour plan limits.
         </p>
       </section>

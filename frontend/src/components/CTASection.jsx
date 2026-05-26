@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { PENDING_RAZORPAY_PLAN_KEY } from '../lib/subscriptionCheckout';
+import { PENDING_CASHFREE_PLAN_KEY } from '../lib/subscriptionCheckout';
 
 const CTASection = () => {
   const navigate = useNavigate();
@@ -9,7 +9,7 @@ const CTASection = () => {
 
   const queueSubscribe = (planKey) => {
     try {
-      sessionStorage.setItem(PENDING_RAZORPAY_PLAN_KEY, planKey);
+      sessionStorage.setItem(PENDING_CASHFREE_PLAN_KEY, planKey);
     } catch {
       /* ignore */
     }
@@ -150,7 +150,7 @@ const CTASection = () => {
         </div>
 
         <p className="mx-auto mt-10 max-w-2xl text-center text-xs leading-relaxed text-[#94a3b8]">
-          Billed monthly via Razorpay in INR. Cancel anytime from your Razorpay subscription portal — plan changes take
+          Billed monthly via Cashfree in INR. Cancel anytime through Cashfree subscription notifications — plan changes take
           effect at the next cycle.
         </p>
       </div>

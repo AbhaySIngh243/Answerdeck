@@ -179,21 +179,21 @@ class VisibilityMetric(db.Model):
 
 
 class UserBilling(db.Model):
-    """Clerk user subscription state synced from Razorpay webhooks."""
+    """Clerk user subscription state synced from Cashfree webhooks."""
 
     __tablename__ = "user_billing"
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     clerk_user_id = db.Column(db.String, unique=True, nullable=False, index=True)
     internal_plan = db.Column(db.String, nullable=False, default="free")  # free|standard|pro
-    razorpay_subscription_id = db.Column(db.String, default="", index=True)
-    razorpay_plan_id = db.Column(db.String, default="")
+    gateway_subscription_id = db.Column(db.String, default="", index=True)
+    gateway_plan_id = db.Column(db.String, default="")
     status = db.Column(db.String, nullable=False, default="free")
     current_period_end = db.Column(db.String, default="")
     updated_at = db.Column(db.String, nullable=False)
 
 
 class BillingConfig(db.Model):
-    """Small key/value store for Razorpay plan IDs, webhook secret, etc.
+    """Small key/value store for Cashfree plan IDs, webhook secret, etc.
 
     Keeps auto-provisioned plan IDs stable across restarts so we don't create
     duplicate plans on every boot when env vars aren't set.

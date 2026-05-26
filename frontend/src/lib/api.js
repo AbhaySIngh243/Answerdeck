@@ -248,6 +248,7 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     }),
   completeOnboarding: (projectId) =>
     request(`/projects/${projectId}/onboarding/complete`, {
@@ -352,11 +353,16 @@ export const api = {
 
   getBillingMe: () => request('/billing/me'),
   getBillingHealth: () => request('/billing/health'),
-  createSubscription: (planKey) =>
+  createSubscription: (planKey, customer = {}) =>
     request('/billing/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ plan_key: planKey }),
+      body: JSON.stringify({
+        plan_key: planKey,
+        customer_email: customer.customerEmail,
+        customer_phone: customer.customerPhone,
+        customer_name: customer.customerName,
+      }),
     }),
 
   askOnboardingAssistant: (projectId, payload) =>
@@ -364,6 +370,8 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      timeoutMs: 15000,
+      retries: 0,
     }),
   improvePrompt: (promptId, payload = {}) =>
     request(`/prompts/${promptId}/assistant`, {
@@ -378,6 +386,24 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 };
+
+export async function waitForAnalysisJob(
+  jobId,
+  { intervalMs = 2500, maxAttempts = 96 } = {},
+) {
+  if (!jobId) throw new Error('Missing analysis job id.');
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const payload = await api.getJobStatus(jobId);
+    if (payload?.status === 'completed') return payload;
+    if (payload?.status === 'failed') {
+      throw new Error(payload?.error || 'Analysis failed. Please retry.');
+    }
+    await sleep(intervalMs);
+  }
+
+  throw new Error('Analysis is taking longer than expected. Please check the dashboard in a moment.');
+}
 
 export async function downloadFile(path, filename) {
   const headers = await getAuthHeader();

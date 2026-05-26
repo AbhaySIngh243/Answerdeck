@@ -5,6 +5,7 @@ CRUD for brand projects.
 
 from flask import Blueprint, request, jsonify, g
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import json
 import re
 from urllib.parse import urlparse
@@ -21,6 +22,8 @@ from exceptions import NotFoundError, ValidationError
 from auth import require_auth
 from billing.entitlements import get_limits
 from engine.prompt_suggestions import (
+    build_fallback_prompt_suggestions,
+    collect_site_snapshot,
     generate_competitor_suggestions,
     generate_project_prompt_suggestions,
     suggest_industry_label,
@@ -33,6 +36,7 @@ ONBOARDING_MAX_STEP = 5
 # Legacy projects were only required to complete 3 steps. We still treat those
 # as "done" so existing users aren't bumped back into onboarding.
 ONBOARDING_LEGACY_COMPLETE_STEPS = frozenset({3, 5})
+ONBOARDING_SUGGESTION_TIMEOUT_SECONDS = 12
 
 
 def _parse_competitors(value):
@@ -184,6 +188,15 @@ def _extract_competitor_suggestions(project: Project, max_items: int = 8) -> lis
         candidates[label] = candidates.get(label, 0) + 1
     ranked = [brand for brand, _count in sorted(candidates.items(), key=lambda item: item[1], reverse=True)]
     return ranked[:max_items]
+
+
+def _future_result(future, fallback):
+    try:
+        return future.result(timeout=ONBOARDING_SUGGESTION_TIMEOUT_SECONDS)
+    except TimeoutError:
+        return fallback
+    except Exception:
+        return fallback
 
 
 def _project_payload(p: Project):
@@ -428,15 +441,42 @@ def onboarding_suggestions(project_id):
         "competitors": ctx_competitors,
     }
 
-    prompt_payload = generate_project_prompt_suggestions(project_ctx, max_prompts=5)
+    snapshot = {"homepage": {}, "pages": [], "keywords": [], "link_count": 0}
+    db_competitors = _extract_competitor_suggestions(project, max_items=8)
+    fallback_prompt_payload = build_fallback_prompt_suggestions(project_ctx)
 
-    ai_competitors = _extract_competitor_suggestions(project, max_items=8)
-    if not ai_competitors:
-        ai_competitors = generate_competitor_suggestions(project_ctx, max_items=6)
+    executor = ThreadPoolExecutor(max_workers=4)
+    try:
+        snapshot_future = executor.submit(collect_site_snapshot, ctx_domain)
+        snapshot = _future_result(snapshot_future, snapshot)
 
-    # Best-effort: infer from website when possible; fallback to category.
-    # (Frontend only applies when Industry is currently empty.)
-    suggested_industry = suggest_industry_label(project_ctx) or ""
+        prompt_future = executor.submit(
+            generate_project_prompt_suggestions, project_ctx, 5, snapshot
+        )
+        competitor_future = (
+            None
+            if db_competitors
+            else executor.submit(generate_competitor_suggestions, project_ctx, 6, snapshot)
+        )
+        industry_future = (
+            None
+            if ctx_industry
+            else executor.submit(suggest_industry_label, project_ctx, snapshot)
+        )
+
+        prompt_payload = _future_result(prompt_future, fallback_prompt_payload)
+        ai_competitors = db_competitors
+        if not ai_competitors and competitor_future is not None:
+            ai_competitors = _future_result(competitor_future, [])
+        suggested_industry = (
+            ctx_industry
+            if ctx_industry
+            else _future_result(industry_future, "")
+            if industry_future is not None
+            else ""
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=False)
 
     return jsonify(
         {
@@ -502,28 +542,40 @@ def complete_onboarding(project_id):
 
     seed_prompts = step3.get("seed_prompts", []) if isinstance(step3, dict) else []
     target_engines = step4.get("target_engines", []) if isinstance(step4, dict) else []
+    prompt_rows: list[dict] = []
     if isinstance(seed_prompts, list) and seed_prompts:
-        existing_texts = {
-            p.prompt_text.strip().lower()
-            for p in Prompt.query.filter_by(project_id=project.id, user_id=g.user.id).all()
-        }
+        existing_prompts = Prompt.query.filter_by(project_id=project.id, user_id=g.user.id).all()
+        existing_by_text = {p.prompt_text.strip().lower(): p for p in existing_prompts}
         now = datetime.now().isoformat()
+        seen_seed_prompts: set[str] = set()
         for text in seed_prompts[:20]:
             cleaned = str(text).strip()
-            if not cleaned or cleaned.lower() in existing_texts:
+            key = cleaned.lower()
+            if not cleaned or key in seen_seed_prompts:
                 continue
-            existing_texts.add(cleaned.lower())
-            db.session.add(Prompt(
+            seen_seed_prompts.add(key)
+            existing = existing_by_text.get(key)
+            if existing:
+                engines_json = json.dumps(target_engines if isinstance(target_engines, list) else [])
+                if existing.selected_models != engines_json:
+                    existing.selected_models = engines_json
+                prompt_rows.append({"id": existing.id, "prompt_text": existing.prompt_text, "is_new": False})
+                continue
+            prompt = Prompt(
                 user_id=g.user.id,
                 project_id=project.id,
                 prompt_text=cleaned,
                 prompt_type="Onboarding",
                 selected_models=json.dumps(target_engines if isinstance(target_engines, list) else []),
                 created_at=now,
-            ))
+            )
+            db.session.add(prompt)
+            db.session.flush()
+            existing_by_text[key] = prompt
+            prompt_rows.append({"id": prompt.id, "prompt_text": prompt.prompt_text, "is_new": True})
 
     db.session.commit()
-    return jsonify({"message": "Onboarding completed", "project": _project_payload(project)})
+    return jsonify({"message": "Onboarding completed", "project": _project_payload(project), "prompts": prompt_rows})
 
 
 @projects_bp.route("/<int:project_id>/assistant", methods=["POST"])

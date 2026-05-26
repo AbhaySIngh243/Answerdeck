@@ -187,6 +187,28 @@ def _clean_json(raw: str) -> Any:
     return json.loads(raw)
 
 
+def sanitize_display_response_text(value: Any) -> str:
+    """Normalize model prose for UI display while preserving the stored raw answer."""
+    text = str(value or "")
+    if not text.strip():
+        return ""
+
+    # Remove code-fence wrappers but keep the content inside.
+    text = re.sub(r"```(?:[a-zA-Z0-9_-]+)?\s*", "", text)
+    text = text.replace("```", "")
+
+    cleaned_lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        line = re.sub(r"^\s{0,3}#{1,6}\s*", "", line)
+        line = re.sub(r"^\s{0,3}>\s?", "", line)
+        cleaned_lines.append(line)
+
+    text = "\n".join(cleaned_lines)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
 def _clip_text(value: Any, limit: int = 320) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:

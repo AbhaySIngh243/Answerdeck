@@ -12,7 +12,7 @@ import logging
 import re
 from typing import Any
 
-from engine.llm_clients import chat
+from engine.llm_clients import chat, chat_with_fallback
 
 log = logging.getLogger(__name__)
 
@@ -23,8 +23,10 @@ _STEP_FOCUS = {
         "focus": (
             "Help the user describe their brand clearly. Check that the brand name, "
             "public website, industry, and region are specific and match the business. "
-            "Flag common mistakes like using a personal URL, an ambiguous industry, or a "
-            "region that will not reflect the real target market."
+            "Help them pick 4-8 real, directly-comparable competitors — not parent "
+            "companies, marketplaces, or aspirational benchmarks. Flag common mistakes "
+            "like using a personal URL, an ambiguous industry, or a region that will "
+            "not reflect the real target market."
         ),
     },
     2: {
@@ -121,7 +123,7 @@ Rules:
 - If the user asked a question, answer it in the tip first."""
 
     try:
-        raw = chat("chatgpt", prompt, temperature=0.2)
+        raw = chat_with_fallback(prompt, temperature=0.2, json_mode=True)
         parsed = _extract_json(raw)
         if not isinstance(parsed, dict):
             raise ValueError("Assistant returned non-dict")
@@ -201,7 +203,7 @@ Original prompt: "{original}"
 """
 
     try:
-        raw = chat("chatgpt", system, temperature=0.25)
+        raw = chat_with_fallback(system, temperature=0.25, json_mode=True)
         parsed = _extract_json(raw)
         if not isinstance(parsed, dict):
             raise ValueError("rewrite returned non-dict")

@@ -19,9 +19,8 @@ export default function TermsPage() {
       <section>
         <h2 className="text-xl font-semibold text-slate-900">Subscriptions</h2>
         <p>
-          Plans are monthly, billed in INR via Razorpay. You can cancel any time from your
-          Razorpay subscription portal; cancellations take effect at the end of the current
-          billing cycle.
+          Plans are monthly, billed in INR via Cashfree. You can cancel any time through Cashfree subscription
+          notifications; cancellations take effect at the end of the current billing cycle.
         </p>
       </section>
 

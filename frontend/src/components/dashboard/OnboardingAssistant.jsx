@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -22,6 +22,44 @@ const STEP_TITLES = {
   4: 'Brand strategy',
   5: 'Review & launch',
 };
+
+const LOCAL_TIPS = {
+  1: {
+    tip: 'Use the public brand name, main website, market, region, and direct competitors.',
+    recommended_action: 'Fill every required brand field before continuing.',
+    common_mistakes: ['Using a staging URL.', 'Listing marketplaces instead of direct competitors.'],
+    examples: [],
+  },
+  2: {
+    tip: 'Choose competitors buyers would realistically compare before purchasing.',
+    recommended_action: 'Keep 4 to 8 direct rivals and remove broad marketplaces.',
+    common_mistakes: ['Adding parent companies.', 'Adding aspirational brands outside the category.'],
+    examples: [],
+  },
+  3: {
+    tip: 'Use natural buyer questions that do not include your brand name.',
+    recommended_action: 'Select prompts covering discovery, comparison, and purchase constraints.',
+    common_mistakes: ['Using brand-biased prompts.', 'Writing keyword fragments instead of questions.'],
+    examples: ['Best tools for small teams', 'Most reliable options with support'],
+  },
+  4: {
+    tip: 'Your value proposition should tell the model why customers pick you.',
+    recommended_action: 'Write one crisp promise and a few concrete differentiators.',
+    common_mistakes: ['Using generic claims.', 'Skipping the target audience.'],
+    examples: [],
+  },
+  5: {
+    tip: 'The first dashboard is strongest after at least one prompt finishes analysis.',
+    recommended_action: 'Launch the first analysis and wait for the dashboard to populate.',
+    common_mistakes: ['Leaving before the first run completes.'],
+    examples: [],
+  },
+};
+
+function localAssistantPayload(step) {
+  const base = LOCAL_TIPS[step] || LOCAL_TIPS[1];
+  return { ...base, confidence: 0.7, source: 'local' };
+}
 
 function normalizeContext(context) {
   if (!context || typeof context !== 'object') return {};
@@ -67,15 +105,8 @@ export default function OnboardingAssistant({ projectId, step, context }) {
     },
   });
 
-  useEffect(() => {
-    if (!projectId || !step) return;
-    askMutation.mutate({ step, context: normalized, question: '' });
-    // Only refetch on step change or projectId change, not on every context keystroke
-    // to stay cheap and avoid rate limiting.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, step]);
-
-  const latest = askMutation.data || history[history.length - 1]?.payload;
+  const localPayload = useMemo(() => localAssistantPayload(step), [step]);
+  const latest = askMutation.data || history[history.length - 1]?.payload || localPayload;
   const stepTitle = STEP_TITLES[step] || `Step ${step}`;
 
   function handleAsk(e) {

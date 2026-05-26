@@ -23,6 +23,7 @@ from engine.analyzer import (
     generate_recommendations,
     generate_strategic_action_plan,
     is_spurious_brand_mention,
+    sanitize_display_response_text,
     _looks_like_spec_phrase,
 )
 from engine.llm_clients import chat
@@ -197,6 +198,167 @@ def _get_or_build_prompt_analysis_payload(project_id: int) -> dict:
     return payload
 
 
+def _get_or_build_global_audit_payload(project_id: int, project: Project | None = None) -> dict:
+    cache_key = f"global-audit:{project_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    project = project or _get_project_for_user(project_id)
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    latest_by_prompt = _latest_responses_for_prompts(prompts)
+    all_raw_responses: dict[str, dict[str, str]] = {}
+    engines_seen: set[str] = set()
+    n_responses = 0
+
+    for prompt in prompts:
+        rows = latest_by_prompt.get(prompt.id, [])
+        if not rows:
+            continue
+        raw = {row.engine: row.response_text for row in rows if row.response_text}
+        if not raw:
+            continue
+        all_raw_responses[prompt.prompt_text] = raw
+        n_responses += len(raw)
+        engines_seen.update((eng or "").strip().lower() for eng in raw if eng)
+
+    cov = coverage_meta(
+        n_prompts=len(prompts),
+        n_engines=len(engines_seen),
+        n_responses=n_responses,
+        n_queries_with_responses=len(all_raw_responses),
+    )
+
+    if not all_raw_responses:
+        payload = {"items": [], "coverage": cov, "has_data": False}
+    else:
+        payload = {
+            "items": _measured_global_audit_items(
+                project,
+                all_raw_responses,
+                _project_competitor_framings(project_id),
+            ),
+            "coverage": cov,
+            "has_data": True,
+        }
+    _cache_set(cache_key, payload)
+    return payload
+
+
+def _get_or_build_sources_payload(project_id: int, project: Project | None = None) -> dict:
+    cache_key = f"sources-intelligence:{project_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    project = project or _get_project_for_user(project_id)
+    prompts = Prompt.query.filter_by(project_id=project_id).all()
+    prompt_text_by_id = {prompt.id: prompt.prompt_text for prompt in prompts}
+
+    domain_count: dict[str, int] = defaultdict(int)
+    urls_by_domain: dict[str, list[str]] = defaultdict(list)
+    mentions_by_domain: dict[str, int] = defaultdict(int)
+    domain_queries: dict[str, str] = {}
+
+    latest_by_prompt = _latest_responses_for_prompts(prompts)
+    all_source_responses = [
+        response
+        for rows in latest_by_prompt.values()
+        for response in rows
+    ]
+
+    src_resp_ids = [r.id for r in all_source_responses]
+    mention_counts_by_resp: dict[int, int] = defaultdict(int)
+    if src_resp_ids:
+        for m in Mention.query.filter(Mention.response_id.in_(src_resp_ids)).all():
+            mention_counts_by_resp[m.response_id] += 1
+
+    for response in all_source_responses:
+        if response.response_text and response.response_text.startswith("[") and "error:" in response.response_text.lower()[:80]:
+            continue
+        sources = _parse_sources(response.sources)
+        domains_seen_this_response: set[str] = set()
+        for source in sources:
+            normalized_source = _normalize_source_url(source)
+            if not normalized_source:
+                continue
+            domain = _domain_from_url(normalized_source)
+            if not domain:
+                continue
+            domain_count[domain] += 1
+            if len(urls_by_domain[domain]) < 20 and normalized_source not in urls_by_domain[domain]:
+                urls_by_domain[domain].append(normalized_source)
+            domains_seen_this_response.add(domain)
+            domain_queries.setdefault(domain, prompt_text_by_id.get(response.prompt_id, "tracked project prompts"))
+
+        mention_count = mention_counts_by_resp.get(response.id, 0)
+        for domain in domains_seen_this_response:
+            mentions_by_domain[domain] += mention_count
+
+    domains = []
+    for domain, count in sorted(domain_count.items(), key=lambda item: item[1], reverse=True):
+        links = urls_by_domain.get(domain, [])
+        domains.append(
+            {
+                "domain": domain,
+                "source_mentions": count,
+                "brand_mentions": mentions_by_domain.get(domain, 0),
+                "links": links,
+                "query": domain_queries.get(domain, "tracked project prompts"),
+            }
+        )
+
+    project_host = _project_website_host(project.website_url or "")
+    competitors = {c.lower() for c in project.get_competitors_list()}
+    strict_sources = []
+    for row in domains[:15]:
+        domain = row["domain"]
+        links = row.get("links", [])
+        if _host_is_under_base(domain, project_host):
+            source_class = "Owned"
+        elif any(comp in domain.lower() for comp in competitors if comp):
+            source_class = "Competitor"
+        elif any(token in domain.lower() for token in ("reddit", "x.com", "facebook", "linkedin", "youtube")):
+            source_class = "Social"
+        elif any(token in domain.lower() for token in ("wikipedia", "quora", "stack", "medium", "github")):
+            source_class = "UGC"
+        else:
+            source_class = "Editorial"
+        source_mentions = int(row.get("source_mentions", 0))
+        brand_mentions = int(row.get("brand_mentions", 0))
+        domain_insight = _measured_domain_insight(
+            domain=domain,
+            source_class=source_class,
+            focus_brand=project.name,
+            query=str(row.get("query") or "tracked project prompts"),
+            source_mentions=source_mentions,
+            brand_mentions=brand_mentions,
+        )
+        strict_sources.append(
+            {
+                "domain": domain,
+                "source_class": source_class,
+                "why_it_matters": domain_insight.get("why_it_matters", ""),
+                "evidence": f"Cited {source_mentions} time(s); your brand {brand_mentions} time(s) in that context.",
+                "action": domain_insight.get("action", ""),
+                "priority": "high" if source_mentions >= 4 else ("medium" if source_mentions >= 2 else "low"),
+                "confidence": 0.86,
+                "source_count": source_mentions,
+                "links": links[:10],
+                "source_type": "measured",
+            }
+        )
+
+    payload = {
+        "domains": domains[:15],
+        "sources": strict_sources,
+        "count": min(len(domains), 15),
+        "context_state": _project_context_state(project),
+    }
+    _cache_set(cache_key, payload)
+    return payload
+
+
 def invalidate_project_report_caches(project_id: int) -> None:
     """Invalidate persisted report caches after new analysis data is written."""
     _cache_invalidate_project(project_id)
@@ -295,10 +457,14 @@ def _competitor_framings_for_prompt(prompt_id: int, limit: int = 20) -> list[dic
 
 def _project_raw_response_context(project_id: int, per_prompt_limit: int = 4) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     prompts = Prompt.query.filter_by(project_id=project_id).all()
+    latest_by_prompt = _latest_responses_for_prompts(prompts)
     by_engine: dict[str, str] = {}
     by_prompt: dict[str, dict[str, str]] = {}
     for prompt in prompts:
-        engine_texts = _raw_responses_for_prompt(prompt.id, limit=per_prompt_limit)
+        engine_texts = {
+            response.engine: response.response_text
+            for response in latest_by_prompt.get(prompt.id, [])[:per_prompt_limit]
+        }
         if engine_texts:
             by_prompt[prompt.prompt_text] = engine_texts
         for engine, text in engine_texts.items():
@@ -657,6 +823,39 @@ def _latest_responses_by_prompt(prompt_id: int) -> list[Response]:
     return list(by_engine.values())
 
 
+def _latest_responses_for_prompts(prompts: list[Prompt]) -> dict[int, list[Response]]:
+    """Bulk version of _latest_responses_by_prompt to avoid one query per prompt."""
+    prompt_ids = [prompt.id for prompt in prompts]
+    if not prompt_ids:
+        return {}
+
+    selected_by_prompt: dict[int, set[str]] = {}
+    for prompt in prompts:
+        selected_by_prompt[prompt.id] = {
+            m.strip().lower()
+            for m in prompt.get_models()
+            if m and m.strip()
+        }
+
+    rows = (
+        Response.query.filter(Response.prompt_id.in_(prompt_ids))
+        .order_by(Response.prompt_id.asc(), Response.timestamp.desc())
+        .all()
+    )
+    by_prompt_engine: dict[int, dict[str, Response]] = defaultdict(dict)
+    for response in rows:
+        if not _is_analysis_engine(response.engine):
+            continue
+        selected_models_lower = selected_by_prompt.get(response.prompt_id) or set()
+        engine_lower = (response.engine or "").strip().lower()
+        if selected_models_lower and engine_lower not in selected_models_lower:
+            continue
+        if response.engine not in by_prompt_engine[response.prompt_id]:
+            by_prompt_engine[response.prompt_id][response.engine] = response
+
+    return {pid: list(engine_rows.values()) for pid, engine_rows in by_prompt_engine.items()}
+
+
 def _latest_research_response(prompt_id: int) -> Response | None:
     return (
         Response.query.filter(
@@ -803,6 +1002,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
             "id": response.id,
             "engine": engine,
             "response_text": response.response_text,
+            "display_response_text": sanitize_display_response_text(response.response_text),
             "sources": _parse_sources(response.sources),
             "timestamp": response.timestamp,
         }
@@ -1271,15 +1471,12 @@ def _build_competitor_visibility(project_id: int) -> dict:
     focus_lower = focus_brand.lower() if focus_brand else ""
 
     prompts = Prompt.query.filter_by(project_id=project_id).all()
-    prompt_ids = [p.id for p in prompts]
+    responses_by_prompt = _latest_responses_for_prompts(prompts)
 
-    responses_by_prompt: dict[int, list[Response]] = {}
     considered_response_ids: set[int] = set()
     engines_seen: set[str] = set()
     response_meta: dict[int, dict] = {}
-    for prompt_id in prompt_ids:
-        latest = _latest_responses_by_prompt(prompt_id)
-        responses_by_prompt[prompt_id] = latest
+    for prompt_id, latest in responses_by_prompt.items():
         for r in latest:
             considered_response_ids.add(r.id)
             engine_key = (r.engine or "").strip().lower()
@@ -1539,9 +1736,10 @@ def _response_cites_project_domain(response: Response, base_host: str) -> bool:
 
 def _latest_project_responses(project_id: int) -> list[Response]:
     prompts = Prompt.query.filter_by(project_id=project_id).all()
+    latest_by_prompt = _latest_responses_for_prompts(prompts)
     latest: list[Response] = []
-    for prompt in prompts:
-        latest.extend(_latest_responses_by_prompt(prompt.id))
+    for rows in latest_by_prompt.values():
+        latest.extend(rows)
     return latest
 
 
@@ -1790,9 +1988,10 @@ def _compute_project_visibility_pct(project_id: int) -> float:
     if not prompts:
         return 0.0
 
-    latest_responses: list[Response] = []
-    for prompt in prompts:
-        latest_responses.extend(_latest_responses_by_prompt(prompt.id))
+    latest_by_prompt = _latest_responses_for_prompts(prompts)
+    latest_responses: list[Response] = [
+        response for rows in latest_by_prompt.values() for response in rows
+    ]
 
     if not latest_responses:
         return 0.0
@@ -1815,9 +2014,10 @@ def _build_engine_focus_visibility(project_id: int) -> list[dict[str, Any]]:
     if not prompts:
         return []
 
-    latest_responses: list[Response] = []
-    for prompt in prompts:
-        latest_responses.extend(_latest_responses_by_prompt(prompt.id))
+    latest_by_prompt = _latest_responses_for_prompts(prompts)
+    latest_responses: list[Response] = [
+        response for rows in latest_by_prompt.values() for response in rows
+    ]
 
     response_ids = [r.id for r in latest_responses]
     focus_mentions_by_response: dict[int, Mention] = {}
@@ -2193,8 +2393,9 @@ def _collect_prompt_engine_matrix(project_id: int) -> dict[str, Any]:
 
     all_latest_responses: list[Response] = []
     responses_by_prompt: dict[int, list[Response]] = defaultdict(list)
+    latest_by_prompt = _latest_responses_for_prompts(prompts)
     for prompt in prompts:
-        latest = _latest_responses_by_prompt(prompt.id)
+        latest = latest_by_prompt.get(prompt.id, [])
         responses_by_prompt[prompt.id] = latest
         all_latest_responses.extend(latest)
 
@@ -2437,35 +2638,6 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
                     de["engines"].add(engine_label)
                     de["n_citations"] += 1
 
-        # Optional live-search supplementation (kept short; main signal is persisted research).
-        live_query_rows: list[dict] = []
-        live_domain_counts: dict[str, dict[str, set | int]] = defaultdict(
-            lambda: {"queries": set(), "engines": set(), "n_citations": 0}
-        )
-        candidate_queries = list(missing_prompts[:3]) or [row["prompt_text"] for row in prompt_rows[:3]]
-        for query in candidate_queries[:3]:
-            result = search_web(query=query, max_results=5, max_tokens_per_page=320)
-            live_query_rows.append(
-                {
-                    "query": query,
-                    "ok": result.get("ok", False),
-                    "result_count": len(result.get("results", [])),
-                }
-            )
-            for item in result.get("results", []):
-                domain = (_domain_from_url(item.get("url", "")) or "").lower().replace("www.", "")
-                if domain:
-                    live_domain_counts[domain]["queries"].add(query)
-                    live_domain_counts[domain]["engines"].add("live")
-                    live_domain_counts[domain]["n_citations"] += 1
-
-        # Merge live counts into the persisted domain map so the UI sees both signals.
-        for dom, info in live_domain_counts.items():
-            target = domain_evidence[dom]
-            target["queries"] |= info["queries"]
-            target["engines"] |= info["engines"]
-            target["n_citations"] += int(info["n_citations"])
-
         # Materialize retrieval points sorted by cross-query strength.
         retrieval_points = []
         for url, bucket in url_evidence.items():
@@ -2505,7 +2677,8 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
 
         search_intel["retrieval_points"] = retrieval_points[:15]
         search_intel["domains"] = domains_out[:10]
-        search_intel["queries"] = live_query_rows
+        search_intel["queries"] = []
+        search_intel["live_supplementation"] = "disabled_on_sync_route"
 
     project_synthesis = _build_project_synthesis_summary(project_id, project.user_id)
     raw_project_responses, _raw_by_prompt = _project_raw_response_context(project_id)
@@ -2619,36 +2792,7 @@ def get_project_intel_summary(project_id):
 @require_auth
 def get_project_global_audit(project_id):
     project = _get_project_for_user(project_id)
-
-    prompts = Prompt.query.filter_by(project_id=project_id).all()
-    all_raw_responses: dict[str, dict[str, str]] = {}
-    engines_seen: set[str] = set()
-    n_responses = 0
-    for p in prompts:
-        raw = _raw_responses_for_prompt(p.id, limit=4)
-        if raw:
-            all_raw_responses[p.prompt_text] = raw
-            for eng, text in raw.items():
-                if text:
-                    n_responses += 1
-                    engines_seen.add((eng or "").strip().lower())
-
-    cov = coverage_meta(
-        n_prompts=len(prompts),
-        n_engines=len(engines_seen),
-        n_responses=n_responses,
-        n_queries_with_responses=len(all_raw_responses),
-    )
-
-    if not all_raw_responses:
-        return jsonify({"items": [], "coverage": cov, "has_data": False})
-
-    global_audit = _measured_global_audit_items(
-        project,
-        all_raw_responses,
-        _project_competitor_framings(project_id),
-    )
-    return jsonify({"items": global_audit, "coverage": cov, "has_data": True})
+    return jsonify(_get_or_build_global_audit_payload(project_id, project))
 
 
 @reports_bp.route("/project/<int:project_id>/actions/playbook", methods=["POST"])
@@ -2848,108 +2992,7 @@ def prompt_detail(prompt_id):
 @require_auth
 def sources_intelligence(project_id):
     project = _get_project_for_user(project_id)
-
-    prompts = Prompt.query.filter_by(project_id=project_id).all()
-    prompt_text_by_id = {prompt.id: prompt.prompt_text for prompt in prompts}
-
-    domain_count: dict[str, int] = defaultdict(int)
-    urls_by_domain: dict[str, list[str]] = defaultdict(list)
-    mentions_by_domain: dict[str, int] = defaultdict(int)
-    domain_queries: dict[str, str] = {}
-
-    all_source_responses: list[Response] = []
-    for prompt in prompts:
-        all_source_responses.extend(_latest_responses_by_prompt(prompt.id))
-
-    src_resp_ids = [r.id for r in all_source_responses]
-    mention_counts_by_resp: dict[int, int] = defaultdict(int)
-    if src_resp_ids:
-        for m in Mention.query.filter(Mention.response_id.in_(src_resp_ids)).all():
-            mention_counts_by_resp[m.response_id] += 1
-
-    for response in all_source_responses:
-        if response.response_text and response.response_text.startswith("[") and "error:" in response.response_text.lower()[:80]:
-            continue
-        sources = _parse_sources(response.sources)
-        domains_seen_this_response: set[str] = set()
-        for source in sources:
-            normalized_source = _normalize_source_url(source)
-            if not normalized_source:
-                continue
-            domain = _domain_from_url(normalized_source)
-            if not domain:
-                continue
-            domain_count[domain] += 1
-            if len(urls_by_domain[domain]) < 20:
-                if normalized_source not in urls_by_domain[domain]:
-                    urls_by_domain[domain].append(normalized_source)
-            domains_seen_this_response.add(domain)
-            domain_queries.setdefault(domain, prompt_text_by_id.get(response.prompt_id, "tracked project prompts"))
-
-        mention_count = mention_counts_by_resp.get(response.id, 0)
-        for domain in domains_seen_this_response:
-            mentions_by_domain[domain] += mention_count
-
-    domains = []
-    for domain, count in sorted(domain_count.items(), key=lambda item: item[1], reverse=True):
-        links = urls_by_domain.get(domain, [])
-        domains.append(
-            {
-                "domain": domain,
-                "source_mentions": count,
-                "brand_mentions": mentions_by_domain.get(domain, 0),
-                "links": links,
-                "query": domain_queries.get(domain, "tracked project prompts"),
-            }
-        )
-    project_host = _project_website_host(project.website_url or "")
-    competitors = {c.lower() for c in project.get_competitors_list()}
-    strict_sources = []
-    for row in domains[:15]:
-        domain = row["domain"]
-        links = row.get("links", [])
-        if _host_is_under_base(domain, project_host):
-            source_class = "Owned"
-        elif any(comp in domain.lower() for comp in competitors if comp):
-            source_class = "Competitor"
-        elif any(token in domain.lower() for token in ("reddit", "x.com", "facebook", "linkedin", "youtube")):
-            source_class = "Social"
-        elif any(token in domain.lower() for token in ("wikipedia", "quora", "stack", "medium", "github")):
-            source_class = "UGC"
-        else:
-            source_class = "Editorial"
-        source_mentions = int(row.get("source_mentions", 0))
-        brand_mentions = int(row.get("brand_mentions", 0))
-        domain_insight = _measured_domain_insight(
-            domain=domain,
-            source_class=source_class,
-            focus_brand=project.name,
-            query=str(row.get("query") or "tracked project prompts"),
-            source_mentions=source_mentions,
-            brand_mentions=brand_mentions,
-        )
-        strict_sources.append(
-            {
-                "domain": domain,
-                "source_class": source_class,
-                "why_it_matters": domain_insight.get("why_it_matters", ""),
-                "evidence": f"Cited {source_mentions} time(s); your brand {brand_mentions} time(s) in that context.",
-                "action": domain_insight.get("action", ""),
-                "priority": "high" if source_mentions >= 4 else ("medium" if source_mentions >= 2 else "low"),
-                "confidence": 0.86,
-                "source_count": source_mentions,
-                "links": links[:10],
-                "source_type": "measured",
-            }
-        )
-    return jsonify(
-        {
-            "domains": domains[:15],
-            "sources": strict_sources,
-            "count": min(len(domains), 15),
-            "context_state": _project_context_state(project),
-        }
-    )
+    return jsonify(_get_or_build_sources_payload(project_id, project))
 
 
 @reports_bp.route("/project/<int:project_id>/citation-economics", methods=["GET"])
