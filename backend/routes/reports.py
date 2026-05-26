@@ -2857,114 +2857,61 @@ def get_deep_analysis(project_id):
     return jsonify(payload)
 
 
+def _export_date_params() -> tuple[str | None, str | None]:
+    date_from = str(request.args.get("from") or "").strip()[:10] or None
+    date_to = str(request.args.get("to") or "").strip()[:10] or None
+    return date_from, date_to
+
+
 @reports_bp.route("/project/<int:project_id>/export.csv", methods=["GET"])
 @require_auth
 def export_project_csv(project_id):
+    from engine.full_report import build_full_export_payload, render_full_report_csv
+
     _get_project_for_user(project_id)
-    payload = _build_dashboard_payload(project_id)
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    writer.writerow(["Answrdeck AI Visibility Report"])
-    writer.writerow(["Project", payload["project"]["name"]])
-    writer.writerow(["Generated At", payload["updated_at"]])
-    writer.writerow(["Current Visibility Score", payload["current_visibility_score"]])
-    writer.writerow([])
-
-    writer.writerow(["Prompt Rankings"])
-    writer.writerow(["Prompt", "Average Rank", "Engines Analyzed"])
-    for row in payload["prompt_rankings"]:
-        writer.writerow([row["prompt_text"], row["avg_rank"] if row["avg_rank"] is not None else "Not mentioned", row["engines_analyzed"]])
-
-    writer.writerow([])
-    writer.writerow(["Competitor Visibility"])
-    writer.writerow(["Brand", "Visibility Score", "Mentions", "Average Rank", "Focus Brand"])
-    for row in payload["competitors"]:
-        writer.writerow([row["brand"], row["visibility_score"], row["mentions"], row["avg_rank"] if row["avg_rank"] is not None else "-", "Yes" if row["is_focus"] else "No"])
-
-    content = output.getvalue()
-    output.close()
+    date_from, date_to = _export_date_params()
+    payload = build_full_export_payload(project_id, g.user.id, date_from=date_from, date_to=date_to)
+    content = render_full_report_csv(payload)
+    project_name = str((payload.get("project") or {}).get("name") or f"project_{project_id}")
+    safe_name = re.sub(r"[^\w\-]+", "_", project_name).strip("_") or f"project_{project_id}"
 
     return FlaskResponse(
         content,
         mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=answrdeck_project_{project_id}.csv"},
+        headers={"Content-Disposition": f'attachment; filename="answrdeck_{safe_name}_full_report.csv"'},
     )
 
 
 @reports_bp.route("/project/<int:project_id>/export.pdf", methods=["GET"])
 @require_auth
 def export_project_pdf(project_id):
+    from engine.full_report import build_full_export_payload, render_full_report_pdf
+
     _get_project_for_user(project_id)
-    payload = _build_dashboard_payload(project_id)
+    date_from, date_to = _export_date_params()
+    payload = build_full_export_payload(project_id, g.user.id, date_from=date_from, date_to=date_to)
+    project_name = str((payload.get("project") or {}).get("name") or f"project_{project_id}")
+    safe_name = re.sub(r"[^\w\-]+", "_", project_name).strip("_") or f"project_{project_id}"
 
     try:
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
-    except Exception:
-        # Fallback to plain text when reportlab is unavailable.
+        pdf_bytes = render_full_report_pdf(payload)
+    except RuntimeError:
         text = (
             f"Answrdeck AI Visibility Report\n"
-            f"Project: {payload['project']['name']}\n"
-            f"Current Score: {payload['current_visibility_score']}\n"
-            f"Generated: {payload['updated_at']}\n"
+            f"Project: {project_name}\n"
+            f"Generated: {payload.get('generated_at', '')}\n\n"
+            f"PDF generation requires reportlab. Install it on the server and retry."
         )
         return FlaskResponse(
             text,
             mimetype="text/plain",
-            headers={"Content-Disposition": f"attachment; filename=answrdeck_project_{project_id}.txt"},
+            headers={"Content-Disposition": f'attachment; filename="answrdeck_{safe_name}_report.txt"'},
         )
 
-    buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
-    y = height - 40
-
-    def write_line(line: str, offset: int = 16):
-        nonlocal y
-        if y < 50:
-            pdf.showPage()
-            y = height - 40
-        pdf.drawString(40, y, line[:120])
-        y -= offset
-
-    pdf.setTitle(f"Answrdeck Report - {payload['project']['name']}")
-    pdf.setFont("Helvetica-Bold", 14)
-    write_line("Answrdeck AI Visibility Report", 22)
-    pdf.setFont("Helvetica", 11)
-    write_line(f"Project: {payload['project']['name']}")
-    write_line(f"Current Visibility Score: {payload['current_visibility_score']}")
-    write_line(f"Generated: {payload['updated_at']}")
-    write_line("", 12)
-
-    pdf.setFont("Helvetica-Bold", 12)
-    write_line("Prompt Rankings", 18)
-    pdf.setFont("Helvetica", 10)
-    for row in payload["prompt_rankings"]:
-        rank = f"#{row['avg_rank']}" if row["avg_rank"] is not None else "Not mentioned"
-        write_line(f"- {row['prompt_text']} | {rank} | engines: {row['engines_analyzed']}")
-
-    write_line("", 12)
-    pdf.setFont("Helvetica-Bold", 12)
-    write_line("Competitor Visibility", 18)
-    pdf.setFont("Helvetica", 10)
-    for row in payload["competitors"]:
-        write_line(f"- {row['brand']}: score {row['visibility_score']}, mentions {row['mentions']}, avg rank {row['avg_rank'] or '-'}")
-
-    write_line("", 12)
-    pdf.setFont("Helvetica-Bold", 12)
-    write_line("Recommendations", 18)
-    pdf.setFont("Helvetica", 10)
-    write_line(payload["recommendations"]["recommendation_text"])
-
-    pdf.save()
-    buffer.seek(0)
-
     return FlaskResponse(
-        buffer.getvalue(),
+        pdf_bytes,
         mimetype="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=answrdeck_project_{project_id}.pdf"},
+        headers={"Content-Disposition": f'attachment; filename="answrdeck_{safe_name}_full_report.pdf"'},
     )
 
 

@@ -31,7 +31,7 @@ import {
   Zap,
 } from 'lucide-react';
 
-import { api } from '../../lib/api';
+import { api, downloadFile } from '../../lib/api';
 import { mergeSourcesByDomainKey } from '../../lib/mergeSources';
 import SourcesPieChart from './SourcesPieChart';
 import OverviewKpiGrid from './sections/OverviewKpiGrid';
@@ -524,28 +524,41 @@ const ProjectDetailView = () => {
   const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 2); return d.toISOString().slice(0, 10); });
   const [dateTo, setDateTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [exportLoading, setExportLoading] = useState(null);
+  const [exportError, setExportError] = useState(null);
 
-  const exportDashboardCSV = useCallback(() => {
-    const proj = projectData?.project;
-    const dash = projectData?.dashboard;
-    const proms = toArray(projectData?.prompts);
-    const engines = toArray(projectData?.enabledEngines);
-    if (!proj) return;
-    const rows = [['Section', 'Field', 'Value']];
-    rows.push(['Overview', 'Project', proj.name], ['Overview', 'Category', proj.category || ''], ['Overview', 'Region', proj.region || ''], ['Overview', 'Visibility', String(dash?.current_visibility_score ?? '')], ['Overview', 'Prompts', String(proms.length)], ['Overview', 'Engines', engines.map((e) => e.name).join(', ')], ['Overview', 'Date range', `${dateFrom} – ${dateTo}`]);
-    toArray(dash?.visibility_trend).forEach((t) => rows.push(['Visibility Trend', t.date, String(t.score)]));
-    toArray(dash?.competitors).forEach((c) => rows.push(['Competitor', c.brand, String(c.visibility_score ?? '')]));
-    toArray(promptAnalysis?.rows).forEach((r) => rows.push(['Prompt', r.prompt_text, `vis=${r.visibility} rank=${r.avg_rank ?? '-'} sentiment=${r.sentiment}`]));
-    if (intelSummary) { rows.push(['Intel', 'Health', intelSummary.overall_health || ''], ['Intel', 'Summary', intelSummary.executive_summary || '']); toArray(intelSummary.competitive_threats).forEach((t) => rows.push(['Intel', 'Threat', t])); toArray(intelSummary.top_priority_prompts).forEach((p) => rows.push(['Intel', 'Priority', p])); }
-    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${(proj.name || 'dashboard').replace(/\s+/g, '_')}_export_${dateTo}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [projectData, promptAnalysis, intelSummary, dateFrom, dateTo]);
+  const handleExport = useCallback(
+    async (format) => {
+      const proj = projectData?.project;
+      if (!proj) return;
+      setExportLoading(format);
+      setExportError(null);
+      try {
+        const params = new URLSearchParams();
+        if (dateFrom) params.set('from', dateFrom);
+        if (dateTo) params.set('to', dateTo);
+        const qs = params.toString() ? `?${params.toString()}` : '';
+        const safeName = (proj.name || 'dashboard').replace(/\s+/g, '_');
+        if (format === 'pdf') {
+          await downloadFile(
+            `/reports/project/${id}/export.pdf${qs}`,
+            `${safeName}_full_report.pdf`,
+          );
+        } else {
+          await downloadFile(
+            `/reports/project/${id}/export.csv${qs}`,
+            `${safeName}_full_report.csv`,
+          );
+        }
+        setShowDatePicker(false);
+      } catch (err) {
+        setExportError(err.message || 'Export failed. Please retry.');
+      } finally {
+        setExportLoading(null);
+      }
+    },
+    [id, projectData?.project, dateFrom, dateTo],
+  );
 
   const applyExecOptionsToDirective = (directiveText) => {
     const lines = [directiveText];
@@ -788,13 +801,42 @@ const ProjectDetailView = () => {
             </button>
             {showDatePicker && (
               <div className="glass-card-v2 absolute right-0 top-full z-30 mt-1.5 w-[280px] p-4 shadow-xl">
-                <p className="mb-3 text-[11px] font-semibold text-slate-400">Export date range</p>
+                <p className="mb-3 text-[11px] font-semibold text-slate-400">Export date range (trends)</p>
                 <div className="mb-3 flex items-center gap-2">
                   <label className="flex-1 text-[11px] font-medium text-slate-500">From<input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} className="mt-1 block w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[12px] font-medium text-slate-700 outline-none focus:border-brand-primary" /></label>
                   <span className="mt-4 text-slate-300">–</span>
                   <label className="flex-1 text-[11px] font-medium text-slate-500">To<input type="date" value={dateTo} min={dateFrom} onChange={(e) => setDateTo(e.target.value)} className="mt-1 block w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[12px] font-medium text-slate-700 outline-none focus:border-brand-primary" /></label>
                 </div>
-                <Button onClick={() => { exportDashboardCSV(); setShowDatePicker(false); }} className="w-full"><Download className="h-3.5 w-3.5" /> Download CSV</Button>
+                {exportError && (
+                  <p className="mb-2 text-[11px] text-red-600">{exportError}</p>
+                )}
+                <div className="flex flex-col gap-2">
+                  <Button
+                    onClick={() => handleExport('pdf')}
+                    disabled={Boolean(exportLoading)}
+                    className="w-full"
+                  >
+                    {exportLoading === 'pdf' ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <FileText className="h-3.5 w-3.5" />
+                    )}
+                    Download Full Report (PDF)
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => handleExport('csv')}
+                    disabled={Boolean(exportLoading)}
+                    className="w-full"
+                  >
+                    {exportLoading === 'csv' ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )}
+                    Download Data (CSV)
+                  </Button>
+                </div>
               </div>
             )}
           </div>

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { Download, FileSpreadsheet, FileText, Loader2 } from 'lucide-react';
@@ -20,12 +20,35 @@ const item = {
 };
 
 const ReportsView = () => {
+  const [exporting, setExporting] = useState(null);
+
   const { data, isLoading, error } = useQuery({
     queryKey: ['reports-overview'],
     queryFn: api.getOverview,
   });
 
   const projects = data?.projects || [];
+
+  const handleExport = async (project, format) => {
+    const key = `${project.project_id}-${format}`;
+    setExporting(key);
+    try {
+      const safeName = (project.name || 'report').replace(/\s+/g, '_');
+      if (format === 'pdf') {
+        await downloadFile(
+          `/reports/project/${project.project_id}/export.pdf`,
+          `${safeName}_full_report.pdf`,
+        );
+      } else {
+        await downloadFile(
+          `/reports/project/${project.project_id}/export.csv`,
+          `${safeName}_full_report.csv`,
+        );
+      }
+    } finally {
+      setExporting(null);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -59,7 +82,9 @@ const ReportsView = () => {
       {/* Header */}
       <motion.div variants={item} className="border-b border-slate-200/60 pb-5">
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">Reports</h1>
-        <p className="mt-1 text-sm text-slate-400">Export project-level AI visibility reports in CSV or PDF.</p>
+        <p className="mt-1 text-sm text-slate-400">
+          Download full AI visibility reports with executive summary, competitors, sources, audits, and raw model answers.
+        </p>
       </motion.div>
 
       {projects.length === 0 ? (
@@ -97,16 +122,29 @@ const ReportsView = () => {
                       <td className="px-6 py-4 text-right">
                         <div className="inline-flex items-center gap-2">
                           <Button
-                            variant="secondary" size="sm"
-                            onClick={() => downloadFile(`/reports/project/${project.project_id}/export.csv`, `${project.name}-report.csv`)}
+                            variant="secondary"
+                            size="sm"
+                            disabled={Boolean(exporting)}
+                            onClick={() => handleExport(project, 'csv')}
                           >
-                            <FileSpreadsheet className="h-3.5 w-3.5" /> CSV
+                            {exporting === `${project.project_id}-csv` ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <FileSpreadsheet className="h-3.5 w-3.5" />
+                            )}
+                            Data Export (CSV)
                           </Button>
                           <Button
                             size="sm"
-                            onClick={() => downloadFile(`/reports/project/${project.project_id}/export.pdf`, `${project.name}-report.pdf`)}
+                            disabled={Boolean(exporting)}
+                            onClick={() => handleExport(project, 'pdf')}
                           >
-                            <FileText className="h-3.5 w-3.5" /> PDF
+                            {exporting === `${project.project_id}-pdf` ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <FileText className="h-3.5 w-3.5" />
+                            )}
+                            Full Report (PDF)
                           </Button>
                         </div>
                       </td>
@@ -125,7 +163,9 @@ const ReportsView = () => {
         className="glass-card-v2 flex items-start gap-3 border-brand-primary/20 bg-brand-primary/5 p-4 text-sm text-slate-600"
       >
         <Download className="mt-0.5 h-5 w-5 shrink-0 text-brand-primary" />
-        Reports include prompt rankings, competitor visibility, and recommendation summaries for stakeholder sharing.
+        Full reports include executive summary, KPIs, visibility trends, engine breakdown, prompt performance,
+        competitor intelligence, sources and citations, visibility audits, recommendations, per-prompt deep dives,
+        prompt×engine matrix, and raw model answers in the appendix.
       </motion.div>
     </motion.div>
   );

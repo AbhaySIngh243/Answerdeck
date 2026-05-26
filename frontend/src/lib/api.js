@@ -405,9 +405,25 @@ export async function waitForAnalysisJob(
   throw new Error('Analysis is taking longer than expected. Please check the dashboard in a moment.');
 }
 
-export async function downloadFile(path, filename) {
+export async function downloadFile(path, filename, { timeoutMs } = {}) {
   const headers = await getAuthHeader();
-  const response = await fetch(`${API_BASE_URL}${path}`, { headers: headers || {} });
+  const controller = new AbortController();
+  const limit = timeoutMs ?? LONG_REQUEST_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), limit);
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: headers || {},
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error(timeoutHintMessage(limit));
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!response.ok) {
     throw buildHelpfulError({ url: `${API_BASE_URL}${path}`, response, payload: null, isJson: false });
   }
