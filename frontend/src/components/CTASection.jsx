@@ -63,7 +63,7 @@ const CTASection = () => {
           <div className="flex flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
             <p className="text-xs font-bold uppercase tracking-wider text-[#64748b]">Standard</p>
             <p className="mt-3 flex items-baseline gap-1 text-[#0f172a]">
-              <span className="text-3xl font-bold tracking-tight">₹1,999</span>
+              <span className="text-3xl font-bold tracking-tight">$79</span>
               <span className="text-sm font-medium text-[#64748b]">/mo</span>
             </p>
             <p className="mt-2 text-sm text-[#64748b]">One brand, full analysis stack — recommendations and drafts included.</p>
@@ -94,7 +94,7 @@ const CTASection = () => {
           <div className="flex flex-col rounded-2xl border-2 border-brand-primary/40 bg-gradient-to-b from-[#eff6ff] to-white p-6 shadow-md md:-mt-2 md:mb-2 md:pb-8">
             <p className="text-xs font-bold uppercase tracking-wider text-brand-primary">Pro</p>
             <p className="mt-3 flex items-baseline gap-1 text-[#0f172a]">
-              <span className="text-3xl font-bold tracking-tight">₹3,999</span>
+              <span className="text-3xl font-bold tracking-tight">$150</span>
               <span className="text-sm font-medium text-[#64748b]">/mo</span>
             </p>
             <p className="mt-2 text-sm text-[#64748b]">For teams tracking multiple brands or markets.</p>
@@ -150,7 +150,7 @@ const CTASection = () => {
         </div>
 
         <p className="mx-auto mt-10 max-w-2xl text-center text-xs leading-relaxed text-[#94a3b8]">
-          Billed monthly via Cashfree in INR. Cancel anytime through Cashfree subscription notifications — plan changes take
+          Billed monthly in USD via Cashfree. Cancel anytime through Cashfree subscription notifications — plan changes take
           effect at the next cycle.
         </p>
       </div>

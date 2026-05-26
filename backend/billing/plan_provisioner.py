@@ -1,4 +1,4 @@
-"""Auto-provision Cashfree subscription plans and webhook secret in INR.
+"""Auto-provision Cashfree subscription plans and webhook secret in USD.
 
 If env vars (CASHFREE_PLAN_STANDARD_ID etc.) are set, we honour them directly.
 Otherwise the first upgrade call creates plans via SubsCreatePlan and persists
@@ -33,23 +33,27 @@ _WEBHOOK_SECRET_CACHE: str | None = None
 PLAN_DEFINITIONS = {
     "standard": {
         "env_name": "CASHFREE_PLAN_STANDARD_ID",
-        "config_key": "plan_id_standard",
-        "plan_id": "answerdeck_standard_monthly",
-        "recurring_amount": 1999.0,
+        "config_key": "plan_id_standard_usd",
+        "plan_id": "answerdeck_standard_monthly_usd",
+        "recurring_amount": 79.0,
         "name": "Answerdeck Standard (Monthly)",
         "note": "1 project, 10 prompts per project, full dashboard and reports.",
     },
     "pro": {
         "env_name": "CASHFREE_PLAN_PRO_ID",
-        "config_key": "plan_id_pro",
-        "plan_id": "answerdeck_pro_monthly",
-        "recurring_amount": 3999.0,
+        "config_key": "plan_id_pro_usd",
+        "plan_id": "answerdeck_pro_monthly_usd",
+        "recurring_amount": 150.0,
         "name": "Answerdeck Pro (Monthly)",
         "note": "3 projects, 10 prompts per project, everything in Standard.",
     },
 }
 
 WEBHOOK_SECRET_CONFIG_KEY = "webhook_secret_autogen"
+
+
+def _plan_currency() -> str:
+    return (os.getenv("CASHFREE_PLAN_CURRENCY") or "USD").strip().upper()
 
 
 def _now_iso() -> str:
@@ -121,7 +125,7 @@ def ensure_plan_id(plan_key: str) -> str:
             plan_id=plan["plan_id"],
             plan_name=plan["name"],
             plan_type="PERIODIC",
-            plan_currency="INR",
+            plan_currency=_plan_currency(),
             plan_recurring_amount=amount,
             plan_max_amount=amount,
             plan_max_cycles=1200,
@@ -209,7 +213,7 @@ def diagnose_configuration() -> dict:
         "webhook_secret_configured": env_secret,
         "webhook_secret_autogen_present": autogen_secret,
         "ready_for_checkout": keys_configured,
-        "currency": "INR",
+        "currency": _plan_currency(),
         "gateway": "cashfree",
         "environment": resolve_environment(),
     }

@@ -125,7 +125,7 @@ const SettingsView = () => {
                     {billingHealth.keys_configured && !billingHealth.plans_configured ? (
                       <li>
                         Plans are not configured yet — the first upgrade click will auto-provision
-                        INR plans via the Cashfree API.
+                        USD plans via the Cashfree API.
                       </li>
                     ) : null}
                     {!billingHealth.webhook_secret_configured ? (
