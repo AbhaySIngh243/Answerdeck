@@ -187,6 +187,24 @@ def _clean_json(raw: str) -> Any:
     return json.loads(raw)
 
 
+def _strip_inline_markdown(line: str) -> str:
+    """Remove inline markdown markers while keeping readable text."""
+    line = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", line)
+    line = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", line)
+    for _ in range(4):
+        updated = line
+        updated = re.sub(r"\*\*([^*]+)\*\*", r"\1", updated)
+        updated = re.sub(r"__([^_]+)__", r"\1", updated)
+        updated = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", updated)
+        updated = re.sub(r"(?<!_)_([^_]+)_(?!_)", r"\1", updated)
+        updated = re.sub(r"`([^`]+)`", r"\1", updated)
+        if updated == line:
+            break
+        line = updated
+    line = line.replace("**", "").replace("__", "")
+    return line.strip()
+
+
 def sanitize_display_response_text(value: Any) -> str:
     """Normalize model prose for UI display while preserving the stored raw answer."""
     text = str(value or "")
@@ -200,13 +218,30 @@ def sanitize_display_response_text(value: Any) -> str:
     cleaned_lines: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
+        if re.fullmatch(r"\s*[-*_]{3,}\s*", line):
+            cleaned_lines.append("")
+            continue
         line = re.sub(r"^\s{0,3}#{1,6}\s*", "", line)
+        line = re.sub(r"(?<!\S)#{2,6}\s+", "", line)
         line = re.sub(r"^\s{0,3}>\s?", "", line)
+        line = re.sub(r"^\s{0,3}[-*+]\s+", "", line)
+        line = _strip_inline_markdown(line)
         cleaned_lines.append(line)
 
     text = "\n".join(cleaned_lines)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text
+
+
+def sanitize_user_facing_value(value: Any) -> Any:
+    """Recursively strip markdown from strings returned to the UI."""
+    if isinstance(value, str):
+        return sanitize_display_response_text(value)
+    if isinstance(value, list):
+        return [sanitize_user_facing_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: sanitize_user_facing_value(item) for key, item in value.items()}
+    return value
 
 
 def _clip_text(value: Any, limit: int = 320) -> str:
@@ -2213,9 +2248,35 @@ def _measured_project_summary(
     _strong = top_visibility_prompts[0] if top_visibility_prompts else None
     _competitor = top_competitors[0]["brand"] if top_competitors else None
     _weak_engine = str(weak_engines[0].get("engine") or "") if weak_engines else ""
-    _rank_text = f" with an average position of #{avg_rank:.1f}" if avg_rank else ""
+
+    # Presence (how often named) and prominence (how high in the list) are
+    # different things. Stating "100% of prompts with average position #5.5"
+    # in one breath reads as a contradiction, so split them and avoid false
+    # precision on tiny samples.
+    n_prompts = len(tracked_prompts)
+    if n_prompts and n_prompts <= 2:
+        presence_clause = (
+            f"{focus_brand} is named across your {n_prompts} tracked prompt"
+            f"{'s' if n_prompts != 1 else ''} so far "
+            f"({n_responses} model answer{'s' if n_responses != 1 else ''} measured)"
+        )
+    else:
+        presence_clause = (
+            f"{focus_brand} is named in {coverage_ratio:.0%} of tracked prompts "
+            f"({n_responses} model answer{'s' if n_responses != 1 else ''} measured)"
+        )
+    if avg_rank is None:
+        prominence_clause = "though it is not yet listed in a clear ranked order"
+    elif avg_rank <= 2.5:
+        prominence_clause = "and usually appears near the top of the list"
+    elif avg_rank <= 4.5:
+        prominence_clause = f"but usually sits mid-list (around position {avg_rank:.0f})"
+    else:
+        prominence_clause = (
+            f"but usually appears low in the list (around position {avg_rank:.0f}), so it is easy to miss"
+        )
     fallback_bullets = [
-        f"{focus_brand} appears in {coverage_ratio:.0%} of tracked prompts{_rank_text}, based on {n_responses} model answer{'s' if n_responses != 1 else ''}.",
+        f"{presence_clause}, {prominence_clause}.",
         f"The biggest weak spot is {_weak!r}; models either miss the brand or place it too low for this buyer intent." if _weak else f"The strongest prompt is {_strong!r}; protect it by keeping proof, pricing, and comparison details current.",
         f"This week, update the page that best answers {_weak!r} and add two verifiable claims that make {focus_brand} easier to cite." if _weak else f"This week, reinforce {_strong!r} with fresh proof and a comparison block so competitors cannot displace it.",
     ]
@@ -2428,6 +2489,8 @@ VALIDATION RULES:
 3. Be specific to the brand's industry, queries, competitor signals, and engine gaps. Do NOT write generic filler.
 4. If the confidence tier is low, call this an early read and avoid broad trend claims or absolute conclusions.
 5. Every roadmap action must be understandable to a non-technical founder and specific enough to assign this week.
+6. Distinguish PRESENCE (how often the brand is named) from PROMINENCE (how high it sits in the list). A brand can be named often yet listed low — say that plainly instead of implying a contradiction. Never claim the brand both dominates and is being displaced.
+7. With a small sample, prefer plain counts ("named in 4 of 4 answers") over precise-looking percentages and decimals.
 """
 
     raw = chat("chatgpt", prompt, temperature=0.25)
@@ -2506,10 +2569,10 @@ CONTEXT:
 - Compare with: {', '.join(context_data.get('competitors', [])) or 'N/A'}
 - Industry: {context_data.get('industry', 'N/A')}
 
-Return ONLY valid JSON:
+Return ONLY valid JSON. Use plain text only in every string field — no markdown, no # headings, no **bold**, no bullet asterisks.
 {{
   "title": "Proposed title or subject line",
-  "content": "Full markdown body",
+  "content": "Plain-text body with short titled sections separated by blank lines. Use numbered lines like '1. ...' for lists.",
   "seo_tags": ["tag1", "tag2"],
   "placement_advice": "One sentence: where to publish this (e.g. your blog URL path, or subreddit) and one practical tip"
 }}"""
@@ -2519,7 +2582,7 @@ Return ONLY valid JSON:
     try:
         parsed = _clean_json(raw)
         if isinstance(parsed, dict) and parsed.get("content"):
-            return parsed
+            return sanitize_user_facing_value(parsed)
     except Exception:
         pass
 
@@ -2535,7 +2598,7 @@ Return ONLY valid JSON:
         raw2 = chat("chatgpt", retry_prompt, temperature=0.25)
         parsed2 = _clean_json(raw2)
         if isinstance(parsed2, dict) and parsed2.get("content"):
-            return parsed2
+            return sanitize_user_facing_value(parsed2)
     except Exception:
         pass
 
@@ -2544,23 +2607,23 @@ Return ONLY valid JSON:
     competitors_line = ", ".join((context_data or {}).get("competitors", [])[:3]) or "top competitors"
     query = (context_data or {}).get("query", "the target search intent")
     minimal_body = (
-        f"# {content_type} draft for {focus_brand}\n\n"
+        f"{content_type} draft for {focus_brand}\n\n"
         f"Intent: {query}\n\n"
         f"Brief: {directive}\n\n"
-        "## Outline to fill in\n"
+        "Outline to fill in\n"
         "1. Answer the intent in one sentence at the top.\n"
-        f"2. Short comparison: {focus_brand} vs {competitors_line} (table or bullets).\n"
+        f"2. Short comparison: {focus_brand} vs {competitors_line}.\n"
         "3. FAQ: 3–5 questions people actually ask.\n"
         "4. What the reader should do next.\n"
     )
 
-    return {
+    return sanitize_user_facing_value({
         "title": f"{content_type} draft for {focus_brand}",
         "content": minimal_body,
         "seo_tags": [focus_brand, query],
         "placement_advice": "Put it on your main site, then add the live URL in Sources so you can track citations.",
         "source": "structured_fallback",
-    }
+    })
 
 
 def generate_action_playbook(
@@ -2597,7 +2660,7 @@ Return ONLY valid JSON:
   "tools_mentioned": ["Tool Name 1", "Tool Name 2"]
 }}
 
-Rules: No fluff. 4-6 steps. Each step is something they can do today."""
+Rules: No fluff. 4-6 steps. Each step is something they can do today. Plain text only — no markdown symbols."""
 
     def _sanitize_playbook(payload: dict[str, Any]) -> dict[str, Any]:
         why = _crisp_line(payload.get("why_it_matters"), max_words=22, max_chars=180)
@@ -2645,13 +2708,13 @@ Rules: No fluff. 4-6 steps. Each step is something they can do today."""
         tools = payload.get("tools_mentioned") if isinstance(payload.get("tools_mentioned"), list) else []
         tools = [_clip_text(t, 40) for t in tools if str(t or "").strip()][:6]
 
-        return {
+        return sanitize_user_facing_value({
             "why_it_matters": why or "Models pull from pages that answer the question in plain words, with proof.",
             "steps": steps[:6],
             "quick_wins": quick_wins[:3],
             "common_mistakes": common_mistakes[:3],
             "tools_mentioned": tools,
-        }
+        })
 
     raw = chat(engine, prompt)
     try:

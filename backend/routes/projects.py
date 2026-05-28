@@ -80,6 +80,62 @@ def _normalize_website_url(value):
         return raw
 
 
+ORPHAN_DRAFT_NAME = "untitled project"
+
+
+def _normalized_completed_steps(onboarding: dict | None) -> set[int]:
+    completed_steps = onboarding.get("completed_steps") if isinstance(onboarding, dict) else []
+    normalized: set[int] = set()
+    for step in completed_steps or []:
+        try:
+            normalized.add(int(step))
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
+def _is_orphan_draft(p: Project) -> bool:
+    """Auto-created placeholder before onboarding step 1 is saved."""
+    if bool(getattr(p, "onboarding_completed", False)):
+        return False
+    if (p.website_url or "").strip():
+        return False
+    if (p.name or "").strip().lower() != ORPHAN_DRAFT_NAME:
+        return False
+    onboarding = p.get_onboarding_data() if hasattr(p, "get_onboarding_data") else {}
+    return 1 not in _normalized_completed_steps(onboarding)
+
+
+def _counts_toward_project_limit(p: Project) -> bool:
+    return not _is_orphan_draft(p)
+
+
+def _billable_project_count(projects: list[Project]) -> int:
+    return sum(1 for project in projects if _counts_toward_project_limit(project))
+
+
+def _cleanup_orphan_drafts(user_id: str) -> None:
+    projects = Project.query.filter_by(user_id=user_id).all()
+    orphans = [project for project in projects if _is_orphan_draft(project)]
+    if not orphans:
+        return
+
+    billable = [project for project in projects if _counts_toward_project_limit(project)]
+    to_delete: list[Project] = []
+    if billable:
+        to_delete = orphans
+    elif len(orphans) > 1:
+        orphans.sort(key=lambda project: project.created_at or "", reverse=True)
+        to_delete = orphans[1:]
+
+    if not to_delete:
+        return
+
+    for project in to_delete:
+        db.session.delete(project)
+    db.session.commit()
+
+
 def _default_onboarding(project: Project | None = None) -> dict:
     if not project:
         return {
@@ -219,14 +275,16 @@ def _project_payload(p: Project):
         "onboarding_current_step": onboarding.get("current_step", 1) if isinstance(onboarding, dict) else 1,
         "onboarding_completed_steps": sorted(set(completed_steps)),
         "context_ready": context_ready,
+        "counts_toward_limit": _counts_toward_project_limit(p),
     }
 
 
 @projects_bp.route("/", methods=["GET"])
 @require_auth
 def get_projects():
-    # Filter by user_id
-    projects = Project.query.filter_by(user_id=g.user.id).order_by(Project.created_at.desc()).all()
+    user_id = g.user.id
+    _cleanup_orphan_drafts(user_id)
+    projects = Project.query.filter_by(user_id=user_id).order_by(Project.created_at.desc()).all()
     return jsonify([_project_payload(p) for p in projects])
 
 
@@ -246,18 +304,38 @@ def get_project(project_id):
 @projects_bp.route("/", methods=["POST"])
 @require_auth
 def create_project():
-    max_projects, _ = get_limits(g.user.id)
-    count = Project.query.filter_by(user_id=g.user.id).count()
-    if count >= max_projects:
-        raise ValidationError(
-            f"Maximum {max_projects} projects for your plan. Upgrade in Settings or delete a project to create a new one."
-        )
+    user_id = g.user.id
+    max_projects, _ = get_limits(user_id)
     data = request.get_json(force=True) or {}
     try:
         validated = ProjectCreateSchema(**data)
     except PydanticValidationError as e:
         raise ValidationError(payload=e.errors())
-        
+
+    locked_projects = Project.query.filter_by(user_id=user_id).with_for_update().all()
+    billable_count = _billable_project_count(locked_projects)
+    is_orphan_request = (
+        validated.name.strip().lower() == ORPHAN_DRAFT_NAME
+        and not (validated.website_url or "").strip()
+    )
+    if is_orphan_request:
+        existing_orphans = [project for project in locked_projects if _is_orphan_draft(project)]
+        if existing_orphans:
+            existing_orphans.sort(key=lambda project: project.created_at or "", reverse=True)
+            resume = existing_orphans[0]
+            return jsonify(
+                {
+                    "id": resume.id,
+                    "message": "Resumed existing setup",
+                    "reused": True,
+                }
+            ), 200
+
+    if billable_count >= max_projects:
+        raise ValidationError(
+            f"Maximum {max_projects} projects for your plan. Upgrade in Settings or delete a project to create a new one."
+        )
+
     competitors = _parse_competitors(validated.competitors)
     normalized_website = _normalize_website_url(validated.website_url)
     new_project = Project(

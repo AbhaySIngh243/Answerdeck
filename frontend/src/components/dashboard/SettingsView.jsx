@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, CreditCard, Settings, Save } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, CreditCard, Mail, Settings, Save } from 'lucide-react';
 import DashboardCard from './DashboardCard';
 import { Button } from '../ui/button';
 import { api } from '../../lib/api';
@@ -85,6 +85,11 @@ const SettingsView = () => {
 
   const planLabel =
     billing?.plan === 'pro' ? 'Pro' : billing?.plan === 'standard' ? 'Standard' : 'Free';
+
+  const alertEmail =
+    user?.primaryEmailAddress?.emailAddress ||
+    user?.emailAddresses?.[0]?.emailAddress ||
+    '';
 
   return (
     <motion.div
@@ -192,6 +197,31 @@ const SettingsView = () => {
               )}
             </div>
           )}
+        </DashboardCard>
+      </motion.div>
+
+      <motion.div variants={item}>
+        <DashboardCard title="Movement alerts" icon={Mail}>
+          <div className="space-y-3">
+            <p className="text-sm leading-6 text-slate-600">
+              After each analysis run, Answrdeck compares your latest results to the previous check.
+              When visibility drops, competitors move ahead, or you gain ground on key engines, we
+              email a concise summary with a link back to your dashboard.
+            </p>
+            {alertEmail ? (
+              <p className="rounded-xl border border-slate-200/80 bg-slate-50/70 px-4 py-3 text-sm text-slate-700">
+                Alerts go to <span className="font-semibold text-slate-900">{alertEmail}</span>
+              </p>
+            ) : (
+              <p className="rounded-xl border border-amber-200/80 bg-amber-50/70 px-4 py-3 text-sm text-amber-800">
+                Add an email to your account to receive movement alerts.
+              </p>
+            )}
+            <p className="text-xs text-slate-400">
+              High-priority drops alert immediately. Other changes are bundled after a full project
+              re-run. Requires server mail configuration (Resend or SMTP).
+            </p>
+          </div>
         </DashboardCard>
       </motion.div>
 

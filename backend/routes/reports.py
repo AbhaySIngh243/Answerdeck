@@ -3,6 +3,7 @@ import io
 import ipaddress
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -24,6 +25,7 @@ from engine.analyzer import (
     generate_strategic_action_plan,
     is_spurious_brand_mention,
     sanitize_display_response_text,
+    sanitize_user_facing_value,
     _looks_like_spec_phrase,
 )
 from engine.llm_clients import chat
@@ -150,6 +152,7 @@ def _cache_invalidate_project(project_id: int) -> None:
                 f"competitor-intelligence:{project_id}",
                 f"intel-summary:{project_id}",
                 f"global-audit:{project_id}",
+                f"movements:{project_id}",
             ])
         ).delete(synchronize_session=False)
         # Delete any other project-related cache entries
@@ -232,14 +235,26 @@ def _get_or_build_global_audit_payload(project_id: int, project: Project | None 
     if not all_raw_responses:
         payload = {"items": [], "coverage": cov, "has_data": False}
     else:
+        competitor_bundle = _build_competitor_visibility(project_id)
+        competitor_rows = competitor_bundle.get("rows", []) if isinstance(competitor_bundle, dict) else []
+        standing = _focus_competitive_standing(competitor_rows, project.name or "")
         payload = {
-            "items": _measured_global_audit_items(
+            "items": _build_global_audit_items(
                 project,
                 all_raw_responses,
                 _project_competitor_framings(project_id),
+                standing,
             ),
             "coverage": cov,
             "has_data": True,
+            "standing": {
+                "focus_position_by_visibility": standing.get("focus_position_by_visibility"),
+                "total_brands": standing.get("total_brands"),
+                "focus_visibility_pct": standing.get("focus_visibility_pct"),
+                "focus_avg_rank": standing.get("focus_avg_rank"),
+                "is_leader": standing.get("is_leader"),
+                "leaders": [str(r.get("brand") or "") for r in (standing.get("leaders") or [])],
+            },
         }
     _cache_set(cache_key, payload)
     return payload
@@ -497,7 +512,7 @@ def _project_competitor_framings(project_id: int, limit: int = 40) -> list[dict[
 
 
 def _short_audit_text(value: Any, max_chars: int = 220) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"\s+", " ", sanitize_display_response_text(value)).strip()
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 3].rstrip() + "..."
@@ -525,10 +540,68 @@ def _queries_supporting_text(text: str, all_raw_responses: dict[str, dict[str, s
     return matches
 
 
+def _focus_competitive_standing(
+    competitor_rows: list[dict[str, Any]],
+    focus_brand: str,
+) -> dict[str, Any]:
+    """Who actually leads whom, by measured presence and prominence.
+
+    A competitor only "leads" the focus brand if it is named meaningfully more
+    often (visibility) or sits higher in the list when both are ranked
+    (lower avg_rank). This prevents the nonsensical "you are #1 yet being
+    displaced" output where any competitor sentence triggered a displacement claim.
+    """
+    focus_key = (focus_brand or "").strip().lower()
+    focus_row: dict[str, Any] | None = None
+    competitors: list[dict[str, Any]] = []
+    for row in competitor_rows or []:
+        if row.get("is_focus") or str(row.get("brand") or "").strip().lower() == focus_key:
+            focus_row = focus_row or row
+        else:
+            competitors.append(row)
+
+    focus_vis = float((focus_row or {}).get("visibility_pct") or 0.0)
+    focus_rank = (focus_row or {}).get("avg_rank")
+    focus_rank_f = float(focus_rank) if focus_rank is not None else None
+
+    leaders: list[dict[str, Any]] = []
+    for row in competitors:
+        c_vis = float(row.get("visibility_pct") or 0.0)
+        c_rank = row.get("avg_rank")
+        c_rank_f = float(c_rank) if c_rank is not None else None
+        beats_on_rank = (
+            focus_rank_f is not None and c_rank_f is not None and c_rank_f + 0.05 < focus_rank_f
+        )
+        beats_on_presence = c_vis > focus_vis + 5.0
+        if beats_on_rank or beats_on_presence:
+            leaders.append(row)
+
+    ranked_by_vis = sorted(
+        ([focus_row] if focus_row else []) + competitors,
+        key=lambda r: -float((r or {}).get("visibility_pct") or 0.0),
+    )
+    focus_position = next(
+        (i + 1 for i, r in enumerate(ranked_by_vis) if r is focus_row), None
+    )
+
+    return {
+        "focus_row": focus_row,
+        "focus_visibility_pct": focus_vis,
+        "focus_avg_rank": focus_rank_f,
+        "competitors": competitors,
+        "leaders": leaders,
+        "leader_keys": {str(r.get("brand") or "").strip().lower() for r in leaders},
+        "focus_position_by_visibility": focus_position,
+        "total_brands": len(ranked_by_vis),
+        "is_leader": bool(focus_row) and not leaders,
+    }
+
+
 def _measured_global_audit_items(
     project: Project,
     all_raw_responses: dict[str, dict[str, str]],
     competitor_framings: list[dict[str, Any]],
+    standing: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     focus_brand = str(project.name or "").strip()
     focus_lower = focus_brand.lower()
@@ -589,16 +662,44 @@ def _measured_global_audit_items(
             row["quote"] = _short_audit_text(framing.get("verbatim_sentence"), 260)
             row["engine"] = str(framing.get("engine") or "model")
 
-    for row in sorted(competitor_counts.values(), key=lambda item: item["count"], reverse=True)[:2]:
-        quote = row.get("quote") or f"{row['brand']} displaced {focus_brand} in measured model answers."
+    leader_keys = set((standing or {}).get("leader_keys") or set())
+    focus_is_leader = bool((standing or {}).get("is_leader"))
+    ranked_competitors = sorted(
+        competitor_counts.values(), key=lambda item: item["count"], reverse=True
+    )[:2]
+    for position, row in enumerate(ranked_competitors):
+        brand = row["brand"]
+        brand_key = brand.strip().lower()
+        engine = row.get("engine") or "A model"
+        quote = row.get("quote") or f"{brand} was described favorably in measured model answers."
         supporting = _queries_supporting_text(quote, all_raw_responses) or list(all_raw_responses.keys())[:1]
+        lead_query = supporting[0] if supporting else "a tracked query"
+
+        # Only call it "displacement" when the competitor actually out-ranks or
+        # out-appears the focus brand. If the brand leads, this is a threat to
+        # defend against, not a loss that already happened.
+        competitor_leads = (brand_key in leader_keys) if leader_keys else (not focus_is_leader)
+
+        if competitor_leads:
+            title = f"{brand} is out-positioning {focus_brand} on \u201c{lead_query}\u201d"
+            root_cause = f"{engine} placed {brand} ahead of {focus_brand} \u2014 more prominent or higher in the list for this query."
+            solution = f"Publish a focused page answering \u201c{lead_query}\u201d that states {focus_brand}'s specific edge over {brand}, with verifiable proof models can quote."
+            avoid = f"Do not let {brand}'s stronger placement stand unanswered on the pages buyers and models read."
+            priority = "high" if row["count"] >= 2 else "medium"
+        else:
+            title = f"{brand} is the competitor most likely to challenge {focus_brand}"
+            root_cause = f"{engine} described {brand} with confident, quotable framing. {focus_brand} currently appears at least as often, so this is a lead to defend, not a loss."
+            solution = f"Protect the lead on \u201c{lead_query}\u201d: keep that page fresh and add proof that pre-empts {brand}'s strongest claim before models adopt it."
+            avoid = f"Do not assume the current lead is permanent \u2014 {brand} is gaining quotable framing."
+            priority = "low"
+
         add_item(
             {
-                "title": f"{focus_brand} is being displaced by {row['brand']}",
-                "root_cause": f"{row.get('engine') or 'A model'} repeatedly framed {row['brand']} as the stronger answer.",
-                "solution": f"Add a {focus_brand} vs {row['brand']} comparison section that directly answers the claim models repeat.",
-                "avoid": f"Do not leave {row['brand']}'s repeated positioning unanswered in buyer-facing pages.",
-                "priority": "high" if row["count"] >= 2 else "medium",
+                "title": title,
+                "root_cause": root_cause,
+                "solution": solution,
+                "avoid": avoid,
+                "priority": priority,
                 "evidence_quote": quote,
                 "queries_supporting": supporting,
             }
@@ -620,6 +721,253 @@ def _measured_global_audit_items(
         )
 
     return items[:4]
+
+
+_AUDIT_LLM_TIMEOUT_SECONDS = 22
+_AUDIT_BOILERPLATE_MARKERS = (
+    "is being displaced by",
+    "comparison section that directly answers the claim models repeat",
+    "do not leave",
+    "direct answer section, proof points",
+)
+
+
+def _audit_evidence_digest(
+    focus_brand: str,
+    all_raw_responses: dict[str, dict[str, str]],
+    competitor_framings: list[dict[str, Any]],
+    *,
+    max_queries: int = 12,
+    per_response_chars: int = 700,
+) -> str:
+    """Compact, grounded evidence block so the model writes from real answers only."""
+    blocks: list[str] = []
+    for idx, (query, engines) in enumerate(list(all_raw_responses.items())[:max_queries]):
+        lines = [f'QUERY {idx + 1}: "{query}"']
+        for engine, text in (engines or {}).items():
+            body = re.sub(r"\s+", " ", str(text or "")).strip()
+            if not body or body.startswith("["):
+                continue
+            mentioned = "MENTIONED" if focus_brand.lower() in body.lower() else "ABSENT"
+            lines.append(f"  - {engine} [{focus_brand} {mentioned}]: {body[:per_response_chars]}")
+        if len(lines) > 1:
+            blocks.append("\n".join(lines))
+
+    framing_lines: list[str] = []
+    for framing in (competitor_framings or [])[:10]:
+        competitor = str(framing.get("competitor_brand") or "").strip()
+        quote = re.sub(r"\s+", " ", str(framing.get("verbatim_sentence") or "")).strip()
+        engine = str(framing.get("engine") or "model").strip()
+        if competitor and quote:
+            framing_lines.append(f'  - {engine} framed {competitor}: "{quote[:300]}"')
+
+    digest = "\n\n".join(blocks)
+    if framing_lines:
+        digest += "\n\nHOW MODELS FRAME COMPETITORS:\n" + "\n".join(framing_lines)
+    return digest.strip()
+
+
+def _normalize_llm_audit_items(
+    raw_items: Any,
+    focus_brand: str,
+    tracked_queries: list[str],
+    all_raw_responses: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    if isinstance(raw_items, dict):
+        raw_items = raw_items.get("items") or raw_items.get("findings") or raw_items.get("audit")
+    if not isinstance(raw_items, list):
+        return []
+
+    query_lookup = {str(q).strip().lower(): str(q) for q in tracked_queries if str(q).strip()}
+    valid_priorities = {"high", "medium", "low"}
+    items: list[dict[str, Any]] = []
+    seen_titles: set[str] = set()
+
+    for entry in raw_items:
+        if not isinstance(entry, dict):
+            continue
+        title = _short_audit_text(entry.get("title"), 130)
+        solution = _short_audit_text(entry.get("solution") or entry.get("fix"), 320)
+        if not title or not solution:
+            continue
+        key = title.lower()
+        if key in seen_titles:
+            continue
+
+        blob = " ".join(
+            str(entry.get(field) or "")
+            for field in ("title", "root_cause", "solution", "avoid")
+        ).lower()
+        if any(marker in blob for marker in _AUDIT_BOILERPLATE_MARKERS):
+            # Model regurgitated the old template; let the measured fallback handle it.
+            continue
+
+        priority = str(entry.get("priority") or "medium").strip().lower()
+        if priority not in valid_priorities:
+            priority = "medium"
+
+        supporting_raw = entry.get("queries_supporting") or entry.get("queries") or []
+        if isinstance(supporting_raw, str):
+            supporting_raw = [supporting_raw]
+        supporting: list[str] = []
+        for candidate in supporting_raw:
+            mapped = query_lookup.get(str(candidate).strip().lower())
+            if mapped and mapped not in supporting:
+                supporting.append(mapped)
+
+        evidence_quote = _short_audit_text(entry.get("evidence_quote") or entry.get("evidence"), 320)
+        if not supporting and evidence_quote:
+            supporting = _queries_supporting_text(evidence_quote, all_raw_responses)
+        if not supporting and tracked_queries:
+            supporting = [tracked_queries[0]]
+
+        seen_titles.add(key)
+        items.append(
+            {
+                "title": title,
+                "root_cause": _short_audit_text(entry.get("root_cause"), 260),
+                "solution": solution,
+                "avoid": _short_audit_text(entry.get("avoid"), 200),
+                "priority": priority,
+                "evidence_quote": evidence_quote,
+                "queries_supporting": supporting[:4],
+                "source_type": "ai_synthesized",
+            }
+        )
+        if len(items) >= 5:
+            break
+    return items
+
+
+def _format_standing_block(standing: dict[str, Any] | None, focus_brand: str) -> str:
+    if not standing:
+        return ""
+    lines: list[str] = []
+    focus_vis = standing.get("focus_visibility_pct")
+    focus_rank = standing.get("focus_avg_rank")
+    pos = standing.get("focus_position_by_visibility")
+    total = standing.get("total_brands")
+    rank_txt = f"avg list position {focus_rank:.1f}" if isinstance(focus_rank, (int, float)) else "not consistently ranked"
+    pos_txt = f"#{pos} of {total} by how often it is named" if pos and total else "position unknown"
+    lines.append(f"- {focus_brand} (YOUR BRAND): named in {focus_vis:.0f}% of answers, {rank_txt}; {pos_txt}.")
+    for row in (standing.get("competitors") or [])[:8]:
+        brand = str(row.get("brand") or "").strip()
+        if not brand:
+            continue
+        c_vis = float(row.get("visibility_pct") or 0.0)
+        c_rank = row.get("avg_rank")
+        c_rank_txt = f"avg position {float(c_rank):.1f}" if c_rank is not None else "not consistently ranked"
+        leads = brand.lower() in (standing.get("leader_keys") or set())
+        flag = "  <-- actually leads your brand" if leads else ""
+        lines.append(f"- {brand}: named in {c_vis:.0f}% of answers, {c_rank_txt}.{flag}")
+    return "\n".join(lines)
+
+
+def _llm_global_audit_items(
+    project: Project,
+    all_raw_responses: dict[str, dict[str, str]],
+    competitor_framings: list[dict[str, Any]],
+    standing: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Evidence-grounded, non-templated audit findings written by the model.
+
+    Returns [] on any failure so the caller can fall back to measured templates.
+    """
+    focus_brand = str(project.name or "").strip()
+    if not focus_brand or not all_raw_responses:
+        return []
+
+    tracked_queries = list(all_raw_responses.keys())
+    digest = _audit_evidence_digest(focus_brand, all_raw_responses, competitor_framings)
+    if not digest:
+        return []
+
+    standing_block = _format_standing_block(standing, focus_brand)
+    is_leader = bool((standing or {}).get("is_leader"))
+    standing_section = (
+        f"\nMEASURED COMPETITIVE STANDING (presence = how often named; position = how high in the list):\n{standing_block}\n"
+        if standing_block
+        else ""
+    )
+
+    competitors = [c for c in (project.get_competitors_list() or []) if str(c).strip()][:8]
+    prompt = f"""You are a senior AI-search visibility strategist auditing how the brand "{focus_brand}" shows up when real users ask AI assistants (ChatGPT, Gemini, Claude, Perplexity) about its category.
+
+BRAND: {focus_brand}
+CATEGORY: {project.category or "infer from the answers"}
+REGION: {project.region or "not specified"}
+KNOWN COMPETITORS: {", ".join(competitors) or "infer from the answers"}
+{standing_section}
+Below is the ACTUAL, measured evidence: the real answers each AI model gave for each tracked query. Read it like an analyst. Your job is to surface the most important, SPECIFIC gaps and opportunities — and for each one give a concrete fix a marketer can execute this week.
+
+EVIDENCE:
+{digest}
+
+Produce 3 to 5 audit findings. Return ONLY valid JSON in this shape:
+{{
+  "items": [
+    {{
+      "title": "Short, specific headline naming the real gap (no generic phrasing)",
+      "root_cause": "Why this is happening, citing what the models actually said or omitted.",
+      "solution": "One concrete, brand-specific action. Name the page/asset/claim to create or change. Avoid vague advice like 'add a comparison section'.",
+      "avoid": "A specific mistake to avoid for this finding.",
+      "priority": "high | medium | low",
+      "evidence_quote": "A short verbatim phrase from the evidence that proves this finding.",
+      "queries_supporting": ["one of the exact tracked queries above"]
+    }}
+  ]
+}}
+
+HARD RULES:
+1. Every finding must be grounded in the evidence above — never invent facts, quotes, competitors, or numbers.
+2. Each finding must be DISTINCT and specific to {focus_brand} and its category. No two findings may share the same structure or fix.
+3. NEVER use these banned templates: "X is being displaced by Y", "Add a X vs Y comparison section", "direct answer section, proof points, and competitor comparison". Write like a human strategist, not a mail-merge.
+4. The "solution" must be concrete and actionable — reference the specific query, competitor, claim, or source involved.
+5. Prefer high-impact findings: where the brand is absent, ranked below competitors, framed weakly, or missing from cited sources.
+6. queries_supporting must be copied EXACTLY from the tracked queries listed in the evidence.
+7. RESPECT THE STANDING. Only describe a competitor as "ahead", "winning", or "displacing" if the standing marks it as actually leading your brand. {"Your brand currently LEADS its competitors on the measured numbers, so do NOT claim it is being displaced or losing — frame competitor findings as a lead to defend and extend." if is_leader else "At least one competitor genuinely out-positions your brand; name it specifically."}
+8. BE INTERNALLY CONSISTENT. Distinguish presence (how often the brand is named) from prominence (how high it is listed). Never imply the brand both dominates and is being beaten. Reconcile presence, prominence, and standing into one coherent story.
+"""
+
+    try:
+        raw = chat("chatgpt", prompt, temperature=0.45, json_mode=True)
+    except Exception:
+        return []
+    if not raw or str(raw).startswith("["):
+        return []
+    try:
+        parsed = _clean_json(raw)
+    except Exception:
+        return []
+
+    return _normalize_llm_audit_items(parsed, focus_brand, tracked_queries, all_raw_responses)
+
+
+def _build_global_audit_items(
+    project: Project,
+    all_raw_responses: dict[str, dict[str, str]],
+    competitor_framings: list[dict[str, Any]],
+    standing: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """LLM-written findings when possible; measured templates as a guaranteed fallback."""
+    measured = _measured_global_audit_items(
+        project, all_raw_responses, competitor_framings, standing
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _llm_global_audit_items,
+                project,
+                all_raw_responses,
+                competitor_framings,
+                standing,
+            )
+            llm_items = future.result(timeout=_AUDIT_LLM_TIMEOUT_SECONDS)
+    except (FuturesTimeoutError, Exception):
+        llm_items = []
+    if llm_items:
+        return llm_items
+    return measured
 
 
 def _measured_domain_insight(
@@ -1212,9 +1560,12 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
                 competitor_framings=competitor_framings,
             )
             recommended_actions.append({
-                "title": str(card.get("title") or ""),
-                "detail": str(card.get("detail") or ""),
-                "action_plan": list(card.get("steps") or []),
+                "title": sanitize_display_response_text(card.get("title") or ""),
+                "detail": sanitize_display_response_text(card.get("detail") or ""),
+                "action_plan": [
+                    sanitize_display_response_text(step)
+                    for step in list(card.get("steps") or [])
+                ],
                 "link": spec["link"],
             })
     
@@ -2297,6 +2648,151 @@ def _compute_trajectory(project_id: int, days_back: int = 14, *, skip_llm: bool 
     }
 
 
+def _build_movement_feed(project_id: int) -> dict:
+    """Run-over-run change detection from per-run PromptMetric snapshots.
+
+    Compares each (prompt x engine)'s latest run against its previous run and
+    surfaces the meaningful movements a marketer cares about: new mentions,
+    lost mentions, rank moves, and competitors that newly out-rank the brand.
+    Read-only over already-stored metrics — no new analysis is triggered.
+    """
+    project = Project.query.get(project_id)
+    focus_brand = (project.name if project else "") or "Your brand"
+    rows = (
+        PromptMetric.query.filter(PromptMetric.project_id == project_id)
+        .order_by(PromptMetric.run_date.asc(), PromptMetric.id.asc())
+        .all()
+    )
+    empty = {
+        "has_data": False,
+        "has_history": False,
+        "events": [],
+        "summary": {},
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if not rows:
+        return empty
+
+    prompt_text_by_id = {
+        p.id: p.prompt_text
+        for p in Prompt.query.filter_by(project_id=project_id).all()
+    }
+
+    grouped: dict[tuple[int, str], list[PromptMetric]] = defaultdict(list)
+    run_dates: set[str] = set()
+    distinct_jobs: set[str] = set()
+    for row in rows:
+        grouped[(row.prompt_id, (row.engine or "").strip().lower())].append(row)
+        if row.run_date:
+            run_dates.add(row.run_date)
+        if row.job_id:
+            distinct_jobs.add(row.job_id)
+
+    has_history = any(len(seq) >= 2 for seq in grouped.values())
+
+    events: list[dict] = []
+    gains = 0
+    drops = 0
+    rank_deltas: list[int] = []
+
+    for (prompt_id, engine), seq in grouped.items():
+        if len(seq) < 2:
+            continue
+        prev, latest = seq[-2], seq[-1]
+        prompt_text = prompt_text_by_id.get(prompt_id, "a tracked prompt")
+        engine_label = engine or "model"
+        prev_seen = bool(prev.mentioned)
+        latest_seen = bool(latest.mentioned)
+
+        if not prev_seen and latest_seen:
+            gains += 1
+            events.append({
+                "type": "mention_gained", "direction": "up", "severity": "high",
+                "prompt_text": prompt_text, "engine": engine_label,
+                "headline": f"{focus_brand} now appears on {engine_label}",
+                "detail": f"Was missing last run, now named for \u201c{prompt_text}\u201d.",
+                "from": "Not mentioned",
+                "to": (f"Rank #{latest.rank}" if latest.rank else "Mentioned"),
+            })
+        elif prev_seen and not latest_seen:
+            drops += 1
+            events.append({
+                "type": "mention_lost", "direction": "down", "severity": "high",
+                "prompt_text": prompt_text, "engine": engine_label,
+                "headline": f"{focus_brand} dropped off {engine_label}",
+                "detail": f"Was named last run, now absent for \u201c{prompt_text}\u201d.",
+                "from": (f"Rank #{prev.rank}" if prev.rank else "Mentioned"),
+                "to": "Not mentioned",
+            })
+        elif prev_seen and latest_seen and prev.rank is not None and latest.rank is not None and prev.rank != latest.rank:
+            delta = prev.rank - latest.rank  # positive = moved up
+            rank_deltas.append(delta)
+            if delta > 0:
+                gains += 1
+                events.append({
+                    "type": "rank_up", "direction": "up",
+                    "severity": "medium" if delta >= 2 else "low",
+                    "prompt_text": prompt_text, "engine": engine_label,
+                    "headline": f"Moved up {delta} spot{'s' if delta != 1 else ''} on {engine_label}",
+                    "detail": f"Climbed from #{prev.rank} to #{latest.rank} for \u201c{prompt_text}\u201d.",
+                    "from": f"Rank #{prev.rank}", "to": f"Rank #{latest.rank}",
+                })
+            else:
+                drops += 1
+                events.append({
+                    "type": "rank_down", "direction": "down",
+                    "severity": "medium" if -delta >= 2 else "low",
+                    "prompt_text": prompt_text, "engine": engine_label,
+                    "headline": f"Slipped {abs(delta)} spot{'s' if abs(delta) != 1 else ''} on {engine_label}",
+                    "detail": f"Fell from #{prev.rank} to #{latest.rank} for \u201c{prompt_text}\u201d.",
+                    "from": f"Rank #{prev.rank}", "to": f"Rank #{latest.rank}",
+                })
+
+        prev_comp = (prev.top_competitor or "").strip()
+        latest_comp = (latest.top_competitor or "").strip()
+        if latest_seen and latest_comp and latest_comp.lower() != prev_comp.lower():
+            events.append({
+                "type": "new_competitor", "direction": "watch", "severity": "medium",
+                "prompt_text": prompt_text, "engine": engine_label,
+                "headline": f"{latest_comp} now ranks above {focus_brand} on {engine_label}",
+                "detail": f"{latest_comp} newly out-ranks {focus_brand} for \u201c{prompt_text}\u201d.",
+                "from": (prev_comp or "\u2014"), "to": latest_comp,
+            })
+
+    severity_order = {"high": 0, "medium": 1, "low": 2}
+    direction_order = {"down": 0, "watch": 1, "up": 2}
+    events.sort(key=lambda e: (severity_order.get(e["severity"], 3), direction_order.get(e["direction"], 3)))
+
+    sorted_dates = sorted(run_dates)
+    summary = {
+        "gains": gains,
+        "drops": drops,
+        "net_rank_delta": sum(rank_deltas) if rank_deltas else 0,
+        "events_count": len(events),
+        "last_checked": sorted_dates[-1] if sorted_dates else None,
+        "previous_check": sorted_dates[-2] if len(sorted_dates) >= 2 else None,
+        "runs_recorded": len(distinct_jobs),
+    }
+
+    return {
+        "has_data": True,
+        "has_history": has_history,
+        "events": events[:25],
+        "summary": summary,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _get_or_build_movement_feed(project_id: int) -> dict:
+    cache_key = f"movements:{project_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    payload = _build_movement_feed(project_id)
+    _cache_set(cache_key, payload)
+    return payload
+
+
 def _build_dashboard_payload(project_id: int) -> dict:
     project = Project.query.get(project_id)
     if not project:
@@ -2684,20 +3180,43 @@ def _build_deep_analysis_payload(project_id: int) -> dict:
     raw_project_responses, _raw_by_prompt = _project_raw_response_context(project_id)
     competitor_framings = _project_competitor_framings(project_id)
 
-    action_plan = generate_strategic_action_plan(
-        focus_brand=project.name,
-        project_name=project.name,
-        missing_prompts=missing_prompts,
-        llm_rows=llm_rows,
-        upload_targets=upload_targets,
-        search_intel=search_intel,
-        synthesis=project_synthesis,
-        raw_responses=raw_project_responses,
-        competitor_framings=competitor_framings,
-        n_responses=deep_coverage["n_responses"],
-        n_engines=deep_coverage["n_engines"],
-        skip_llm=True,
-    )
+    action_plan = None
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                lambda: generate_strategic_action_plan(
+                    focus_brand=project.name,
+                    project_name=project.name,
+                    missing_prompts=missing_prompts,
+                    llm_rows=llm_rows,
+                    upload_targets=upload_targets,
+                    search_intel=search_intel,
+                    synthesis=project_synthesis,
+                    raw_responses=raw_project_responses,
+                    competitor_framings=competitor_framings,
+                    n_responses=deep_coverage["n_responses"],
+                    n_engines=deep_coverage["n_engines"],
+                    skip_llm=False,
+                )
+            )
+            action_plan = future.result(timeout=_AUDIT_LLM_TIMEOUT_SECONDS + 8)
+    except (FuturesTimeoutError, Exception):
+        action_plan = None
+    if not action_plan:
+        action_plan = generate_strategic_action_plan(
+            focus_brand=project.name,
+            project_name=project.name,
+            missing_prompts=missing_prompts,
+            llm_rows=llm_rows,
+            upload_targets=upload_targets,
+            search_intel=search_intel,
+            synthesis=project_synthesis,
+            raw_responses=raw_project_responses,
+            competitor_framings=competitor_framings,
+            n_responses=deep_coverage["n_responses"],
+            n_engines=deep_coverage["n_engines"],
+            skip_llm=True,
+        )
     context_state = _project_context_state(project)
 
     return {
@@ -2771,12 +3290,26 @@ def get_project_intel_summary(project_id):
         "official_site_cited_pct": dashboard.get("official_site_cited_pct"),
     }
     computed_health = _compute_overall_health(prompt_rankings)
-    summary = generate_project_summary(
-        project.name,
-        project_meta,
-        prompt_rankings,
-        skip_llm=True,
-    )
+    summary = None
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                generate_project_summary,
+                project.name,
+                project_meta,
+                prompt_rankings,
+                skip_llm=False,
+            )
+            summary = future.result(timeout=_AUDIT_LLM_TIMEOUT_SECONDS)
+    except (FuturesTimeoutError, Exception):
+        summary = None
+    if not isinstance(summary, dict) or not summary.get("executive_summary"):
+        summary = generate_project_summary(
+            project.name,
+            project_meta,
+            prompt_rankings,
+            skip_llm=True,
+        )
 
     # Final safety: enforce label from metric-derived logic.
     if not isinstance(summary, dict):
@@ -2795,6 +3328,13 @@ def get_project_global_audit(project_id):
     return jsonify(_get_or_build_global_audit_payload(project_id, project))
 
 
+@reports_bp.route("/project/<int:project_id>/movements", methods=["GET"])
+@require_auth
+def get_project_movements(project_id):
+    _get_project_for_user(project_id)
+    return jsonify(_get_or_build_movement_feed(project_id))
+
+
 @reports_bp.route("/project/<int:project_id>/actions/playbook", methods=["POST"])
 @require_auth
 def generate_project_action_playbook(project_id):
@@ -2807,12 +3347,14 @@ def generate_project_action_playbook(project_id):
         return jsonify({"error": "title or detail is required"}), 400
 
     # Strategic Action Plan playbooks always use OpenAI (ChatGPT) — not the Execution Center model.
-    playbook = generate_action_playbook(
-        focus_brand=project.name,
-        action_title=title,
-        action_detail=detail,
-        industry=project.category or "",
-        engine="chatgpt",
+    playbook = sanitize_user_facing_value(
+        generate_action_playbook(
+            focus_brand=project.name,
+            action_title=title,
+            action_detail=detail,
+            industry=project.category or "",
+            engine="chatgpt",
+        )
     )
     return jsonify(playbook)
 

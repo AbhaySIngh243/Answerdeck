@@ -368,6 +368,19 @@ Return JSON: {{
         _run()
 
 
+def _maybe_send_movement_alert(project_id: int, user_id: str, app_obj=None) -> None:
+    """Fire-and-forget email when run-over-run visibility materially changed."""
+    app_ref = app_obj or current_app._get_current_object()
+
+    def _run() -> None:
+        with app_ref.app_context():
+            from services.movement_alert_mail import maybe_send_movement_alert
+
+            maybe_send_movement_alert(project_id, user_id)
+
+    executor.submit(_run)
+
+
 def async_run_analysis(
     job_id: str,
     prompt_id: int,
@@ -786,6 +799,7 @@ def async_run_analysis(
                 db.session.commit()
                 invalidate_project_report_caches(project_id)
                 _maybe_trigger_cross_prompt_synthesis(project.id, user_id, app_obj)
+                _maybe_send_movement_alert(project.id, user_id, app_obj)
     except Exception as exc:  # pragma: no cover - safety path
         try:
             app_obj.logger.exception("analysis job failed", exc_info=exc)

@@ -327,6 +327,7 @@ export const api = {
   getCompetitorIntelligence: (projectId) => request(`/reports/project/${projectId}/competitors`),
   getIntelSummary: (projectId) => request(`/reports/project/${projectId}/intel-summary`),
   getGlobalAudit: (projectId) => request(`/reports/project/${projectId}/global-audit`),
+  getMovements: (projectId) => request(`/reports/project/${projectId}/movements`),
   getActionPlaybook: (projectId, body) =>
     request(`/reports/project/${projectId}/actions/playbook`, {
       method: 'POST',

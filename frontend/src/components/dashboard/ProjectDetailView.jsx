@@ -3,7 +3,9 @@ import { Link, useLocation, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
+  ArrowDownRight,
   ArrowLeft,
+  ArrowUpRight,
   BarChart2,
   Calendar,
   CheckCircle2,
@@ -14,6 +16,7 @@ import {
   ExternalLink,
   FileText,
   Globe,
+  History,
   Lightbulb,
   Loader2,
   Play,
@@ -24,6 +27,7 @@ import {
   Sparkles,
   Target,
   Trash2,
+  TrendingDown,
   TrendingUp,
   Users,
   Wand2,
@@ -41,6 +45,8 @@ import CompetitorSnapshot from './sections/CompetitorSnapshot';
 import TopCitingSources from './sections/TopCitingSources';
 import CoverageBadge, { CoverageEmptyState, isInsufficient } from './sections/CoverageBadge';
 import { Button } from '../ui/button';
+import FormattedProse, { ProseText } from '../ui/FormattedProse';
+import { sanitizeProse } from '../../lib/sanitizeProse';
 
 const SECTION_IDS = [
   { id: 'dashboard', label: 'Dashboard', icon: BarChart2 },
@@ -77,7 +83,8 @@ const DRAFT_TARGET_LABELS = {
 const EXEC_CONTENT_TYPES = ['Article', 'Blog', 'Reddit Post'];
 function splitProseAndUrls(text) {
   if (!text) return { prose: '', urls: [] };
-  const s = String(text);
+  const s = sanitizeProse(text);
+  if (!s) return { prose: '', urls: [] };
   const urlRe = /https?:\/\/[^\s<>'"]+/gi;
   const urls = [];
   let m;
@@ -91,7 +98,8 @@ function splitProseAndUrls(text) {
 
 function renderTextWithLinks(text, linkClassName) {
   if (text == null || text === '') return null;
-  const s = String(text);
+  const s = sanitizeProse(text);
+  if (!s) return null;
   const cn = linkClassName || 'font-semibold text-brand-primary underline decoration-brand-primary/50 underline-offset-2 break-all hover:decoration-brand-primary';
   const parts = [];
   let last = 0;
@@ -135,24 +143,24 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
   const nResponsesSupporting = Number(item.n_responses_supporting || 0);
   const nEnginesSupporting = Number(item.n_engines_supporting || 0);
   const evidenceBasis = String(item.evidence_basis || '').trim();
-  const evidenceQuote = String(item.evidence_quote || '').trim();
+  const evidenceQuote = sanitizeProse(item.evidence_quote);
 
   return (
     <div className="glass-card-v2 overflow-hidden transition-shadow hover:shadow-[0_8px_32px_rgba(15,23,42,0.08)]">
       <div className="p-5">
         <div className="mb-2 flex items-start justify-between gap-3">
           <div className="flex flex-wrap items-center gap-1.5">
-            <h4 className="text-[13px] font-semibold leading-snug text-slate-800">{item.title}</h4>
+            <ProseText text={item.title} as="h4" className="text-[13px] font-semibold leading-snug text-slate-800" />
           </div>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${item.priority === 'high' ? 'bg-red-50 text-red-500' : 'bg-brand-primary/10 text-brand-primary'}`}>
             {item.priority}
           </span>
         </div>
-        {item.trigger_signal && <p className="mb-2 text-[11px] text-slate-500"><span className="font-semibold text-slate-600">Signal:</span> {item.trigger_signal}</p>}
+        {item.trigger_signal && <p className="mb-2 text-[11px] text-slate-500"><span className="font-semibold text-slate-600">Signal:</span> {sanitizeProse(item.trigger_signal)}</p>}
         {prose && <p className="mb-2 text-xs leading-relaxed text-slate-500">{prose}</p>}
         {Array.isArray(item.action_plan) && item.action_plan.length > 0 && (
           <ul className="mb-2 list-disc space-y-1 pl-5 text-[11px] text-slate-700">
-            {item.action_plan.slice(0, 4).map((step, idx) => <li key={`${idx}-${step}`}>{step}</li>)}
+            {item.action_plan.slice(0, 4).map((step, idx) => <li key={`${idx}-${step}`}>{sanitizeProse(step)}</li>)}
           </ul>
         )}
         {evidenceQuote && (
@@ -212,7 +220,7 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
               {playbook.why_it_matters && (
                 <div className="rounded-xl bg-brand-primary/5 border border-brand-primary/15 p-3.5">
                   <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold text-brand-primary"><Lightbulb className="h-3 w-3" /> Why this matters</p>
-                  <p className="text-xs leading-relaxed text-slate-700">{playbook.why_it_matters}</p>
+                  <ProseText text={playbook.why_it_matters} className="text-xs leading-relaxed text-slate-700" />
                 </div>
               )}
               <div>
@@ -223,11 +231,12 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
                       <div className="flex items-start gap-2.5">
                         <span className="mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-lg bg-brand-primary text-[10px] font-semibold text-white">{si + 1}</span>
                         <div className="min-w-0">
-                          <p className="mb-0.5 text-[13px] font-medium text-slate-800">{step.title}</p>
-                          <p className="text-xs leading-relaxed text-slate-500">{step.detail}</p>
+                          <ProseText text={step.title} className="mb-0.5 text-[13px] font-medium text-slate-800" />
+                          <ProseText text={step.detail} className="text-xs leading-relaxed text-slate-500" />
                           {step.example && (
                             <div className="mt-2 rounded-lg bg-slate-50 border border-slate-100 px-3 py-2 text-xs italic text-slate-500">
-                              <span className="mr-1 not-italic font-medium text-slate-600">Example:</span>{step.example}
+                              <span className="mr-1 not-italic font-medium text-slate-600">Example:</span>
+                              {sanitizeProse(step.example)}
                             </div>
                           )}
                         </div>
@@ -239,13 +248,13 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
               {toArray(playbook.quick_wins).length > 0 && (
                 <div>
                   <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-emerald-600"><Zap className="h-3 w-3" /> Quick wins</p>
-                  <div className="space-y-2">{toArray(playbook.quick_wins).map((qw, qi) => (<div key={qi} className="rounded-xl bg-emerald-50 border border-emerald-100 px-3.5 py-2.5"><p className="mb-0.5 text-xs font-medium text-emerald-700">{qw.title}</p><p className="text-xs leading-relaxed text-emerald-600/70">{qw.detail}</p></div>))}</div>
+                  <div className="space-y-2">{toArray(playbook.quick_wins).map((qw, qi) => (<div key={qi} className="rounded-xl bg-emerald-50 border border-emerald-100 px-3.5 py-2.5"><ProseText text={qw.title} className="mb-0.5 text-xs font-medium text-emerald-700" /><ProseText text={qw.detail} className="text-xs leading-relaxed text-emerald-600/70" /></div>))}</div>
                 </div>
               )}
               {toArray(playbook.common_mistakes).length > 0 && (
                 <div>
                   <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-red-500"><ShieldAlert className="h-3 w-3" /> Avoid</p>
-                  <div className="space-y-2">{toArray(playbook.common_mistakes).map((cm, ci) => (<div key={ci} className="rounded-xl bg-red-50 border border-red-100 px-3.5 py-2.5"><p className="mb-0.5 text-xs font-medium text-red-600">{cm.title}</p><p className="text-xs leading-relaxed text-red-500/70">{cm.detail}</p></div>))}</div>
+                  <div className="space-y-2">{toArray(playbook.common_mistakes).map((cm, ci) => (<div key={ci} className="rounded-xl bg-red-50 border border-red-100 px-3.5 py-2.5"><ProseText text={cm.title} className="mb-0.5 text-xs font-medium text-red-600" /><ProseText text={cm.detail} className="text-xs leading-relaxed text-red-500/70" /></div>))}</div>
                 </div>
               )}
               {toArray(playbook.tools_mentioned).length > 0 && (
@@ -397,6 +406,7 @@ const ProjectDetailView = () => {
   );
   const { data: intelSummary, isLoading: intelSummaryLoading, error: intelSummaryError } = useQuery({ queryKey: ['intel-summary', id], queryFn: () => api.getIntelSummary(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 2 });
   const { data: globalAudit, isLoading: globalAuditLoading, error: globalAuditError } = useQuery({ queryKey: ['global-audit', id], queryFn: () => api.getGlobalAudit(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 2 });
+  const { data: movements, isLoading: movementsLoading } = useQuery({ queryKey: ['movements', id], queryFn: () => api.getMovements(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 1 });
 
   const sessionExpired = useMemo(() => {
     const candidates = [error, dashboardError, intelSummaryError, globalAuditError, promptAnalysisError];
@@ -451,12 +461,23 @@ const ProjectDetailView = () => {
     const sorted = [...competitors].sort((a, b) => (Number(b.visibility_pct ?? b.visibility ?? 0)) - (Number(a.visibility_pct ?? a.visibility ?? 0)));
     let topPos = '—';
     const idx = sorted.findIndex((c) => String(c.brand || '').toLowerCase().trim() === focus);
-    if (idx >= 0) topPos = `#${idx + 1}`;
+    if (idx >= 0) topPos = `#${idx + 1} of ${sorted.length}`;
     else if (sorted.length) topPos = 'Not ranked';
+    const focusRow = sorted[idx >= 0 ? idx : -1];
+    const focusRank = focusRow && focusRow.avg_rank != null ? Number(focusRow.avg_rank) : null;
+    const prominence = focusRank == null
+      ? null
+      : focusRank <= 2.5
+        ? 'usually listed near the top'
+        : focusRank <= 4.5
+          ? `usually listed mid-pack (~#${focusRank.toFixed(0)})`
+          : `usually listed low (~#${focusRank.toFixed(0)})`;
     return {
-      queriesLine: `You have a rank on ${withRank} of ${total} prompts`,
-      shareLine: `Your brand appears in about ${share} of model answers (by runs we measured)`,
-      topCompetitorLine: `By visibility among competitors, you are ${topPos}`,
+      queriesLine: `Listed in a ranked order in ${withRank} of ${total} prompt${total === 1 ? '' : 's'}`,
+      shareLine: `Named in about ${share} of model answers we measured`,
+      topCompetitorLine: prominence
+        ? `By how often you're named you rank ${topPos} — but ${prominence}`
+        : `By how often you're named you rank ${topPos}`,
     };
   }, [projectData]);
 
@@ -584,6 +605,7 @@ const ProjectDetailView = () => {
       ['competitor-intelligence', id],
       ['intel-summary', id],
       ['global-audit', id],
+      ['movements', id],
     ];
     await Promise.all(keys.map((queryKey) => queryClient.invalidateQueries({ queryKey })));
   };
@@ -661,6 +683,7 @@ const ProjectDetailView = () => {
           queryClient.invalidateQueries({ queryKey: ['competitor-intelligence', id] }),
           queryClient.invalidateQueries({ queryKey: ['intel-summary', id] }),
           queryClient.invalidateQueries({ queryKey: ['global-audit', id] }),
+          queryClient.invalidateQueries({ queryKey: ['movements', id] }),
         ]);
         return;
       }
@@ -906,6 +929,81 @@ const ProjectDetailView = () => {
             {activeSection === 'dashboard' && (
               <motion.div key="dashboard" {...sectionMotion} className="space-y-5">
                 <OverviewKpiGrid dashboard={dashboard} prompts={prompts} enabledEngines={enabledEngines} metricsLoading={dashboardLoading} />
+
+                {!selectedPromptId && (() => {
+                  if (!movements || movements.has_data === false) {
+                    if (movementsLoading) {
+                      return (
+                        <div className="glass-card-v2 flex items-center gap-2 px-6 py-4 text-sm text-slate-500">
+                          <Loader2 className="h-4 w-4 animate-spin text-slate-300" />
+                          Checking what changed since your last run…
+                        </div>
+                      );
+                    }
+                    return null;
+                  }
+                  const m = movements;
+                  const s = m.summary || {};
+                  const ev = toArray(m.events);
+                  return (
+                    <div className="glass-card-v2 overflow-hidden">
+                      <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-5">
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-primary/10 text-brand-primary"><History className="h-4 w-4" /></div>
+                          <div>
+                            <h2 className="text-base font-semibold tracking-tight text-slate-900">What changed since your last check</h2>
+                            <p className="text-xs text-slate-500">{s.previous_check ? `Comparing ${s.previous_check} → ${s.last_checked}` : 'Run-over-run movement across engines'}</p>
+                          </div>
+                        </div>
+                        {m.has_history && (
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700"><TrendingUp className="h-3.5 w-3.5" />{s.gains || 0} gains</span>
+                            <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-600"><TrendingDown className="h-3.5 w-3.5" />{s.drops || 0} drops</span>
+                          </div>
+                        )}
+                      </div>
+                      {!m.has_history ? (
+                        <div className="border-t border-slate-100/80 px-6 py-7 text-center">
+                          <p className="text-sm font-medium text-slate-600">Baseline captured from your first run.</p>
+                          <p className="mt-1 text-xs text-slate-400">Re-run analysis to start tracking gains, drops, and new competitor threats since your last check.</p>
+                        </div>
+                      ) : ev.length === 0 ? (
+                        <div className="border-t border-slate-100/80 px-6 py-7 text-center">
+                          <p className="text-sm font-medium text-slate-600">No material changes since your last run.</p>
+                          <p className="mt-1 text-xs text-slate-400">Your visibility held steady across tracked prompts and engines.</p>
+                        </div>
+                      ) : (
+                        <ul className="divide-y divide-slate-100/80 border-t border-slate-100/80">
+                          {ev.map((e, i) => {
+                            const tone = e.direction === 'up' ? 'emerald' : e.direction === 'down' ? 'red' : 'amber';
+                            const Icon = e.direction === 'up' ? ArrowUpRight : e.direction === 'down' ? ArrowDownRight : ShieldAlert;
+                            const toneCls = tone === 'emerald' ? 'bg-emerald-50 text-emerald-600' : tone === 'red' ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600';
+                            return (
+                              <li key={i} className="flex items-start gap-3 px-6 py-3.5">
+                                <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${toneCls}`}><Icon className="h-4 w-4" /></span>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-semibold text-slate-800">{e.headline}</p>
+                                    <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium capitalize text-slate-500">{e.engine}</span>
+                                  </div>
+                                  {e.detail && <p className="mt-0.5 text-xs text-slate-500">{e.detail}</p>}
+                                  {(e.from || e.to) && (
+                                    <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-400">
+                                      <span className="rounded bg-slate-50 px-1.5 py-0.5">{e.from}</span>
+                                      <span>→</span>
+                                      <span className={`rounded px-1.5 py-0.5 ${toneCls}`}>{e.to}</span>
+                                    </p>
+                                  )}
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {dashboardLoading ? (
                   <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.5fr_1fr]">
                     <div className="glass-card-v2 animate-pulse rounded-2xl p-6">
@@ -1072,24 +1170,24 @@ const ProjectDetailView = () => {
                                 return (
                                   <div key={idx} className="glass-inset rounded-xl p-4">
                                     <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
-                                      <h3 className="text-sm font-semibold text-slate-800">{item.title}</h3>
+                                      <ProseText text={item.title} as="h3" className="text-sm font-semibold text-slate-800" />
                                       <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${priority === 'high' ? 'bg-red-50 text-red-600' : priority === 'low' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{priority}</span>
                                     </div>
                                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                                      <div><p className={`${lbl} mb-1`}>Root cause</p><p className="text-xs leading-relaxed text-slate-600">{item.root_cause}</p></div>
-                                      <div><p className={`${lbl} mb-1`}>Solution</p><p className="text-xs leading-relaxed text-slate-700">{item.solution}</p></div>
+                                      <div><p className={`${lbl} mb-1`}>Root cause</p><ProseText text={item.root_cause} className="text-xs leading-relaxed text-slate-600" /></div>
+                                      <div><p className={`${lbl} mb-1`}>Solution</p><ProseText text={item.solution} className="text-xs leading-relaxed text-slate-700" /></div>
                                     </div>
                                     {item.evidence_quote && (
                                       <blockquote className="mt-3 border-l-2 border-brand-primary/40 bg-slate-50/70 px-3 py-2 text-xs italic leading-relaxed text-slate-600">
-                                        &ldquo;{item.evidence_quote}&rdquo;
+                                        &ldquo;{sanitizeProse(item.evidence_quote)}&rdquo;
                                       </blockquote>
                                     )}
                                     {supporting.length > 0 && (
                                       <p className="mt-2 text-[10px] text-slate-400">
-                                        Seen in {supporting.length} {supporting.length === 1 ? 'query' : 'queries'}: {supporting.slice(0, 3).map((q) => `"${q}"`).join(' \u00b7 ')}{supporting.length > 3 ? ' \u2026' : ''}
+                                        Seen in {supporting.length} {supporting.length === 1 ? 'query' : 'queries'}: {supporting.slice(0, 3).map((q) => `"${sanitizeProse(q)}"`).join(' \u00b7 ')}{supporting.length > 3 ? ' \u2026' : ''}
                                       </p>
                                     )}
-                                    {item.avoid && <p className="mt-2 text-xs text-slate-500"><span className="font-medium text-slate-600">Avoid:</span> {item.avoid}</p>}
+                                    {item.avoid && <p className="mt-2 text-xs text-slate-500"><span className="font-medium text-slate-600">Avoid:</span> {sanitizeProse(item.avoid)}</p>}
                                   </div>
                                 );
                               })
@@ -1456,16 +1554,16 @@ const ProjectDetailView = () => {
                         <div className="flex flex-1 flex-col">
                           <div className="mb-4 flex items-center justify-between">
                             <p className="text-xs font-semibold text-slate-800">Generated Content</p>
-                            <Button size="sm" onClick={() => { navigator.clipboard.writeText(execContent.content); }}><Copy className="h-3 w-3" /> Copy</Button>
+                            <Button size="sm" onClick={() => { navigator.clipboard.writeText(sanitizeProse(execContent.content)); }}><Copy className="h-3 w-3" /> Copy</Button>
                           </div>
                           <div className="glass-inset max-h-[500px] flex-1 overflow-auto rounded-xl">
-                            <div className="border-b border-slate-100/80 px-5 py-4"><h4 className="text-base font-semibold text-slate-800">{execContent.title}</h4></div>
-                            <div className="whitespace-pre-wrap px-5 py-4 text-[13px] leading-relaxed text-slate-600">{execContent.content}</div>
+                            <div className="border-b border-slate-100/80 px-5 py-4"><ProseText text={execContent.title} as="h4" className="text-base font-semibold text-slate-800" /></div>
+                            <div className="px-5 py-4"><FormattedProse text={execContent.content} /></div>
                           </div>
                           {execContent.placement_advice && (
                             <div className="mt-4 rounded-xl border border-brand-primary/15 bg-brand-primary/5 px-4 py-3">
                               <p className="mb-1 text-[10px] font-semibold text-brand-primary">Publishing Strategy</p>
-                              <p className="text-xs leading-relaxed text-slate-700">{execContent.placement_advice}</p>
+                              <ProseText text={execContent.placement_advice} className="text-xs leading-relaxed text-slate-700" />
                             </div>
                           )}
                         </div>
@@ -1689,22 +1787,22 @@ const ProjectDetailView = () => {
                     <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                       <div className="glass-inset rounded-xl p-4">
                         <p className={`${lbl} mb-1`}>What happened</p>
-                        <p className="text-sm leading-relaxed text-slate-800">{promptDetailData.analysis_brief.what_happened}</p>
+                        <ProseText text={promptDetailData.analysis_brief.what_happened} className="text-sm leading-relaxed text-slate-800" />
                       </div>
                       <div className="glass-inset rounded-xl p-4">
                         <p className={`${lbl} mb-1`}>Why it matters</p>
-                        <p className="text-sm leading-relaxed text-slate-700">{promptDetailData.analysis_brief.why_it_matters}</p>
+                        <ProseText text={promptDetailData.analysis_brief.why_it_matters} className="text-sm leading-relaxed text-slate-700" />
                       </div>
                       <div className="glass-inset rounded-xl p-4">
                         <p className={`${lbl} mb-1`}>Next move</p>
-                        <p className="text-sm leading-relaxed text-slate-700">{promptDetailData.analysis_brief.next_move}</p>
+                        <ProseText text={promptDetailData.analysis_brief.next_move} className="text-sm leading-relaxed text-slate-700" />
                       </div>
                     </div>
                     {toArray(promptDetailData.analysis_brief.evidence_points).length > 0 && (
                       <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2">
                         {toArray(promptDetailData.analysis_brief.evidence_points).slice(0, 6).map((point, idx) => (
                           <div key={idx} className="rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2 text-xs leading-relaxed text-slate-600">
-                            {point}
+                            <ProseText text={point} />
                           </div>
                         ))}
                       </div>
@@ -1727,7 +1825,9 @@ const ProjectDetailView = () => {
                             <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
                           </summary>
                           <div className="border-t border-slate-200/60 px-4 py-4">
-                            <p className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-lg bg-white/70 p-4 text-xs leading-relaxed text-slate-700">{response.display_response_text || response.response_text}</p>
+                            <div className="max-h-72 overflow-y-auto rounded-lg bg-white/70 p-4">
+                              <FormattedProse text={response.display_response_text || response.response_text} className="text-xs" />
+                            </div>
                             {toArray(response.sources).length > 0 && (
                               <div className="mt-3 flex flex-wrap gap-1.5">
                                 {toArray(response.sources).slice(0, 6).map((source) => (

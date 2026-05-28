@@ -82,8 +82,7 @@ const ProjectsView = () => {
 
   const createProjectMutation = useMutation({
     mutationFn: api.createProject,
-    retry: 2,
-    retryDelay: (attempt) => Math.min(3000 * Math.pow(2, attempt), 10000),
+    retry: false,
     onSuccess: (payload) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
@@ -93,35 +92,19 @@ const ProjectsView = () => {
     },
   });
 
-  const atProjectLimit = safeProjects.length >= maxProjects;
-
-  const startSetupMutation = useMutation({
-    mutationFn: () => api.createProject({
-      name: 'Untitled project',
-      category: '',
-      region: 'Global',
-      website_url: '',
-    }),
-    retry: 2,
-    retryDelay: (attempt) => Math.min(3000 * Math.pow(2, attempt), 10000),
-    onSuccess: (payload) => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
-      if (payload?.id) navigate(`/dashboard/project/${payload.id}/onboarding`);
-    },
-  });
+  const billableProjects = safeProjects.filter((project) => project.counts_toward_limit !== false);
+  const atProjectLimit = billableProjects.length >= maxProjects;
 
   useEffect(() => {
     if (searchParams.get('create') !== '1') return;
-    if (!atProjectLimit && safeProjects.length === 0 && !startSetupMutation.isPending) {
-      startSetupMutation.mutate();
-    } else if (!atProjectLimit) {
+    if (isLoading || isFetching) return;
+    if (!atProjectLimit) {
       setShowCreateModal(true);
     }
     const next = new URLSearchParams(searchParams);
     next.delete('create');
     setSearchParams(next, { replace: true });
-  }, [atProjectLimit, navigate, queryClient, safeProjects.length, searchParams, setSearchParams, startSetupMutation]);
+  }, [atProjectLimit, isFetching, isLoading, searchParams, setSearchParams]);
 
   const deleteProjectMutation = useMutation({
     mutationFn: api.deleteProject,
@@ -138,8 +121,8 @@ const ProjectsView = () => {
   };
 
   const handleStartSetup = () => {
-    if (atProjectLimit || startSetupMutation.isPending) return;
-    startSetupMutation.mutate();
+    if (atProjectLimit || createProjectMutation.isPending) return;
+    setShowCreateModal(true);
   };
 
   const updateField = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
@@ -177,7 +160,7 @@ const ProjectsView = () => {
           <p className="mt-1 text-sm text-slate-400">Monitor, analyze, and improve your brand visibility across AI answers.</p>
         </div>
         <div className="flex items-center gap-3">
-          <Badge variant="secondary" className="text-xs">{safeProjects.length}/{maxProjects} projects</Badge>
+          <Badge variant="secondary" className="text-xs">{billableProjects.length}/{maxProjects} projects</Badge>
           <Button onClick={() => !atProjectLimit && setShowCreateModal(true)} disabled={atProjectLimit}>
             <Plus className="h-4 w-4" />
             {atProjectLimit ? 'Limit reached' : 'New Project'}
@@ -199,25 +182,9 @@ const ProjectsView = () => {
           </div>
           <h3 className="text-lg font-semibold text-slate-800">No projects yet</h3>
           <p className="mt-1 max-w-sm text-sm text-slate-400">Create your first project to begin AI visibility monitoring.</p>
-          {startSetupMutation.isError && (
-            <p className="mt-3 max-w-sm text-sm text-red-500">
-              {String(startSetupMutation.error?.message || '').toLowerCase().includes('timed out')
-                ? 'Server is still starting up. Please wait and try again.'
-                : startSetupMutation.error?.message}
-            </p>
-          )}
-          <Button onClick={handleStartSetup} disabled={atProjectLimit || startSetupMutation.isPending} className="mt-5">
-            {startSetupMutation.isPending ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Preparing setup...
-              </>
-            ) : (
-              <>
-                <Plus className="h-4 w-4" />
-                Create Project
-              </>
-            )}
+          <Button onClick={handleStartSetup} disabled={atProjectLimit || createProjectMutation.isPending} className="mt-5">
+            <Plus className="h-4 w-4" />
+            Create Project
           </Button>
         </motion.div>
       ) : (
