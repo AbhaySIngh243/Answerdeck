@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { FileText, Waypoints, Eye, Trophy, BarChart3 } from 'lucide-react';
+import { FileText, Waypoints, Eye, BarChart3 } from 'lucide-react';
 import { MetricTile } from '../ui/MetricTile';
 
 const container = {
@@ -21,15 +21,6 @@ export default function OverviewKpiGrid({
       );
   const promptCount = prompts.length;
   const engineCount = enabledEngines.length;
-  const competitors = metricsLoading ? [] : (Array.isArray(dashboard?.competitors) ? dashboard.competitors : []);
-  const topCompetitor = competitors.length
-    ? [...competitors].sort(
-        (a, b) =>
-          Number(b.visibility_pct ?? b.visibility ?? 0) -
-          Number(a.visibility_pct ?? a.visibility ?? 0)
-      )[0]
-    : null;
-
   const rankings = metricsLoading ? [] : (Array.isArray(dashboard?.prompt_rankings) ? dashboard.prompt_rankings : []);
   const rankedEntries = rankings.filter((r) => r.avg_rank != null);
   const avgPosition = metricsLoading
@@ -60,23 +51,6 @@ export default function OverviewKpiGrid({
       icon: Eye,
     },
     {
-      label: 'Top Competitor',
-      value: metricsLoading ? '…' : (topCompetitor?.brand || '—'),
-      sub: metricsLoading
-        ? 'Loading metrics…'
-        : topCompetitor != null
-          ? `Outranks you by ${Math.max(
-              0,
-              Math.round(
-                (Number(topCompetitor.visibility_pct ?? topCompetitor.visibility ?? 0) || 0) -
-                  (visibilityPct ?? 0)
-              )
-            )} visibility pts`
-          : 'Run analysis to populate',
-      icon: Trophy,
-      valueClassName: 'truncate',
-    },
-    {
       label: 'Your Avg Position',
       value: avgPosition,
       sub: 'Across all prompts',
@@ -89,7 +63,7 @@ export default function OverviewKpiGrid({
       variants={container}
       initial="hidden"
       animate="visible"
-      className="grid grid-cols-2 gap-3 lg:grid-cols-5"
+      className="grid grid-cols-2 gap-3 lg:grid-cols-4"
     >
       {cards.map((c) => (
         <MetricTile
