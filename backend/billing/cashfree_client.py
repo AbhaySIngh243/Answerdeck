@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import os
+import time
 
 from cashfree_pg.api_client import Cashfree
 
@@ -47,10 +48,22 @@ def verify_webhook_signature(
     signature: str,
     timestamp: str,
     raw_body: str,
+    max_age_seconds: int = 300,
 ) -> bool:
-    """Verify Cashfree webhook using the dashboard webhook secret (not API secret)."""
+    """Verify Cashfree webhook using the raw body and reject replayed payloads."""
     if not webhook_secret or not signature or not timestamp:
         return False
+
+    try:
+        parsed_ts = float(str(timestamp).strip())
+        # Cashfree sends epoch milliseconds on PG webhooks.
+        if parsed_ts > 10_000_000_000:
+            parsed_ts = parsed_ts / 1000
+        if abs(time.time() - parsed_ts) > max_age_seconds:
+            return False
+    except (TypeError, ValueError):
+        return False
+
     signature_data = timestamp + raw_body
     digest = hmac.new(
         webhook_secret.encode("utf-8"),

@@ -12,6 +12,8 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import { warmUpBackend } from '../../lib/api';
 import { PENDING_CASHFREE_PLAN_KEY, startSubscriptionCheckout } from '../../lib/subscriptionCheckout';
+import { useBillingPhonePrompt } from '../../hooks/useBillingPhonePrompt';
+import { useToast } from '../ui/toast';
 import Sidebar from './Sidebar';
 import DashboardNavbar from './DashboardNavbar';
 import BrandLogo from '../BrandLogo';
@@ -25,8 +27,10 @@ const MOBILE_NAV = [
 ];
 
 const DashboardLayout = () => {
-  const { signOut, isSignedIn, user } = useAuth();
+  const { signOut, isSignedIn, user, loading: authLoading } = useAuth();
+  const toast = useToast();
   const queryClient = useQueryClient();
+  const { requestPhone, phoneDialog } = useBillingPhonePrompt();
   const navigate = useNavigate();
   const location = useLocation();
   const [backendReady, setBackendReady] = useState(false);
@@ -44,7 +48,7 @@ const DashboardLayout = () => {
   }, []);
 
   useEffect(() => {
-    if (!isSignedIn || !backendReady) return undefined;
+    if (!isSignedIn || authLoading || !backendReady) return undefined;
     if (checkoutInFlightRef.current) return undefined;
 
     let plan;
@@ -60,13 +64,14 @@ const DashboardLayout = () => {
     (async () => {
       try {
         sessionStorage.removeItem(PENDING_CASHFREE_PLAN_KEY);
-        const outcome = await startSubscriptionCheckout(plan, { user });
+        const outcome = await startSubscriptionCheckout(plan, { user, onRequestPhone: requestPhone });
         if (outcome === 'paid') {
           queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
         }
       } catch (e) {
         if (!cancelled) {
           console.error(e);
+          toast.error('Checkout failed', e?.message || 'Please try again.');
           try {
             sessionStorage.setItem(PENDING_CASHFREE_PLAN_KEY, plan);
           } catch {
@@ -81,7 +86,7 @@ const DashboardLayout = () => {
     return () => {
       cancelled = true;
     };
-  }, [isSignedIn, backendReady, queryClient, user]);
+  }, [isSignedIn, authLoading, backendReady, queryClient, requestPhone, user, toast]);
 
   useEffect(() => {
     try {
@@ -114,6 +119,7 @@ const DashboardLayout = () => {
 
   return (
     <div className="flex h-[100dvh] min-h-0 w-full min-w-0 bg-page text-slate-900">
+      {phoneDialog}
       {/* Desktop sidebar */}
       <Sidebar
         expanded={sidebarExpanded}

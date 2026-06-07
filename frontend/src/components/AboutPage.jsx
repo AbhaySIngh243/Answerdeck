@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import StaticPage from './StaticPage';
+import { SUPPORT_EMAIL_DEV, SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 export default function AboutPage() {
   return (
@@ -30,11 +31,15 @@ export default function AboutPage() {
       <section>
         <h2 className="text-xl font-semibold text-slate-900">Contact</h2>
         <p>
-          Reach the team at{' '}
-          <a href="mailto:hello@answerdeck.com" className="text-brand-primary">
-            hello@answerdeck.com
+          Reach us at{' '}
+          <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className="text-brand-primary hover:underline">
+            {SUPPORT_EMAIL_HELLO}
           </a>{' '}
-          or start tracking your brand on the{' '}
+          or{' '}
+          <a href={`mailto:${SUPPORT_EMAIL_DEV}`} className="text-brand-primary hover:underline">
+            {SUPPORT_EMAIL_DEV}
+          </a>
+          . You can also start tracking your brand on the{' '}
           <Link to="/" className="text-brand-primary">
             home page
           </Link>

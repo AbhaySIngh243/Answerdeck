@@ -59,12 +59,12 @@ const RANGE_CONFIG = [
 ];
 
 const MULTI_PALETTE = [
-  '#2563eb', // blue  (top competitor / brand)
-  '#10b981', // green
-  '#f59e0b', // amber/yellow (You)
-  '#ec4899', // pink
-  '#8b5cf6', // purple
-  '#06b6d4', // cyan
+  '#2563eb',
+  '#1d4ed8',
+  '#60a5fa',
+  '#93c5fd',
+  '#475569',
+  '#94a3b8',
 ];
 
 export default function PerformancePanel({ range, onRangeChange, dashboard }) {

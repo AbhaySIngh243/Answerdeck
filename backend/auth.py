@@ -19,21 +19,22 @@ def require_auth(f):
             return jsonify({"error": "Missing or invalid authorization header"}), 401
         
         token = auth_header.split(" ")[1]
-        
+
         try:
-            # Verify Clerk JWT and inject user into Flask global context.
             g.user = verify_clerk_token(token)
-            return f(*args, **kwargs)
-            
         except Exception as e:
             try:
                 snippet = token[:16] + "..." if isinstance(token, str) else "<non-string>"
                 print(
                     f"[auth] token verification failed for {request.method} {request.path} "
-                    f"(token={snippet}, origin={request.headers.get('Origin')!r}): {e}"
+                    f"(token={snippet}, origin={request.headers.get('Origin')!r}): "
+                    f"{type(e).__name__}: {e!r}",
+                    flush=True,
                 )
             except Exception:
                 pass
-            return jsonify({"error": "Authentication failed"}), 401
+            return jsonify({"error": "Authentication failed", "detail": str(e) or type(e).__name__}), 401
+
+        return f(*args, **kwargs)
             
     return decorated_function

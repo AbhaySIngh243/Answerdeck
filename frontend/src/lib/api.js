@@ -325,6 +325,7 @@ export const api = {
     }),
   getSourcesIntelligence: (projectId) => request(`/reports/project/${projectId}/sources`),
   getCompetitorIntelligence: (projectId) => request(`/reports/project/${projectId}/competitors`),
+  getCitationEconomics: (projectId) => request(`/reports/project/${projectId}/citation-economics`),
   getIntelSummary: (projectId) => request(`/reports/project/${projectId}/intel-summary`),
   getGlobalAudit: (projectId) => request(`/reports/project/${projectId}/global-audit`),
   getMovements: (projectId) => request(`/reports/project/${projectId}/movements`),
@@ -354,17 +355,39 @@ export const api = {
 
   getBillingMe: () => request('/billing/me'),
   getBillingHealth: () => request('/billing/health'),
-  createSubscription: (planKey, customer = {}) =>
-    request('/billing/subscribe', {
+  syncBilling: () =>
+    request('/billing/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+  cancelBilling: () =>
+    request('/billing/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+  createSubscription: async (planKey, customer = {}, options = {}) => {
+    const token = await getAuthToken(true);
+    if (!token) {
+      throw new Error('Please sign out and sign in again, then retry checkout.');
+    }
+    return request('/billing/subscribe', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({
         plan_key: planKey,
         customer_email: customer.customerEmail,
         customer_phone: customer.customerPhone,
         customer_name: customer.customerName,
+        force_new: Boolean(options.forceNew),
       }),
-    }),
+      retries: 2,
+    });
+  },
 
   askOnboardingAssistant: (projectId, payload) =>
     request(`/projects/${projectId}/assistant`, {

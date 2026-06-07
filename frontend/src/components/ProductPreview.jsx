@@ -8,8 +8,8 @@ const ProductPreview = () => {
         <h2 className="heading-section mt-2">The workspace you work in every week</h2>
         <div className="accent-heading-rule" />
         <p className="mx-auto mt-6 max-w-[560px] text-base leading-relaxed text-[#64748b] sm:text-[17px]">
-          Visibility trends, competitor tables, prompt performance, Sources, Opportunities, and Content Studio — the
-          same views you use after onboarding, not a marketing mockup.
+          Visibility trends, authority moat, competitor tables, prompt performance, Sources, Opportunities, and Content Studio.
+          The same views you use after onboarding, not a marketing mockup.
         </p>
       </div>
 

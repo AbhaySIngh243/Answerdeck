@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 
 def _to_address() -> str:
-    return (os.getenv("DEMO_REQUEST_TO_EMAIL") or "hello@answerdeck.com").strip()
+    return (os.getenv("DEMO_REQUEST_TO_EMAIL") or "hello@answedek.com").strip()
 
 
 def _mail_provider_configured() -> bool:

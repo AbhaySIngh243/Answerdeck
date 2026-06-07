@@ -168,7 +168,7 @@ def build_full_export_payload(
         share = round((mentions / mention_totals) * 100, 2) if mention_totals else None
         competitors.append({**item, "share_of_voice": share, "ai_share": share})
 
-    cache_key = f"intel-summary:{project_id}"
+    cache_key = f"intel-summary:v2:{project_id}"
     intel = _cache_get(cache_key)
     if intel is None:
         prompt_rankings = dashboard.get("prompt_rankings", [])

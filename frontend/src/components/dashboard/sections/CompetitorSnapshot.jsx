@@ -25,15 +25,15 @@ export default function CompetitorSnapshot({ competitors, onViewAll }) {
     >
       <div className="flex items-center justify-between px-6 py-5">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-50 text-blue-500">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-primary/10 text-brand-primary">
             <Users className="h-4 w-4" />
           </div>
           <div>
             <h3 className="text-sm font-semibold tracking-tight text-slate-800">
-              Competitors
+              Answer rankings
             </h3>
             <p className="mt-0.5 text-[11px] text-slate-400">
-              Sorted by visibility across prompts.
+              Sorted by how often each brand is named in model answers.
             </p>
           </div>
         </div>
@@ -46,7 +46,7 @@ export default function CompetitorSnapshot({ competitors, onViewAll }) {
               <Target className="h-6 w-6" />
             </div>
             <p className="text-sm font-medium text-slate-400">
-              No competitor data yet
+              No answer ranking yet
             </p>
             <p className="mt-0.5 text-xs text-slate-400">
               Run an analysis to populate
@@ -61,13 +61,13 @@ export default function CompetitorSnapshot({ competitors, onViewAll }) {
                     #
                   </th>
                   <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                    Competitor
+                    Brand
                   </th>
                   <th className="px-4 py-3 text-center text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                    Visibility
+                    Answer visibility
                   </th>
                   <th className="px-4 py-3 text-center text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                    Avg pos
+                    Answer position
                   </th>
                 </tr>
               </thead>
@@ -85,7 +85,7 @@ export default function CompetitorSnapshot({ competitors, onViewAll }) {
                       className={cn(
                         'transition-colors',
                         isFocus
-                          ? 'bg-blue-50/60'
+                          ? 'bg-brand-primary/[0.04]'
                           : 'hover:bg-slate-50/40'
                       )}
                     >
@@ -101,7 +101,7 @@ export default function CompetitorSnapshot({ competitors, onViewAll }) {
                               : 'text-slate-800'
                           )}
                         >
-                          {c.brand || '—'}
+                          {c.brand || '-'}
                           {c.is_focus && (
                             <span className="ml-1 text-[11px] font-bold text-brand-primary">
                               (You)
@@ -110,16 +110,16 @@ export default function CompetitorSnapshot({ competitors, onViewAll }) {
                         </span>
                       </td>
                       <td className="px-4 py-3.5 text-center">
-                        <span className="text-[13px] font-bold text-slate-700">
+                        <span className="text-[13px] font-bold text-brand-primary">
                           {vis}%
                         </span>
                       </td>
                       <td className="px-4 py-3.5 text-center">
                         <span className="text-[13px] font-bold text-slate-700">
                           {avgPos != null ? (
-                            avgPos
+                            `#${avgPos}`
                           ) : (
-                            <span className="text-slate-300">—</span>
+                            <span className="text-slate-300">-</span>
                           )}
                         </span>
                       </td>

@@ -108,103 +108,21 @@ def _merge_variant_signals(engine_name: str, variant_signals: dict[str, CausalSi
         raise ValueError(f"No variant signals for engine '{engine_name}'")
     primary = variant_signals.get("direct", ordered[0])
 
-    all_details: list[dict[str, Any]] = []
-    all_sources: list[str] = []
-    evidence_phrases: list[str] = []
-    cited_urls: list[str] = []
-    cited_domains: list[str] = []
-    framing_words: list[str] = []
-    displacement_events: list[DisplacementEvent] = []
-    competitor_framing: list[dict[str, Any]] = []
-    seen_event_keys: set[tuple[Any, ...]] = set()
-    seen_framing_keys: set[tuple[Any, ...]] = set()
-
-    mentioned_any = False
-    mention_ranks: list[int] = []
-    mention_context = ""
-    mention_sentiment = "not_mentioned"
-
-    for sig in ordered:
-        ba = sig.brand_analysis or {}
-        for detail in ba.get("all_brand_details", []) or []:
-            if isinstance(detail, dict):
-                all_details.append(detail)
-        for src in ba.get("sources", []) or []:
-            src_clean = str(src or "").strip()
-            if src_clean and src_clean not in all_sources:
-                all_sources.append(src_clean)
-
-        if bool(ba.get("focus_brand_mentioned")):
-            mentioned_any = True
-            rank_val = ba.get("focus_brand_rank")
-            if isinstance(rank_val, int):
-                mention_ranks.append(rank_val)
-            if not mention_context:
-                mention_context = str(ba.get("focus_brand_context") or "")
-            if mention_sentiment == "not_mentioned":
-                mention_sentiment = str(ba.get("focus_brand_sentiment") or "neutral")
-
-        for phrase in sig.focus_brand_evidence_phrases or []:
-            cleaned = str(phrase or "").strip()
-            if cleaned and cleaned not in evidence_phrases:
-                evidence_phrases.append(cleaned)
-        for url in sig.focus_brand_cited_urls or []:
-            cleaned = str(url or "").strip()
-            if cleaned and cleaned not in cited_urls:
-                cited_urls.append(cleaned)
-        for dom in sig.cited_source_domains or []:
-            cleaned = str(dom or "").strip()
-            if cleaned and cleaned not in cited_domains:
-                cited_domains.append(cleaned)
-        for word in sig.framing_words or []:
-            cleaned = str(word or "").strip()
-            if cleaned and cleaned not in framing_words:
-                framing_words.append(cleaned)
-        for ev in sig.competitor_displacement_events or []:
-            key = (
-                ev.competitor_brand,
-                ev.displacement_context,
-                ev.displacement_reason,
-                ev.rank_of_competitor,
-                ev.rank_of_focus,
-                ev.cited_url,
-            )
-            if key in seen_event_keys:
-                continue
-            seen_event_keys.add(key)
-            displacement_events.append(ev)
-        for cf in sig.competitor_framing or []:
-            key = (cf.get("competitor_brand"), cf.get("verbatim_sentence"), cf.get("engine"))
-            if key in seen_framing_keys:
-                continue
-            seen_framing_keys.add(key)
-            competitor_framing.append(cf)
-
-    merged_brand_analysis = dict(primary.brand_analysis or {})
-    merged_brand_analysis["all_brand_details"] = all_details
-    merged_brand_analysis["sources"] = all_sources
-    merged_brand_analysis["focus_brand_mentioned"] = mentioned_any
-    merged_brand_analysis["focus_brand_rank"] = min(mention_ranks) if mention_ranks else None
-    merged_brand_analysis["focus_brand_sentiment"] = mention_sentiment
-    merged_brand_analysis["focus_brand_context"] = mention_context
-
-    merged_framing = next(
-        (sig.focus_brand_framing for sig in ordered if str(sig.focus_brand_framing or "").strip() and sig.focus_brand_framing != "absent"),
-        primary.focus_brand_framing,
-    )
-
+    # Visibility is a direct-answer metric. Synthetic variants can be useful for
+    # future diagnostics, but they must never create Mention rows or rank values
+    # for the answer the user is inspecting.
     return CausalSignals(
-        brand_analysis=merged_brand_analysis,
-        focus_brand_framing=merged_framing,
-        focus_brand_evidence_phrases=evidence_phrases,
-        focus_brand_cited_urls=cited_urls,
-        competitor_displacement_events=displacement_events,
-        competitor_framing=competitor_framing,
-        cited_source_domains=cited_domains,
-        framing_words=framing_words,
+        brand_analysis=dict(primary.brand_analysis or {}),
+        focus_brand_framing=primary.focus_brand_framing,
+        focus_brand_evidence_phrases=list(primary.focus_brand_evidence_phrases or []),
+        focus_brand_cited_urls=list(primary.focus_brand_cited_urls or []),
+        competitor_displacement_events=list(primary.competitor_displacement_events or []),
+        competitor_framing=list(primary.competitor_framing or []),
+        cited_source_domains=list(primary.cited_source_domains or []),
+        framing_words=list(primary.framing_words or []),
         response_structure=primary.response_structure,
         engine=engine_name,
-        variant="merged",
+        variant=primary.variant,
     )
 
 
@@ -440,7 +358,6 @@ def async_run_analysis(
             raw_responses = result.get("responses", {}) if isinstance(result, dict) else result
             variant_responses = result.get("variant_responses", {}) if isinstance(result, dict) else {}
             search_context = result.get("search_context", {}) if isinstance(result, dict) else {}
-            grounding_urls = search_context.get("urls", []) or []
 
             if not raw_responses:
                 if job:
@@ -548,8 +465,9 @@ def async_run_analysis(
 
             all_focus_mentions: list[dict] = []
 
-            # Collect every URL across all engines + grounding so we can
-            # verify reachability in one pooled pass instead of per-engine.
+            # Collect only URLs the engines actually returned in their answer text.
+            # Search-layer URLs are stored separately as research data and must not
+            # masquerade as evidence for model-answer visibility.
             all_urls_to_verify: list[str] = []
             _seen_urls: set[str] = set()
             for engine_name, response_text in raw_responses.items():
@@ -557,10 +475,6 @@ def async_run_analysis(
                     if url and url not in _seen_urls:
                         _seen_urls.add(url)
                         all_urls_to_verify.append(url)
-            for url in grounding_urls or []:
-                if url and url not in _seen_urls:
-                    _seen_urls.add(url)
-                    all_urls_to_verify.append(url)
 
             try:
                 url_status = verify_urls(all_urls_to_verify) if all_urls_to_verify else {}
@@ -586,9 +500,6 @@ def async_run_analysis(
                 analysis = analyses[engine_name]
 
                 engine_sources = list(_verified_urls(analysis.get("sources", [])))
-                for url in _verified_urls(grounding_urls):
-                    if url not in engine_sources:
-                        engine_sources.append(url)
 
                 new_response = Response(
                     prompt_id=prompt.id,
@@ -632,7 +543,7 @@ def async_run_analysis(
 
             existing_metric = VisibilityMetric.query.filter_by(project_id=project.id, date=today).first()
             if existing_metric:
-                existing_metric.score = round((existing_metric.score + score) / 2, 1)
+                existing_metric.score = score
             else:
                 db.session.add(VisibilityMetric(project_id=project.id, score=score, date=today))
 

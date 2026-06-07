@@ -13,7 +13,7 @@ const features = [
   },
   {
     title: 'Multi-engine visibility',
-    desc: 'One dashboard for ChatGPT, Gemini, Perplexity, and Claude — visibility trends, KPIs, and which models mention you vs. skip you.',
+    desc: 'One dashboard for ChatGPT, Gemini, Perplexity, and Claude. Track visibility trends, KPIs, and which models mention you vs. skip you.',
     icon: (
       <svg className="h-6 w-6 text-brand-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path
@@ -26,8 +26,8 @@ const features = [
     ),
   },
   {
-    title: 'Competitors & citations',
-    desc: 'See who outranks you, how visibility shifts over time, and which domains models cite — with URL checks so broken sources do not pollute your audit.',
+    title: 'Authority moat',
+    desc: 'See which sources make AI engines trust you, how often your own site gets cited, and where competitor-backed domains can steal the answer.',
     icon: (
       <svg className="h-6 w-6 text-brand-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -36,7 +36,7 @@ const features = [
   },
   {
     title: 'Recommendations & Content Studio',
-    desc: 'Engine-specific next actions with evidence quotes, Opportunities with weekly plans, and drafts you can edit before publishing — built from your actual run data.',
+    desc: 'Engine-specific next actions with evidence quotes, weekly plans, and drafts you can edit before publishing. Built from your actual run data.',
     icon: (
       <svg className="h-6 w-6 text-brand-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />

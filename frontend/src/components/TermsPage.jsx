@@ -1,5 +1,6 @@
 import React from 'react';
 import StaticPage from './StaticPage';
+import { SUPPORT_EMAIL_DEV, SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 export default function TermsPage() {
   return (
@@ -19,8 +20,8 @@ export default function TermsPage() {
       <section>
         <h2 className="text-xl font-semibold text-slate-900">Subscriptions</h2>
         <p>
-          Plans are monthly, billed in USD via Cashfree. You can cancel any time through Cashfree subscription
-          notifications; cancellations take effect at the end of the current billing cycle.
+          Plans are one-time monthly payments via Cashfree (UPI, card, or net banking for INR). Pay again each month
+          to renew. Cancel from Settings stops renewal — access continues until the paid period ends.
         </p>
       </section>
 
@@ -40,6 +41,21 @@ export default function TermsPage() {
           We may update these terms to reflect new features or legal requirements. Material
           changes will be emailed to the address on your Clerk account at least 14 days in
           advance.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-xl font-semibold text-slate-900">Contact</h2>
+        <p>
+          Questions about these terms, your account, or the service? Reach us at{' '}
+          <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className="text-brand-primary hover:underline">
+            {SUPPORT_EMAIL_HELLO}
+          </a>{' '}
+          for general inquiries, or{' '}
+          <a href={`mailto:${SUPPORT_EMAIL_DEV}`} className="text-brand-primary hover:underline">
+            {SUPPORT_EMAIL_DEV}
+          </a>{' '}
+          for technical support.
         </p>
       </section>
     </StaticPage>

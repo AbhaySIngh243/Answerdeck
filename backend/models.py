@@ -179,7 +179,7 @@ class VisibilityMetric(db.Model):
 
 
 class UserBilling(db.Model):
-    """Clerk user subscription state synced from Cashfree webhooks."""
+    """Clerk user billing state synced from Cashfree PG orders."""
 
     __tablename__ = "user_billing"
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -193,11 +193,7 @@ class UserBilling(db.Model):
 
 
 class BillingConfig(db.Model):
-    """Small key/value store for Cashfree plan IDs, webhook secret, etc.
-
-    Keeps auto-provisioned plan IDs stable across restarts so we don't create
-    duplicate plans on every boot when env vars aren't set.
-    """
+    """Legacy key/value store kept for old billing deployments."""
 
     __tablename__ = "billing_config"
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)

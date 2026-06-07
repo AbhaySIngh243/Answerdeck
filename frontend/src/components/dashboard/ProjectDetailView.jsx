@@ -60,8 +60,8 @@ const SECTION_IDS = [
 const lbl = 'text-[11px] font-semibold text-slate-400';
 
 function DataBadge({ type }) {
-  if (type === 'measured') return <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-emerald-600"><span className="h-1 w-1 rounded-full bg-emerald-500" />Measured</span>;
-  return <span className="inline-flex items-center gap-1 rounded-md bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-violet-600"><span className="h-1 w-1 rounded-full bg-violet-500" />AI analysis</span>;
+  if (type === 'measured') return <span className="inline-flex items-center gap-1 rounded-md bg-brand-primary/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-brand-primary"><span className="h-1 w-1 rounded-full bg-brand-primary" />Measured</span>;
+  return <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-slate-600"><span className="h-1 w-1 rounded-full bg-slate-400" />AI analysis</span>;
 }
 
 function isHttpUrl(value) {
@@ -152,7 +152,7 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
           <div className="flex flex-wrap items-center gap-1.5">
             <ProseText text={item.title} as="h4" className="text-[13px] font-semibold leading-snug text-slate-800" />
           </div>
-          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${item.priority === 'high' ? 'bg-red-50 text-red-500' : 'bg-brand-primary/10 text-brand-primary'}`}>
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${item.priority === 'high' ? 'bg-brand-primary/10 text-brand-primary' : 'bg-slate-100 text-slate-600'}`}>
             {item.priority}
           </span>
         </div>
@@ -247,14 +247,14 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
               </div>
               {toArray(playbook.quick_wins).length > 0 && (
                 <div>
-                  <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-emerald-600"><Zap className="h-3 w-3" /> Quick wins</p>
-                  <div className="space-y-2">{toArray(playbook.quick_wins).map((qw, qi) => (<div key={qi} className="rounded-xl bg-emerald-50 border border-emerald-100 px-3.5 py-2.5"><ProseText text={qw.title} className="mb-0.5 text-xs font-medium text-emerald-700" /><ProseText text={qw.detail} className="text-xs leading-relaxed text-emerald-600/70" /></div>))}</div>
+                  <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-brand-primary"><Zap className="h-3 w-3" /> Quick wins</p>
+                  <div className="space-y-2">{toArray(playbook.quick_wins).map((qw, qi) => (<div key={qi} className="rounded-xl border border-brand-primary/10 bg-brand-primary/[0.04] px-3.5 py-2.5"><ProseText text={qw.title} className="mb-0.5 text-xs font-medium text-brand-primary" /><ProseText text={qw.detail} className="text-xs leading-relaxed text-slate-600" /></div>))}</div>
                 </div>
               )}
               {toArray(playbook.common_mistakes).length > 0 && (
                 <div>
-                  <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-red-500"><ShieldAlert className="h-3 w-3" /> Avoid</p>
-                  <div className="space-y-2">{toArray(playbook.common_mistakes).map((cm, ci) => (<div key={ci} className="rounded-xl bg-red-50 border border-red-100 px-3.5 py-2.5"><ProseText text={cm.title} className="mb-0.5 text-xs font-medium text-red-600" /><ProseText text={cm.detail} className="text-xs leading-relaxed text-red-500/70" /></div>))}</div>
+                  <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-slate-500"><ShieldAlert className="h-3 w-3" /> Avoid</p>
+                  <div className="space-y-2">{toArray(playbook.common_mistakes).map((cm, ci) => (<div key={ci} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5"><ProseText text={cm.title} className="mb-0.5 text-xs font-medium text-slate-700" /><ProseText text={cm.detail} className="text-xs leading-relaxed text-slate-600" /></div>))}</div>
                 </div>
               )}
               {toArray(playbook.tools_mentioned).length > 0 && (
@@ -407,6 +407,7 @@ const ProjectDetailView = () => {
   const { data: intelSummary, isLoading: intelSummaryLoading, error: intelSummaryError } = useQuery({ queryKey: ['intel-summary', id], queryFn: () => api.getIntelSummary(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 2 });
   const { data: globalAudit, isLoading: globalAuditLoading, error: globalAuditError } = useQuery({ queryKey: ['global-audit', id], queryFn: () => api.getGlobalAudit(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 2 });
   const { data: movements, isLoading: movementsLoading } = useQuery({ queryKey: ['movements', id], queryFn: () => api.getMovements(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 1 });
+  const { data: citationEconomics, isLoading: citationEconomicsLoading } = useQuery({ queryKey: ['citation-economics', id], queryFn: () => api.getCitationEconomics(id), enabled: Boolean(id) && primaryLoaded && activeSection === 'dashboard' && !selectedPromptId, staleTime: 60_000, retry: 1 });
 
   const sessionExpired = useMemo(() => {
     const candidates = [error, dashboardError, intelSummaryError, globalAuditError, promptAnalysisError];
@@ -603,6 +604,7 @@ const ProjectDetailView = () => {
       ['deep-analysis', id],
       ['sources-intelligence', id],
       ['competitor-intelligence', id],
+      ['citation-economics', id],
       ['intel-summary', id],
       ['global-audit', id],
       ['movements', id],
@@ -681,6 +683,7 @@ const ProjectDetailView = () => {
           queryClient.invalidateQueries({ queryKey: ['deep-analysis', id] }),
           queryClient.invalidateQueries({ queryKey: ['sources-intelligence', id] }),
           queryClient.invalidateQueries({ queryKey: ['competitor-intelligence', id] }),
+          queryClient.invalidateQueries({ queryKey: ['citation-economics', id] }),
           queryClient.invalidateQueries({ queryKey: ['intel-summary', id] }),
           queryClient.invalidateQueries({ queryKey: ['global-audit', id] }),
           queryClient.invalidateQueries({ queryKey: ['movements', id] }),
@@ -957,8 +960,8 @@ const ProjectDetailView = () => {
                         </div>
                         {m.has_history && (
                           <div className="flex items-center gap-2">
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700"><TrendingUp className="h-3.5 w-3.5" />{s.gains || 0} gains</span>
-                            <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-600"><TrendingDown className="h-3.5 w-3.5" />{s.drops || 0} drops</span>
+                            <span className="inline-flex items-center gap-1 rounded-full bg-brand-primary/10 px-2.5 py-1 text-xs font-semibold text-brand-primary"><TrendingUp className="h-3.5 w-3.5" />{s.gains || 0} gains</span>
+                            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600"><TrendingDown className="h-3.5 w-3.5" />{s.drops || 0} drops</span>
                           </div>
                         )}
                       </div>
@@ -975,9 +978,8 @@ const ProjectDetailView = () => {
                       ) : (
                         <ul className="divide-y divide-slate-100/80 border-t border-slate-100/80">
                           {ev.map((e, i) => {
-                            const tone = e.direction === 'up' ? 'emerald' : e.direction === 'down' ? 'red' : 'amber';
                             const Icon = e.direction === 'up' ? ArrowUpRight : e.direction === 'down' ? ArrowDownRight : ShieldAlert;
-                            const toneCls = tone === 'emerald' ? 'bg-emerald-50 text-emerald-600' : tone === 'red' ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600';
+                            const toneCls = e.direction === 'up' ? 'bg-brand-primary/10 text-brand-primary' : 'bg-slate-100 text-slate-600';
                             return (
                               <li key={i} className="flex items-start gap-3 px-6 py-3.5">
                                 <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${toneCls}`}><Icon className="h-4 w-4" /></span>
@@ -1044,11 +1046,11 @@ const ProjectDetailView = () => {
                       const overallHealth = intelSummary?.overall_health
                         || (noSummaryData ? 'No data' : 'Neutral');
                       const healthBadgeStyle = overallHealth === 'Strong'
-                        ? 'bg-emerald-50 text-emerald-700'
+                        ? 'bg-brand-primary/10 text-brand-primary'
                         : overallHealth === 'Critical'
-                          ? 'bg-red-50 text-red-700'
+                          ? 'bg-slate-100 text-slate-700'
                           : overallHealth === 'No data'
-                            ? 'bg-amber-50 text-amber-700'
+                            ? 'bg-slate-100 text-slate-600'
                             : 'bg-slate-100 text-slate-600';
                       const priorityPrompts = toArray(intelSummary?.top_priority_prompts);
 
@@ -1131,6 +1133,143 @@ const ProjectDetailView = () => {
                         </div>
                       );
                     })()}
+
+                    {citationEconomicsLoading && !citationEconomics ? (
+                      <div className="glass-card-v2 flex items-center gap-2 px-6 py-4 text-sm text-slate-500">
+                        <Loader2 className="h-4 w-4 animate-spin text-slate-300" />
+                        Mapping citation authority...
+                      </div>
+                    ) : citationEconomics ? (() => {
+                      const moat = citationEconomics.citation_moat || {};
+                      const rollup = citationEconomics.rollup_focus_mentions || {};
+                      const topDomains = toArray(citationEconomics.domain_kpis?.top_domains).slice(0, 5);
+                      const recs = toArray(moat.recommendations);
+                      const focusMentions = Number(rollup.focus_mentions || 0);
+                      const moatScore = Number.isFinite(Number(moat.score)) ? Number(moat.score) : 0;
+                      const statusStyle = moat.status === 'Strong'
+                        ? 'bg-brand-primary/10 text-brand-primary'
+                        : moat.status === 'Leaky'
+                          ? 'bg-slate-100 text-slate-700'
+                          : moat.status === 'No data'
+                            ? 'bg-slate-100 text-slate-600'
+                            : 'bg-brand-primary/10 text-brand-primary';
+                      const signalLabel = {
+                        brand_owned: 'Owned',
+                        competitor_named: 'Competitor',
+                        other: 'Market source',
+                      };
+                      const draftFromRecommendation = (rec) => {
+                        setExecDraftTarget({
+                          source: 'audit',
+                          headline: rec.title || 'Authority moat action',
+                          query: rec.title || rec.detail || '',
+                          pathRec: rec.detail || rec.title || '',
+                          contentType: 'Article',
+                        });
+                        setActiveSection('execute');
+                      };
+
+                      return (
+                        <div className="glass-card-v2 overflow-hidden">
+                          <div className="flex flex-wrap items-start justify-between gap-4 px-6 py-5">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight text-slate-900">
+                                  <Crown className="h-4 w-4 text-brand-primary" />
+                                  Authority moat
+                                </h2>
+                                <DataBadge type="measured" />
+                              </div>
+                              <p className="mt-0.5 max-w-2xl text-sm text-slate-500">
+                                Which sources make AI engines trust you, and where competitors can still steal the answer.
+                              </p>
+                            </div>
+                            <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${statusStyle}`}>
+                              {moat.status || 'No data'}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-0 border-t border-slate-100/80 lg:grid-cols-[0.85fr_1.15fr]">
+                            <div className="space-y-4 px-6 py-5">
+                              <div>
+                                <p className={`${lbl} mb-2`}>Moat score</p>
+                                <div className="flex items-end gap-2">
+                                  <span className="text-4xl font-bold tabular-nums text-slate-900">{Math.round(moatScore)}</span>
+                                  <span className="pb-1 text-sm font-medium text-slate-400">/100</span>
+                                </div>
+                                <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                                  {moat.summary || 'Run analysis to measure citation backing.'}
+                                </p>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2">
+                                <div className="glass-inset rounded-lg px-3 py-2">
+                                  <p className={lbl}>Focus mentions</p>
+                                  <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{focusMentions}</p>
+                                </div>
+                                <div className="glass-inset rounded-lg px-3 py-2">
+                                  <p className={lbl}>Any source</p>
+                                  <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{moat.focus_cited_pct ?? 0}%</p>
+                                </div>
+                                <div className="glass-inset rounded-lg px-3 py-2">
+                                  <p className={lbl}>Owned citations</p>
+                                  <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{moat.owned_cited_pct ?? 0}%</p>
+                                </div>
+                                <div className="glass-inset rounded-lg px-3 py-2">
+                                  <p className={lbl}>Official site cited</p>
+                                  <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
+                                    {citationEconomics.official_site_alignment?.official_site_cited_pct ?? 0}%
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="space-y-5 border-t border-slate-100/80 px-6 py-5 lg:border-l lg:border-t-0">
+                              <div>
+                                <p className={`${lbl} mb-2`}>Top citation domains</p>
+                                {topDomains.length === 0 ? (
+                                  <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-500">No citation domains yet.</p>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {topDomains.map((domain) => (
+                                      <div key={domain.domain} className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-slate-100 bg-white/70 px-3 py-2">
+                                        <div className="min-w-0">
+                                          <p className="truncate text-sm font-semibold text-slate-800">{domain.domain}</p>
+                                          <p className="text-[10px] text-slate-400">{signalLabel[domain.signal] || 'Market source'}</p>
+                                        </div>
+                                        <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+                                          {domain.share_of_measured_urls ?? 0}%
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div>
+                                <p className={`${lbl} mb-2`}>Recommended moves</p>
+                                <div className="space-y-2">
+                                  {recs.map((rec, idx) => (
+                                    <div key={`${rec.title}-${idx}`} className="rounded-lg border border-slate-100 bg-slate-50/80 p-3">
+                                      <div className="flex flex-wrap items-start justify-between gap-2">
+                                        <p className="text-sm font-semibold text-slate-800">{rec.title}</p>
+                                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${rec.priority === 'high' ? 'bg-slate-100 text-slate-700' : 'bg-brand-primary/10 text-brand-primary'}`}>
+                                          {rec.priority || 'medium'}
+                                        </span>
+                                      </div>
+                                      <p className="mt-1 text-xs leading-relaxed text-slate-600">{rec.detail}</p>
+                                      <button type="button" onClick={() => draftFromRecommendation(rec)} className="mt-2 text-xs font-semibold text-brand-primary hover:underline">
+                                        Draft content from this
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })() : null}
                     {globalAuditLoading && !globalAudit ? (
                       <div className="glass-card-v2 flex items-center justify-center gap-2 px-6 py-4 text-sm text-slate-500">
                         <Loader2 className="h-4 w-4 animate-spin text-slate-300" />
@@ -1171,7 +1310,7 @@ const ProjectDetailView = () => {
                                   <div key={idx} className="glass-inset rounded-xl p-4">
                                     <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
                                       <ProseText text={item.title} as="h3" className="text-sm font-semibold text-slate-800" />
-                                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${priority === 'high' ? 'bg-red-50 text-red-600' : priority === 'low' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{priority}</span>
+                                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${priority === 'high' ? 'bg-brand-primary/10 text-brand-primary' : 'bg-slate-100 text-slate-600'}`}>{priority}</span>
                                     </div>
                                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                       <div><p className={`${lbl} mb-1`}>Root cause</p><ProseText text={item.root_cause} className="text-xs leading-relaxed text-slate-600" /></div>
@@ -1248,7 +1387,7 @@ const ProjectDetailView = () => {
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-[13px]">
-                      <thead><tr className="border-b border-slate-100/80 text-slate-400">{['Prompt', 'Answer vis.', 'Quality', 'Sentiment', 'Avg Rank', 'Models', 'Actions'].map((h) => <th key={h} className="px-5 py-2.5 text-left text-[11px] font-medium">{h}</th>)}</tr></thead>
+                      <thead><tr className="border-b border-slate-100/80 text-slate-400">{['Prompt', 'Answer visibility', 'Quality', 'Sentiment', 'Answer position', 'Models', 'Actions'].map((h) => <th key={h} className="px-5 py-2.5 text-left text-[11px] font-medium">{h}</th>)}</tr></thead>
                       <tbody className="divide-y divide-slate-50">
                         {promptAnalysisLoading ? Array.from({ length: 6 }).map((_, idx) => (<tr key={`sk-${idx}`}><td className="px-5 py-3"><div className="h-3 w-52 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-5 w-14 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-12 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-12 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-10 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-3 w-28 animate-pulse rounded bg-slate-100" /></td><td className="px-5 py-3"><div className="h-6 w-24 animate-pulse rounded bg-slate-100" /></td></tr>))
                           : toArray(promptAnalysis?.rows).map((row, idx) => (
@@ -1256,11 +1395,11 @@ const ProjectDetailView = () => {
                               <td className="max-w-[300px] px-5 py-3">
                                 <button type="button" onClick={() => openPromptDeepIntel(row.prompt_id)} className="block w-full truncate text-left text-sm font-medium text-slate-800 hover:text-brand-primary">{row.prompt_text}</button>
                               </td>
-                              <td className="px-5 py-3"><span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${(row.visibility_pct ?? row.visibility) > 70 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>{row.visibility_pct ?? row.visibility}%</span></td>
+                              <td className="px-5 py-3"><span className="inline-block rounded-full bg-brand-primary/10 px-2 py-0.5 text-xs font-semibold tabular-nums text-brand-primary">{row.visibility_pct ?? row.visibility}%</span></td>
                               <td className="px-5 py-3 font-medium tabular-nums text-slate-500">{row.quality_score ?? '-'}</td>
                               <td className="px-5 py-3 text-xs font-medium capitalize text-slate-500">{row.sentiment}</td>
                               <td className="px-5 py-3 font-medium tabular-nums text-slate-500">{row.avg_rank ?? '-'}</td>
-                              <td className="max-w-[200px] px-5 py-3 text-xs text-slate-600">{toArray(row.models).map((m) => modelIdToName[m] || m).join(', ') || '—'}</td>
+                              <td className="max-w-[200px] px-5 py-3 text-xs text-slate-600">{toArray(row.models).map((m) => modelIdToName[m] || m).join(', ') || '-'}</td>
                               <td className="px-5 py-3">
                                 <div className="flex items-center gap-1.5">
                                   <Button size="sm" onClick={() => runPromptMutation.mutate(row.prompt_id)} disabled={runningPrompts[row.prompt_id]}>{runningPrompts[row.prompt_id] ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}{runningPrompts[row.prompt_id] ? 'Running' : 'Run'}</Button>
@@ -1345,7 +1484,7 @@ const ProjectDetailView = () => {
                             <th className="px-4 py-3 text-left text-[10px] font-semibold text-slate-400" title="% of (prompt \u00d7 engine) cells where the brand was named.">Visibility</th>
                             <th className="px-4 py-3 text-right text-[10px] font-semibold text-slate-400" title="Share of all brand-mention events across model answers in the tracked portfolio.">AI Share</th>
                             <th className="px-4 py-3 text-right text-[10px] font-semibold text-slate-400" title="Composite of mention rate, rank, and sentiment. Hover a row to see the sub-components.">Quality</th>
-                            <th className="px-6 py-3 text-right text-[10px] font-semibold text-slate-400" title="Mean rank when the brand was named in measured answers.">Avg Rank</th>
+                            <th className="px-6 py-3 text-right text-[10px] font-semibold text-slate-400" title="Mean position when the brand was named in measured answers.">Answer position</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
@@ -1406,16 +1545,16 @@ const ProjectDetailView = () => {
                                     </div>
                                   </td>
                                   <td className="px-4 py-3.5 text-right">
-                                    <span className="text-xs font-semibold tabular-nums text-slate-700">{item.ai_share != null ? `${item.ai_share}%` : <span className="text-slate-300">\u2014</span>}</span>
+                                    <span className="text-xs font-semibold tabular-nums text-slate-700">{item.ai_share != null ? `${item.ai_share}%` : <span className="text-slate-300">-</span>}</span>
                                   </td>
                                   <td className="px-4 py-3.5 text-right">
                                     <span className="text-xs font-semibold tabular-nums text-slate-700" title={qualityTooltip}>
-                                      {item.quality_score != null ? `${item.quality_score}` : <span className="text-slate-300">\u2014</span>}
+                                      {item.quality_score != null ? `${item.quality_score}` : <span className="text-slate-300">-</span>}
                                     </span>
                                   </td>
                                   <td className="px-6 py-3.5 text-right">
                                     <span className="text-xs font-semibold tabular-nums text-slate-700" title={rankTooltip}>
-                                      {item.avg_rank != null ? `#${item.avg_rank}` : <span className="text-slate-300">\u2014</span>}
+                                      {item.avg_rank != null ? `#${item.avg_rank}` : <span className="text-slate-300">-</span>}
                                     </span>
                                   </td>
                                 </motion.tr>
@@ -1426,12 +1565,12 @@ const ProjectDetailView = () => {
                                       <span className="ml-4 inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{pe.engine}</span>
                                     </td>
                                     <td className="px-4 py-2 text-slate-600">
-                                      <span className="tabular-nums">{pe.visibility_pct != null ? `${pe.visibility_pct}%` : '\u2014'}</span>
+                                      <span className="tabular-nums">{pe.visibility_pct != null ? `${pe.visibility_pct}%` : '-'}</span>
                                       <span className="ml-2 text-[10px] text-slate-400">{pe.n_responses_with_brand}/{pe.n_engine_cells} answers</span>
                                     </td>
-                                    <td className="px-4 py-2 text-right text-slate-500">\u2014</td>
-                                    <td className="px-4 py-2 text-right text-slate-500">\u2014</td>
-                                    <td className="px-6 py-2 text-right text-slate-600 tabular-nums">{pe.avg_rank != null ? `#${pe.avg_rank}` : '\u2014'}</td>
+                                    <td className="px-4 py-2 text-right text-slate-500">-</td>
+                                    <td className="px-4 py-2 text-right text-slate-500">-</td>
+                                    <td className="px-6 py-2 text-right text-slate-600 tabular-nums">{pe.avg_rank != null ? `#${pe.avg_rank}` : '-'}</td>
                                   </tr>
                                 ))}
                               </React.Fragment>
@@ -1464,7 +1603,7 @@ const ProjectDetailView = () => {
                 <div className="glass-card-v2 overflow-hidden">
                   <div className="flex items-center justify-between gap-4 border-b border-slate-100/80 px-6 py-4">
                     <div className="flex items-center gap-2.5">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-500/10 text-violet-600"><Zap className="h-4 w-4" /></div>
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-primary/10 text-brand-primary"><Zap className="h-4 w-4" /></div>
                       <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Content Studio</p><DataBadge type="ai" /></div><p className="text-[11px] text-slate-400">Drafts and rewrites to edit and publish yourself</p></div>
                     </div>
                   </div>
@@ -1608,7 +1747,7 @@ const ProjectDetailView = () => {
                     <>
                       <div className="glass-card-v2 overflow-hidden">
                         <div className="flex items-center gap-2.5 border-b border-slate-100/80 px-6 py-4">
-                          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600"><Sparkles className="h-4 w-4" /></div>
+                          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-primary/10 text-brand-primary"><Sparkles className="h-4 w-4" /></div>
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
                               <p className="text-sm font-semibold text-slate-800">Action plan</p>
@@ -1844,23 +1983,23 @@ const ProjectDetailView = () => {
                 <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_1.2fr]">
                   <div className="space-y-6">
                     <div className="glass-card-v2 p-6">
-                      <h5 className="mb-6 flex items-center gap-2 text-[10px] font-bold tracking-tight text-slate-500"><BarChart2 className="h-4 w-4" /> Brand rankings in this answer set</h5>
-                      <div className="space-y-4">{toArray(promptDetailData.brand_ranking).slice(0, 6).map((item) => (<div key={item.name} className={`flex items-center justify-between rounded-xl p-3 transition-all ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'bg-brand-primary/8 border border-brand-primary/20' : 'hover:bg-slate-50'}`}><span className={`font-bold ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'text-brand-primary' : 'text-slate-900'}`}>{item.name}</span><div className="flex items-center gap-4"><span className="text-[10px] font-bold text-slate-500">{item.mentions} Citations</span><span className={`text-sm font-bold tabular-nums ${item.avg_rank === 1 ? 'text-yellow-400' : 'text-slate-500'}`}>#{item.avg_rank ?? '-'}</span></div></div>))}</div>
+                      <h5 className="mb-6 flex items-center gap-2 text-[10px] font-bold tracking-tight text-slate-500"><BarChart2 className="h-4 w-4" /> Brand positions in model answers</h5>
+                      <div className="space-y-4">{toArray(promptDetailData.brand_ranking).slice(0, 6).map((item) => (<div key={item.name} className={`flex items-center justify-between rounded-xl p-3 transition-all ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'bg-brand-primary/8 border border-brand-primary/20' : 'hover:bg-slate-50'}`}><span className={`font-bold ${item.name.toLowerCase().includes(project.name.toLowerCase()) ? 'text-brand-primary' : 'text-slate-900'}`}>{item.name}</span><div className="flex items-center gap-4"><span className="text-[10px] font-bold text-slate-500">{item.mentions} answer mentions</span><span className="text-sm font-bold tabular-nums text-slate-500">{item.avg_rank != null ? `#${item.avg_rank}` : '-'}</span></div></div>))}</div>
                     </div>
                     <div className="glass-card-v2 p-6">
                       <h5 className="mb-5 flex items-center gap-2 text-[10px] font-bold tracking-tight text-slate-400"><TrendingUp className="h-4 w-4" /> Sentiment Profile</h5>
                       <div className="grid grid-cols-3 gap-3">
-                        <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-50 to-emerald-500/5 p-4 text-center">
-                          <p className="text-3xl font-bold tabular-nums text-emerald-600">{promptDetailData.sentiment?.positive ?? 0}</p>
-                          <p className="mt-1 text-[9px] font-bold text-emerald-500">Positive</p>
+                        <div className="rounded-2xl border border-brand-primary/20 bg-brand-primary/[0.04] p-4 text-center">
+                          <p className="text-3xl font-bold tabular-nums text-brand-primary">{promptDetailData.sentiment?.positive ?? 0}</p>
+                          <p className="mt-1 text-[9px] font-bold text-brand-primary">Positive</p>
                         </div>
                         <div className="rounded-2xl border border-slate-200/60 bg-gradient-to-br from-slate-50 to-slate-100/30 p-4 text-center">
                           <p className="text-3xl font-bold tabular-nums text-slate-700">{promptDetailData.sentiment?.neutral ?? 0}</p>
                           <p className="mt-1 text-[9px] font-bold text-slate-400">Neutral</p>
                         </div>
-                        <div className="rounded-2xl border border-red-500/20 bg-gradient-to-br from-red-50 to-red-500/5 p-4 text-center">
-                          <p className="text-3xl font-bold tabular-nums text-red-500">{promptDetailData.sentiment?.negative ?? 0}</p>
-                          <p className="mt-1 text-[9px] font-bold text-red-400">Negative</p>
+                        <div className="rounded-2xl border border-slate-200/60 bg-slate-50/70 p-4 text-center">
+                          <p className="text-3xl font-bold tabular-nums text-slate-700">{promptDetailData.sentiment?.negative ?? 0}</p>
+                          <p className="mt-1 text-[9px] font-bold text-slate-400">Negative</p>
                         </div>
                       </div>
                     </div>
@@ -1873,7 +2012,7 @@ const ProjectDetailView = () => {
                         <div key={idx} className="glass-inset rounded-xl p-4">
                           <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
                             <h6 className="text-sm font-semibold text-slate-900">{item.issue || item.title}</h6>
-                            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${item.priority === 'high' ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-600'}`}>{item.priority}</span>
+                            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${item.priority === 'high' ? 'bg-brand-primary/10 text-brand-primary' : 'bg-slate-100 text-slate-600'}`}>{item.priority}</span>
                           </div>
                           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                             <div><p className={`${lbl} mb-1`}>Root cause</p><div className="text-xs leading-relaxed text-slate-600">{renderTextWithLinks(item.root_cause || item.detail)}</div></div>

@@ -6,9 +6,24 @@ import { AlertTriangle, CheckCircle2, CreditCard, Mail, Settings, Save } from 'l
 import DashboardCard from './DashboardCard';
 import { Button } from '../ui/button';
 import { api } from '../../lib/api';
-import { startSubscriptionCheckout } from '../../lib/subscriptionCheckout';
+import {
+  PENDING_CASHFREE_PLAN_KEY,
+  startSubscriptionCheckout,
+} from '../../lib/subscriptionCheckout';
+import {
+  billingCurrency,
+  billingCycleNote,
+  formatPaymentMethods,
+  formatPlanPrice,
+  formatRenewalDate,
+  formatSubscriptionStatus,
+  isSandboxEnvironment,
+  planAmountFromHealth,
+} from '../../lib/billingDisplay';
+import { useBillingPhonePrompt } from '../../hooks/useBillingPhonePrompt';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../ui/toast';
+import { SUPPORT_EMAIL_HELLO } from '../../lib/supportEmails';
 
 const container = {
   hidden: { opacity: 0 },
@@ -24,6 +39,7 @@ const SettingsView = () => {
   const queryClient = useQueryClient();
   const toast = useToast();
   const { user } = useAuth();
+  const { requestPhone, phoneDialog } = useBillingPhonePrompt();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: billing, isLoading: billingLoading } = useQuery({
     queryKey: ['billing', 'me'],
@@ -36,7 +52,8 @@ const SettingsView = () => {
     staleTime: 120_000,
   });
   const [checkoutBusy, setCheckoutBusy] = useState(null);
-
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [timezone, setTimezone] = useState(
     localStorage.getItem('ranklore_timezone') ||
       Intl.DateTimeFormat().resolvedOptions().timeZone ||
@@ -47,15 +64,63 @@ const SettingsView = () => {
   );
   const [saved, setSaved] = useState(false);
 
+  const currency = billingCurrency(billingHealth);
+  const sandbox = isSandboxEnvironment(billingHealth);
+  const paymentMethods = formatPaymentMethods(billingHealth?.payment_methods);
+  const standardPrice = formatPlanPrice(planAmountFromHealth(billingHealth, 'standard'), currency);
+  const proPrice = formatPlanPrice(planAmountFromHealth(billingHealth, 'pro'), currency);
+
   useEffect(() => {
-    if (searchParams.get('billing') !== 'return') return;
-    queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
-    queryClient.invalidateQueries({ queryKey: ['projects'] });
-    toast.info('Payment submitted', 'We are syncing your subscription status.');
-    const next = new URLSearchParams(searchParams);
-    next.delete('billing');
-    setSearchParams(next, { replace: true });
-  }, [queryClient, searchParams, setSearchParams, toast]);
+    const billingParam = searchParams.get('billing');
+    if (!billingParam) return;
+    let cancelled = false;
+
+    (async () => {
+      if (billingParam === 'failed') {
+        toast.error(
+          'Payment not completed',
+          sandbox
+            ? 'Cashfree did not authorize the payment. Try again with UPI, card, net banking, or wallet.'
+            : 'Your payment was not completed. Return to checkout and try again, or contact support if the issue persists.',
+        );
+      } else if (billingParam === 'return') {
+        try {
+          for (let attempt = 0; attempt < 6 && !cancelled; attempt += 1) {
+            const synced = await api.syncBilling();
+            await queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
+            await queryClient.invalidateQueries({ queryKey: ['projects'] });
+            if (synced?.plan && synced.plan !== 'free') {
+              toast.success('Subscription active', 'Your plan limits are updated.');
+              break;
+            }
+            if (attempt < 5) {
+              await new Promise((r) => setTimeout(r, 2000));
+            } else {
+              toast.info(
+                'Authorization pending',
+                'Payment is still processing. Use Continue payment or refresh status in a moment.',
+              );
+            }
+          }
+        } catch (e) {
+          if (!cancelled) {
+            toast.error('Could not sync billing', e?.message || 'Refresh the page to retry.');
+          }
+        }
+      }
+      if (!cancelled) {
+        const next = new URLSearchParams(searchParams);
+        next.delete('billing');
+        next.delete('cf_status');
+        next.delete('plan');
+        setSearchParams(next, { replace: true });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [queryClient, sandbox, searchParams, setSearchParams, toast]);
 
   const save = () => {
     localStorage.setItem('ranklore_timezone', timezone);
@@ -68,13 +133,28 @@ const SettingsView = () => {
   const runUpgrade = async (planKey) => {
     setCheckoutBusy(planKey);
     try {
-      const outcome = await startSubscriptionCheckout(planKey, { user });
+      try {
+        sessionStorage.removeItem(PENDING_CASHFREE_PLAN_KEY);
+      } catch {
+        /* ignore */
+      }
+      const outcome = await startSubscriptionCheckout(planKey, {
+        user,
+        forceNew: true,
+        onRequestPhone: requestPhone,
+      });
       if (outcome === 'paid') {
+        await api.syncBilling();
         queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
         queryClient.invalidateQueries({ queryKey: ['projects'] });
         toast.success('Subscription active', 'We are refreshing your limits now.');
+      } else if (outcome === 'redirected') {
+        toast.info(
+          'Opening Cashfree',
+          `Complete payment (${paymentMethods}) on the next page.`,
+        );
       } else if (outcome === 'dismissed') {
-        toast.info('Checkout closed', 'You can restart the upgrade anytime.');
+        toast.info('Checkout closed', 'Use Continue payment to reopen Cashfree checkout.');
       }
     } catch (e) {
       toast.error('Checkout failed', e?.message || 'Please try again.');
@@ -83,8 +163,45 @@ const SettingsView = () => {
     }
   };
 
+  const runCancel = async () => {
+    setCancelBusy(true);
+    try {
+      await api.cancelBilling();
+      await queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
+      await queryClient.invalidateQueries({ queryKey: ['projects'] });
+      setShowCancelConfirm(false);
+      toast.success(
+        'Plan will end after this period',
+        renewalEnd
+          ? `You keep access until ${renewalEnd}. Your plan will revert to Free after that.`
+          : 'Access continues until the end of the current paid period.',
+      );
+    } catch (e) {
+      toast.error('Could not cancel', e?.message || 'Please try again or contact support.');
+    } finally {
+      setCancelBusy(false);
+    }
+  };
+
   const planLabel =
     billing?.plan === 'pro' ? 'Pro' : billing?.plan === 'standard' ? 'Standard' : 'Free';
+
+  const subStatus = (billing?.subscription?.status || '').toLowerCase();
+  const checkoutPending = ['pending', 'initialized', 'created'].includes(subStatus);
+  const checkoutFailed = subStatus === 'failed';
+  const pendingPlanKey =
+    billing?.subscription?.internal_plan === 'pro' ? 'pro' : 'standard';
+  const pendingPlanPrice =
+    pendingPlanKey === 'pro' ? proPrice : standardPrice;
+  const activePlanPrice =
+    billing?.plan === 'pro' ? proPrice : billing?.plan === 'standard' ? standardPrice : null;
+  const renewalEnd = formatRenewalDate(billing?.subscription?.current_period_end);
+  const hasPaidPlan = billing?.plan === 'standard' || billing?.plan === 'pro';
+  const checkoutUnavailable = Boolean(billingHealth && !billingHealth.ready_for_checkout);
+  const checkoutDisabled = Boolean(checkoutBusy || checkoutUnavailable);
+  const showDevBillingBanner =
+    sandbox && checkoutUnavailable;
+  const showLiveBillingUnavailable = !sandbox && checkoutUnavailable;
 
   const alertEmail =
     user?.primaryEmailAddress?.emailAddress ||
@@ -98,6 +215,8 @@ const SettingsView = () => {
       animate="visible"
       className="mx-auto max-w-2xl space-y-6"
     >
+      {phoneDialog}
+
       {/* Header */}
       <motion.div variants={item} className="border-b border-slate-200/60 pb-5">
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">Settings</h1>
@@ -106,95 +225,261 @@ const SettingsView = () => {
 
       <motion.div variants={item}>
         <DashboardCard title="Plan & billing" icon={CreditCard}>
-          {billingHealth ? (
-            billingHealth.keys_configured && billingHealth.plans_configured ? (
-              <div className="mb-3 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-2.5 text-xs text-emerald-800">
-                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                <div>
-                  <p className="font-semibold">Billing is fully configured.</p>
-                  <p>
-                    Payments are collected in {billingHealth.currency} via Cashfree. Renewals and
-                    cancellations are handled through Cashfree subscription notifications.
-                  </p>
-                </div>
+          {showDevBillingBanner ? (
+            <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-xs text-amber-900">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <div>
+                <p className="font-semibold">Sandbox billing setup</p>
+                <ul className="mt-0.5 list-disc pl-4">
+                  {!billingHealth.keys_configured ? (
+                    <li>Cashfree API keys are missing on the server.</li>
+                  ) : null}
+                  {!billingHealth.webhook_secret_configured ? (
+                    <li>
+                      Set CASHFREE_WEBHOOK_SECRET in backend env and match it in the Cashfree Dashboard
+                      webhook config before going live.
+                    </li>
+                  ) : null}
+                  {!billingHealth.webhook_url_ready ? (
+                    <li>Set API_PUBLIC_URL to the public HTTPS backend URL used by Cashfree webhooks.</li>
+                  ) : null}
+                </ul>
               </div>
-            ) : (
-              <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-xs text-amber-900">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                <div>
-                  <p className="font-semibold">Billing needs attention.</p>
-                  <ul className="mt-0.5 list-disc pl-4">
-                    {!billingHealth.keys_configured ? (
-                      <li>Cashfree API keys are missing on the server.</li>
-                    ) : null}
-                    {billingHealth.keys_configured && !billingHealth.plans_configured ? (
-                      <li>
-                        Plans are not configured yet — the first upgrade click will auto-provision
-                        USD plans via the Cashfree API.
-                      </li>
-                    ) : null}
-                    {!billingHealth.webhook_secret_configured ? (
-                      <li>
-                        Webhook secret is not set in env (a dev secret is auto-generated — paste it
-                        into the Cashfree Dashboard webhook config before going live).
-                      </li>
-                    ) : null}
-                  </ul>
-                </div>
+            </div>
+          ) : null}
+
+          {showLiveBillingUnavailable ? (
+            <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-xs text-amber-900">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <div>
+                <p className="font-semibold">Payments are temporarily unavailable</p>
+                <p>
+                  We could not start secure checkout right now. Please email{' '}
+                  <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className="font-semibold underline">
+                    {SUPPORT_EMAIL_HELLO}
+                  </a>{' '}
+                  and we will help you activate the plan.
+                </p>
               </div>
-            )
+            </div>
           ) : null}
 
           {billingLoading ? (
-            <p className="text-sm text-slate-400">Loading plan…</p>
+            <p className="text-sm text-slate-400">Loading plan...</p>
           ) : (
             <div className="space-y-4 text-sm text-slate-600">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Current plan</p>
                 <p className="mt-1 font-semibold text-slate-900">{planLabel}</p>
+                {activePlanPrice ? (
+                  <p className="mt-0.5 text-sm text-slate-600">
+                    {activePlanPrice}
+                    <span className="text-slate-400">/month</span>
+                    {renewalEnd ? (
+                      <span className="text-slate-500">
+                        {' '}
+                        - Access until {renewalEnd}
+                      </span>
+                    ) : null}
+                  </p>
+                ) : null}
                 {billing?.limits ? (
                   <p className="mt-1 text-xs text-slate-500">
                     Up to {billing.limits.max_projects} project
-                    {billing.limits.max_projects === 1 ? '' : 's'} · {billing.limits.max_prompts_per_project} prompts
+                    {billing.limits.max_projects === 1 ? '' : 's'} - {billing.limits.max_prompts_per_project} prompts
                     per project
                   </p>
                 ) : null}
                 {billing?.subscription?.status ? (
                   <p className="mt-1 text-xs text-slate-500">
-                    Subscription status:{' '}
-                    <span className="font-medium text-slate-700">{billing.subscription.status}</span>
+                    Status:{' '}
+                    <span className="font-medium text-slate-700">
+                      {formatSubscriptionStatus(billing.subscription.status)}
+                    </span>
+                    {checkoutPending ? (
+                      <span className="text-amber-700">
+                        {' '}
+                        - complete payment to unlock paid limits.
+                      </span>
+                    ) : null}
+                    {checkoutFailed ? (
+                      <span className="text-red-600">
+                        {' '}
+                        - payment failed. Try again when ready.
+                      </span>
+                    ) : null}
                   </p>
                 ) : null}
               </div>
-              {billing?.plan === 'free' ? (
-                <div className="flex flex-wrap gap-2">
+
+              {checkoutPending ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-xs text-amber-900">
+                  <p className="font-semibold">Complete payment on Cashfree</p>
+                  <p className="mt-1 leading-relaxed">
+                    Your {pendingPlanKey === 'pro' ? 'Pro' : 'Standard'} order ({pendingPlanPrice}) is awaiting
+                    payment. Continue to Cashfree&apos;s secure checkout to pay with {paymentMethods}.
+                  </p>
+                  {sandbox ? (
+                    <p className="mt-2 leading-relaxed">
+                      <span className="font-medium">Sandbox test:</span>{' '}
+                      {currency === 'INR' ? (
+                        <>
+                          choose <strong>UPI</strong> and enter{' '}
+                          <code className="rounded bg-amber-100 px-1">testsuccess@gocash</code>, or use test card OTP{' '}
+                          <code className="rounded bg-amber-100 px-1">111000</code>.
+                        </>
+                      ) : (
+                        <>
+                          USD checkout is <strong>card only</strong> (Cashfree does not offer UPI for USD). For UPI
+                          testing, set <code className="rounded bg-amber-100 px-1">CASHFREE_PLAN_CURRENCY=INR</code>{' '}
+                          on the server and restart.
+                        </>
+                      )}
+                    </p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={checkoutDisabled}
+                      onClick={() => runUpgrade(pendingPlanKey)}
+                    >
+                      {checkoutBusy ? 'Opening...' : 'Continue payment'}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={checkoutBusy}
+                      onClick={async () => {
+                        try {
+                          await api.syncBilling();
+                          queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
+                          toast.info('Status refreshed', 'Check if your plan updated.');
+                        } catch (e) {
+                          toast.error('Sync failed', e?.message || 'Try again.');
+                        }
+                      }}
+                    >
+                      Refresh status
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
+              {checkoutFailed && billing?.plan === 'free' ? (
+                <div className="rounded-lg border border-red-200 bg-red-50/80 p-3 text-xs text-red-900">
+                  <p className="font-semibold">Payment failed</p>
+                  <p className="mt-1 leading-relaxed">
+                    Cashfree did not complete the last payment. Start a fresh secure checkout when you are ready.
+                  </p>
                   <Button
                     type="button"
                     size="sm"
-                    disabled={checkoutBusy}
-                    onClick={() => runUpgrade('standard')}
+                    className="mt-3"
+                    disabled={checkoutDisabled}
+                    onClick={() => runUpgrade(pendingPlanKey)}
                   >
-                    {checkoutBusy === 'standard' ? 'Opening…' : 'Upgrade — Standard'}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    disabled={checkoutBusy}
-                    onClick={() => runUpgrade('pro')}
-                  >
-                    {checkoutBusy === 'pro' ? 'Opening…' : 'Upgrade — Pro'}
-                  </Button>
-                  <Button type="button" size="sm" variant="ghost" asChild>
-                    <Link to="/#pricing">View pricing</Link>
+                    {checkoutBusy ? 'Opening...' : `Try ${pendingPlanKey === 'pro' ? 'Pro' : 'Standard'} again`}
                   </Button>
                 </div>
-              ) : (
-                <p className="text-xs text-slate-500">
-                  Manage renewals and payment methods via Cashfree subscription emails. For plan
-                  changes, contact support or cancel your current subscription first.
-                </p>
-              )}
+              ) : null}
+
+              {billing?.plan === 'free' && !checkoutPending && !checkoutFailed ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={checkoutDisabled}
+                      onClick={() => runUpgrade('standard')}
+                    >
+                      {checkoutBusy === 'standard' ? 'Opening...' : `Upgrade - Standard (${standardPrice}/mo)`}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={checkoutDisabled}
+                      onClick={() => runUpgrade('pro')}
+                    >
+                      {checkoutBusy === 'pro' ? 'Opening...' : `Upgrade - Pro (${proPrice}/mo)`}
+                    </Button>
+                    <Button type="button" size="sm" variant="ghost" asChild>
+                      <Link to="/#pricing">View pricing</Link>
+                    </Button>
+                  </div>
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    Secure checkout via Cashfree ({paymentMethods}). {billingCycleNote(currency)}
+                  </p>
+                </div>
+              ) : null}
+
+              {hasPaidPlan && !checkoutPending ? (
+                <div className="space-y-3 border-t border-slate-100 pt-4">
+                  <div className="flex items-start gap-2 rounded-lg border border-emerald-200/80 bg-emerald-50/50 p-3 text-xs text-emerald-900">
+                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <p className="leading-relaxed">
+                      Your plan is active for 30 days from payment. This is a one-time monthly payment; renew from Settings when it expires.
+                      {renewalEnd ? ` Access until ${renewalEnd}.` : ''}
+                    </p>
+                  </div>
+
+                  {!showCancelConfirm ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={cancelBusy}
+                        onClick={() => setShowCancelConfirm(true)}
+                      >
+                        End after this period
+                      </Button>
+                      <Button type="button" size="sm" variant="ghost" asChild>
+                        <Link to="/#pricing">Compare plans</Link>
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 text-xs text-slate-700">
+                      <p className="font-semibold text-slate-900">End this plan after the paid period?</p>
+                      <p className="mt-1 leading-relaxed">
+                        {renewalEnd
+                          ? `You keep ${planLabel} access until ${renewalEnd}. After that, revert to Free unless you pay again.`
+                          : 'Your plan will stay active until the end of the current period, then revert to Free.'}
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="destructive"
+                          disabled={cancelBusy}
+                          onClick={runCancel}
+                        >
+                          {cancelBusy ? 'Updating...' : 'Yes, end after this period'}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          disabled={cancelBusy}
+                          onClick={() => setShowCancelConfirm(false)}
+                        >
+                          Keep plan active
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  <p className="text-xs text-slate-500">
+                    To switch plans (for example, Standard to Pro), end the current paid period first or email{' '}
+                    <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className="font-medium text-brand-primary hover:underline">
+                      {SUPPORT_EMAIL_HELLO}
+                    </a>
+                    .
+                  </p>
+                </div>
+              ) : null}
             </div>
           )}
         </DashboardCard>

@@ -1,30 +1,26 @@
 import React from 'react';
 import StaticPage from './StaticPage';
+import { SUPPORT_EMAIL_DEV, SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
+
+const linkClass = 'text-brand-primary hover:underline';
 
 export default function ContactPage() {
   return (
     <StaticPage title="Contact" subtitle="We reply fast — usually within one business day.">
       <section className="space-y-4">
         <p>
-          For sales, partnerships, or product questions, email{' '}
-          <a href="mailto:hello@answerdeck.com" className="text-brand-primary">
-            hello@answerdeck.com
+          For sales, partnerships, product questions, privacy, billing, or general support, email{' '}
+          <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className={linkClass}>
+            {SUPPORT_EMAIL_HELLO}
           </a>
           .
         </p>
         <p>
-          For account or billing issues, email{' '}
-          <a href="mailto:support@answerdeck.com" className="text-brand-primary">
-            support@answerdeck.com
-          </a>{' '}
-          and include the email address on your Clerk account.
-        </p>
-        <p>
-          For anything related to data, privacy, or GDPR, email{' '}
-          <a href="mailto:privacy@answerdeck.com" className="text-brand-primary">
-            privacy@answerdeck.com
+          For technical issues, bugs, or platform help, email{' '}
+          <a href={`mailto:${SUPPORT_EMAIL_DEV}`} className={linkClass}>
+            {SUPPORT_EMAIL_DEV}
           </a>
-          .
+          . Include the email on your account when relevant.
         </p>
       </section>
     </StaticPage>

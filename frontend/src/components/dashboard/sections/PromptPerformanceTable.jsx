@@ -6,29 +6,26 @@ import { cn } from '../../../lib/utils';
 
 function VisibilityBar({ value }) {
   const pct = Number(value) || 0;
-  const color = pct > 70 ? 'bg-emerald-500' : pct > 40 ? 'bg-amber-400' : 'bg-red-400';
-  const textColor = pct > 70 ? 'text-emerald-600' : pct > 40 ? 'text-amber-600' : 'text-red-500';
   return (
     <div className="flex items-center gap-2.5">
       <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-100">
-        <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${Math.min(100, pct)}%` }} />
+        <div className="h-full rounded-full bg-brand-primary transition-all" style={{ width: `${Math.min(100, pct)}%` }} />
       </div>
-      <span className={cn('text-xs font-bold tabular-nums', textColor)}>{pct}%</span>
+      <span className="text-xs font-bold tabular-nums text-brand-primary">{pct}%</span>
     </div>
   );
 }
 
 function statusForVisibility(pct) {
   const v = Number(pct) || 0;
-  if (v <= 0) return { label: 'Missing', cls: 'text-slate-400' };
-  if (v < 40) return { label: 'Missing', cls: 'text-slate-400' };
-  if (v < 70) return { label: 'At risk', cls: 'text-amber-600' };
-  return { label: 'Strong', cls: 'text-emerald-600' };
+  if (v <= 0) return { label: 'Not named', cls: 'text-slate-400' };
+  if (v < 100) return { label: 'Partly named', cls: 'text-brand-primary' };
+  return { label: 'Named', cls: 'text-brand-primary' };
 }
 
 function ModelBadges({ models }) {
   const list = Array.isArray(models) ? models : [];
-  if (!list.length) return <span className="text-xs text-slate-300">—</span>;
+  if (!list.length) return <span className="text-xs text-slate-300">-</span>;
   return (
     <div className="flex flex-wrap gap-1.5">
       {list.slice(0, 4).map((m) => (
@@ -58,12 +55,12 @@ export default function PromptPerformanceTable({ loading, rows, onViewAll }) {
       <div className="border-b border-slate-100 px-6 py-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-500/10 text-violet-600">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-primary/10 text-brand-primary">
               <FileText className="h-4 w-4" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-slate-800">Prompt Performance</h3>
-              <p className="mt-0.5 text-[11px] text-slate-400">See how your brand performs across each tracked query</p>
+              <h3 className="text-sm font-semibold text-slate-800">Prompt visibility</h3>
+              <p className="mt-0.5 text-[11px] text-slate-400">Measured only from brand names in model answers</p>
             </div>
           </div>
 
@@ -95,7 +92,7 @@ export default function PromptPerformanceTable({ loading, rows, onViewAll }) {
         <table className="w-full">
           <thead>
             <tr className="border-b border-slate-100/60">
-              {['Prompt', 'Visibility', 'Avg Rank', 'Model Performance', 'Top Competitor', 'Status'].map((h) => (
+              {['Prompt', 'Answer visibility', 'Answer position', 'Models', 'Top competitor', 'Answer status'].map((h) => (
                 <th key={h} className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400">{h}</th>
               ))}
             </tr>
@@ -127,13 +124,13 @@ export default function PromptPerformanceTable({ loading, rows, onViewAll }) {
                     </td>
                     <td className="px-5 py-3.5"><VisibilityBar value={vis} /></td>
                     <td className="px-5 py-3.5 text-xs font-semibold tabular-nums text-slate-700">
-                      {row.avg_rank != null ? `#${row.avg_rank}` : <span className="text-slate-300">—</span>}
+                      {row.avg_rank != null ? `#${row.avg_rank}` : <span className="text-slate-300">-</span>}
                     </td>
                     <td className="px-5 py-3.5">
                       <ModelBadges models={row.models} />
                     </td>
                     <td className="px-5 py-3.5 text-xs font-semibold text-slate-700">
-                      {row.top_competitor || row.topCompetitor || <span className="text-slate-300">—</span>}
+                      {row.top_competitor || row.topCompetitor || <span className="text-slate-300">-</span>}
                     </td>
                     <td className={cn('px-5 py-3.5 text-xs font-semibold', status.cls)}>{status.label}</td>
                   </tr>

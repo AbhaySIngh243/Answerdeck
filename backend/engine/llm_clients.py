@@ -66,7 +66,8 @@ GEMINI_REQUIRE_WEB_SEARCH = os.getenv("GEMINI_REQUIRE_WEB_SEARCH", "false").lowe
 DEEPSEEK_REQUIRE_WEB_SEARCH = os.getenv("DEEPSEEK_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
 RANKLORE_EXTERNAL_PARITY_MODE = os.getenv("RANKLORE_EXTERNAL_PARITY_MODE", "true").lower() in {"1", "true", "yes"}
 RANKLORE_LLM_TEMPERATURE = float(os.getenv("RANKLORE_LLM_TEMPERATURE", "0.3"))
-RANKLORE_SEARCH_AUGMENT_ENABLED = os.getenv("RANKLORE_SEARCH_AUGMENT_ENABLED", "true").lower() in {"1", "true", "yes"}
+RANKLORE_SEARCH_AUGMENT_ENABLED = os.getenv("RANKLORE_SEARCH_AUGMENT_ENABLED", "false").lower() in {"1", "true", "yes"}
+RANKLORE_MEASURE_PROMPT_VARIANTS = os.getenv("RANKLORE_MEASURE_PROMPT_VARIANTS", "false").lower() in {"1", "true", "yes"}
 RANKLORE_SEARCH_AUGMENT_MAX_RESULTS = max(1, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_MAX_RESULTS", "8")), 10))
 RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS = max(80, min(int(os.getenv("RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS", "280")), 400))
 RANKLORE_SEARCH_PROVIDER_STRICT = os.getenv("RANKLORE_SEARCH_PROVIDER_STRICT", "true").lower() in {"1", "true", "yes"}
@@ -677,13 +678,15 @@ def query_engines(
     intent_context: Any | None = None,
     brand_context: Any | None = None,
 ) -> dict[str, Any]:
-    """Query all enabled LLM engines with optional search grounding and intent variants.
+    """Query enabled LLM engines.
 
-    Returns ``responses`` (direct variant per engine), ``variant_responses``, and
-    ``search_context``. ``responses`` uses only the direct variant for backward compatibility.
+    The measured response must stay close to what a user would see in an
+    external LLM: the original prompt, no synthetic variants, no search block,
+    unless explicitly enabled by env flags. Visibility scoring consumes only
+    ``responses``.
     """
     variants: list[tuple[str, str]] = [("direct", query)]
-    if intent_context is not None:
+    if RANKLORE_MEASURE_PROMPT_VARIANTS and intent_context is not None:
         pv = getattr(intent_context, "prompt_variants", None) or []
         if len(pv) >= 3 and len({str(pv[0]).strip(), str(pv[1]).strip(), str(pv[2]).strip()}) == 3:
             variants = [
@@ -727,9 +730,6 @@ def query_engines(
             )
         try:
             text = chat(engine_name, full_prompt)
-            if text and not text.startswith("[") and grounding_urls:
-                if not _extract_urls_from_text(text):
-                    text = f"{text}{_format_sources_tail(grounding_urls)}"
             return engine_name, variant_key, text
         except Exception as exc:
             return engine_name, variant_key, f"[{engine_name} error: {exc}]"
@@ -802,6 +802,7 @@ def get_search_layer_status() -> dict[str, Any]:
     provider_available = is_perplexity_search_enabled()
     return {
         "search_augment_enabled": RANKLORE_SEARCH_AUGMENT_ENABLED,
+        "measurement_variants_enabled": RANKLORE_MEASURE_PROMPT_VARIANTS,
         "provider": provider,
         "runtime_provider_override": get_runtime_search_provider(),
         "provider_available": provider_available,

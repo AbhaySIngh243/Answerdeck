@@ -12,6 +12,7 @@ import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import { Button } from './ui/button';
 import { api } from '../lib/api';
+import { SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 const initialForm = {
   name: '',
@@ -98,7 +99,7 @@ export default function RequestDemoDialog({ open, onOpenChange }) {
                 <p className="text-base font-semibold text-slate-900">Request sent</p>
                 <p className="mt-2 text-sm leading-relaxed text-slate-600">
                   Thanks — we sent your details to{' '}
-                  <span className="font-medium text-slate-800">hello@answerdeck.com</span>. Check your inbox for a reply
+                  <span className="font-medium text-slate-800">{SUPPORT_EMAIL_HELLO}</span>. Check your inbox for a reply
                   soon.
                 </p>
                 <Button type="button" className="mt-6 w-full" onClick={resetAndClose}>

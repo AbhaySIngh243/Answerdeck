@@ -16,6 +16,9 @@ from sqlalchemy import func
 from auth import require_auth
 from engine.analyzer import (
     _clean_json,
+    _alias_appears_in_response,
+    _phrase_in_response,
+    build_focus_brand_aliases,
     calculate_visibility_score,
     generate_detailed_audit,
     generate_action_playbook,
@@ -145,13 +148,20 @@ def _cache_invalidate_project(project_id: int) -> None:
         deleted = ReportCache.query.filter(
             ReportCache.cache_key.in_([
                 f"deep-analysis:{project_id}",
+                f"deep-analysis:v2:{project_id}",
                 f"prompt-analysis:{project_id}",
+                f"prompt-analysis:v2:{project_id}",
                 f"dashboard:{project_id}",
                 f"dashboard:v2:{project_id}",
+                f"dashboard:v3:{project_id}",
                 f"sources-intelligence:{project_id}",
+                f"sources-intelligence:v2:{project_id}",
                 f"competitor-intelligence:{project_id}",
+                f"citation-economics:{project_id}",
                 f"intel-summary:{project_id}",
+                f"intel-summary:v2:{project_id}",
                 f"global-audit:{project_id}",
+                f"global-audit:v2:{project_id}",
                 f"movements:{project_id}",
             ])
         ).delete(synchronize_session=False)
@@ -170,9 +180,9 @@ def _cache_invalidate_project(project_id: int) -> None:
 def _get_or_build_deep_analysis_payload(project_id: int) -> dict:
     """
     Deep analysis payload for Opportunities/Execute tabs.
-    Cache once under deep-analysis:{id}.
+    Cache once under deep-analysis:v2:{id}.
     """
-    cache_key = f"deep-analysis:{project_id}"
+    cache_key = f"deep-analysis:v2:{project_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -182,7 +192,7 @@ def _get_or_build_deep_analysis_payload(project_id: int) -> dict:
 
 
 def _get_or_build_dashboard_payload(project_id: int) -> dict:
-    cache_key = f"dashboard:v2:{project_id}"
+    cache_key = f"dashboard:v3:{project_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -192,7 +202,7 @@ def _get_or_build_dashboard_payload(project_id: int) -> dict:
 
 
 def _get_or_build_prompt_analysis_payload(project_id: int) -> dict:
-    cache_key = f"prompt-analysis:{project_id}"
+    cache_key = f"prompt-analysis:v2:{project_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -202,7 +212,7 @@ def _get_or_build_prompt_analysis_payload(project_id: int) -> dict:
 
 
 def _get_or_build_global_audit_payload(project_id: int, project: Project | None = None) -> dict:
-    cache_key = f"global-audit:{project_id}"
+    cache_key = f"global-audit:v2:{project_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -261,7 +271,7 @@ def _get_or_build_global_audit_payload(project_id: int, project: Project | None 
 
 
 def _get_or_build_sources_payload(project_id: int, project: Project | None = None) -> dict:
-    cache_key = f"sources-intelligence:{project_id}"
+    cache_key = f"sources-intelligence:v2:{project_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -283,10 +293,14 @@ def _get_or_build_sources_payload(project_id: int, project: Project | None = Non
     ]
 
     src_resp_ids = [r.id for r in all_source_responses]
+    source_responses_by_id = {r.id: r for r in all_source_responses}
+    focus_aliases = build_focus_brand_aliases(project.name, project.website_url or "")
     mention_counts_by_resp: dict[int, int] = defaultdict(int)
     if src_resp_ids:
         for m in Mention.query.filter(Mention.response_id.in_(src_resp_ids)).all():
-            mention_counts_by_resp[m.response_id] += 1
+            response = source_responses_by_id.get(m.response_id)
+            if response and _mention_is_visible_in_answer(response, m, focus_aliases=focus_aliases):
+                mention_counts_by_resp[m.response_id] += 1
 
     for response in all_source_responses:
         if response.response_text and response.response_text.startswith("[") and "error:" in response.response_text.lower()[:80]:
@@ -1153,6 +1167,34 @@ def _normalize_source_url(value: str) -> str:
         return cleaned
 
 
+def _mention_is_visible_in_answer(
+    response: Response | None,
+    mention: Mention | None,
+    *,
+    focus_aliases: list[str] | None = None,
+) -> bool:
+    if response is None or mention is None:
+        return False
+    response_text = response.response_text or ""
+    context = str(mention.context or "").strip()
+    if context and _phrase_in_response(response_text, context):
+        return True
+
+    candidates = [str(mention.brand or "").strip()]
+    if mention.is_focus and focus_aliases:
+        candidates.extend(str(alias or "").strip() for alias in focus_aliases)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if _alias_appears_in_response(response_text, candidate):
+            return True
+    return False
+
+
 def _latest_responses_by_prompt(prompt_id: int) -> list[Response]:
     prompt = Prompt.query.get(prompt_id)
     selected_models_lower: set[str] = set()
@@ -1305,6 +1347,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
 
     project = Project.query.get(prompt.project_id)
     focus_brand = project.name if project else ""
+    focus_aliases = build_focus_brand_aliases(focus_brand, project.website_url or "") if project else [focus_brand]
     responses = Response.query.filter_by(prompt_id=prompt_id).order_by(Response.timestamp.asc()).all()
     if not responses:
         empty_brief = {
@@ -1379,7 +1422,14 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         if selected_models_lower and response.engine.strip().lower() not in selected_models_lower:
             continue
         mentions = mentions_by_response.get(response.id, [])
-        focus = next((m for m in mentions if m.is_focus), None)
+        focus = next(
+            (
+                m
+                for m in mentions
+                if m.is_focus and _mention_is_visible_in_answer(response, m, focus_aliases=focus_aliases)
+            ),
+            None,
+        )
         trend.append(
             {
                 "timestamp": response.timestamp,
@@ -1391,7 +1441,12 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
 
     for engine, response in latest_by_engine.items():
         mentions = mentions_by_response.get(response.id, [])
-        focus = next((m for m in mentions if m.is_focus), None)
+        visible_mentions = [
+            m
+            for m in mentions
+            if _mention_is_visible_in_answer(response, m, focus_aliases=focus_aliases)
+        ]
+        focus = next((m for m in visible_mentions if m.is_focus), None)
         if focus:
             sentiment[focus.sentiment if focus.sentiment in sentiment else "neutral"] += 1
             focus_score["mentions"] += 1
@@ -1400,7 +1455,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         else:
             sentiment["not_mentioned"] += 1
 
-        for mention in mentions:
+        for mention in visible_mentions:
             if mention.is_focus:
                 continue
             if is_spurious_brand_mention(mention.brand or ""):
@@ -1476,7 +1531,14 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         
         # Get mentions for this response
         m_list = mentions_by_response.get(resp.id, [])
-        f_m = next((m for m in m_list if m.is_focus), None)
+        f_m = next(
+            (
+                m
+                for m in m_list
+                if m.is_focus and _mention_is_visible_in_answer(resp, m, focus_aliases=focus_aliases)
+            ),
+            None,
+        )
         
         analyses[engine] = {
             "focus_brand_mentioned": bool(f_m),
@@ -1723,6 +1785,8 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
 
 def _build_prompt_rankings(project_id: int) -> list[dict]:
     rows = []
+    project = Project.query.get(project_id)
+    focus_aliases = build_focus_brand_aliases(project.name, project.website_url or "") if project else []
     prompts = Prompt.query.filter_by(project_id=project_id).all()
     prompt_ids = [p.id for p in prompts]
     if not prompt_ids:
@@ -1747,10 +1811,13 @@ def _build_prompt_rankings(project_id: int) -> list[dict]:
             latest_response_by_prompt_engine[key] = r
 
     latest_response_ids = [r.id for r in latest_response_by_prompt_engine.values()]
+    latest_responses_by_id = {r.id: r for r in latest_response_by_prompt_engine.values()}
     focus_mentions_by_response: dict[int, Mention] = {}
     if latest_response_ids:
         for m in Mention.query.filter(Mention.response_id.in_(latest_response_ids), Mention.is_focus.is_(True)).all():
-            focus_mentions_by_response[m.response_id] = m
+            response = latest_responses_by_id.get(m.response_id)
+            if response and _mention_is_visible_in_answer(response, m, focus_aliases=focus_aliases):
+                focus_mentions_by_response[m.response_id] = m
 
     for prompt in prompts:
         latest_responses = [r for (pid, _engine), r in latest_response_by_prompt_engine.items() if pid == prompt.id]
@@ -1801,6 +1868,7 @@ def _build_competitor_visibility(project_id: int) -> dict:
         return {"rows": [], "coverage": coverage_meta()}
 
     focus_brand = (project.name or "").strip()
+    focus_aliases = build_focus_brand_aliases(focus_brand, project.website_url or "")
     configured = [str(c).strip() for c in project.get_competitors_list() if c and str(c).strip()]
     onboarding = project.get_onboarding_data() if hasattr(project, "get_onboarding_data") else {}
     steps = onboarding.get("steps", {}) if isinstance(onboarding, dict) else {}
@@ -1867,8 +1935,12 @@ def _build_competitor_visibility(project_id: int) -> dict:
         }
     )
 
+    responses_by_id = {r.id: r for latest in responses_by_prompt.values() for r in latest}
     mentions = Mention.query.filter(Mention.response_id.in_(considered_response_ids)).all()
     for mention in mentions:
+        response = responses_by_id.get(mention.response_id)
+        if not response or not _mention_is_visible_in_answer(response, mention, focus_aliases=focus_aliases):
+            continue
         raw = (mention.brand or "").strip()
         if not raw or is_spurious_brand_mention(raw):
             continue
@@ -2110,7 +2182,7 @@ def _compute_official_site_cited_stats(project_id: int, website_url: str) -> dic
 
 
 def _response_cites_competitor_named_domain(response: Response, competitors_normalized: list[str]) -> bool:
-    """True if any citation hostname contains a configured competitor substring (≥3 chars)."""
+    """True if any citation hostname contains a configured competitor substring (3+ chars)."""
     candidates = [
         str(c or "").strip().lower()
         for c in competitors_normalized
@@ -2195,13 +2267,16 @@ def _build_citation_economics_payload(project_id: int, user_id: str) -> dict[str
             competitors_norm.append(slug_compact)
 
     latest = _latest_project_responses(project_id)
+    responses_by_id = {r.id: r for r in latest}
+    focus_aliases = build_focus_brand_aliases(project.name, project.website_url or "")
     rid_focus: set[int] = set()
     if latest:
         for m in Mention.query.filter(
             Mention.response_id.in_([r.id for r in latest]),
             Mention.is_focus.is_(True),
         ).all():
-            rid_focus.add(m.response_id)
+            if _mention_is_visible_in_answer(responses_by_id.get(m.response_id), m, focus_aliases=focus_aliases):
+                rid_focus.add(m.response_id)
 
     domain_counts: dict[str, int] = defaultdict(int)
     domain_signals: dict[str, str] = {}
@@ -2314,6 +2389,97 @@ def _build_citation_economics_payload(project_id: int, user_id: str) -> dict[str
     displacement_domains = _displacement_citation_domains_for_project(project_id)
 
     official = _compute_official_site_cited_stats(project_id, project.website_url or "")
+    focus_mentions = int(rollup["focus_mentions"] or 0)
+
+    def pct(part: int, total: int) -> float:
+        return round((part / total) * 100, 1) if total else 0.0
+
+    focus_cited_pct = pct(int(rollup["focus_with_any_source_url"] or 0), focus_mentions)
+    owned_cited_pct = pct(int(rollup["focus_with_brand_domain_citation"] or 0), focus_mentions)
+    competitor_cited_pct = pct(int(rollup["focus_with_competitor_named_domain"] or 0), focus_mentions)
+    official_pct = float(official.get("official_site_cited_pct") or 0.0)
+    moat_score = (
+        round(
+            max(
+                0.0,
+                min(
+                    100.0,
+                    (owned_cited_pct * 0.55)
+                    + (official_pct * 0.25)
+                    + (focus_cited_pct * 0.20)
+                    - (competitor_cited_pct * 0.30),
+                ),
+            ),
+            1,
+        )
+        if focus_mentions
+        else 0.0
+    )
+    if focus_mentions <= 0:
+        moat_status = "No data"
+    elif moat_score >= 70:
+        moat_status = "Strong"
+    elif moat_score >= 40:
+        moat_status = "Building"
+    else:
+        moat_status = "Leaky"
+
+    top_non_owned = next(
+        (row for row in domain_kpis_rows if row.get("signal") != "brand_owned"),
+        None,
+    )
+    top_displacement = displacement_domains[0] if displacement_domains else None
+    recommendations: list[dict[str, str]] = []
+    if focus_mentions <= 0:
+        recommendations.append(
+            {
+                "title": "Run a measured prompt set",
+                "detail": "Authority moat needs model answers and citations before it can diagnose source gaps.",
+                "priority": "high",
+            }
+        )
+    else:
+        if owned_cited_pct < 35:
+            recommendations.append(
+                {
+                    "title": "Make your owned site easier to cite",
+                    "detail": "Add concise answer sections, comparison proof, pricing or feature facts, and fresh dates on pages that should support your top buyer prompts.",
+                    "priority": "high",
+                }
+            )
+        if top_non_owned:
+            recommendations.append(
+                {
+                    "title": f"Win the source that models already trust: {top_non_owned['domain']}",
+                    "detail": "Create or improve your presence on this domain because it already appears in measured AI citations for your market.",
+                    "priority": "medium",
+                }
+            )
+        if top_displacement:
+            competitor = top_displacement.get("top_competitor_on_domain") or "a competitor"
+            recommendations.append(
+                {
+                    "title": f"Counter {competitor} on {top_displacement['domain']}",
+                    "detail": "This domain appears in competitor displacement evidence. Build a clearer comparison, review, listing, or third-party proof path there.",
+                    "priority": "high",
+                }
+            )
+        if not recommendations:
+            recommendations.append(
+                {
+                    "title": "Protect the citation moat",
+                    "detail": "Your citation backing is healthy. Keep owned proof fresh and monitor any new third-party domains that start carrying competitor claims.",
+                    "priority": "medium",
+                }
+            )
+
+    if focus_mentions <= 0:
+        summary = "No focus-brand mentions were found in the latest measured answers yet."
+    else:
+        summary = (
+            f"{project.name} is cited or sourced in {focus_cited_pct}% of its focus-brand mentions, "
+            f"with {owned_cited_pct}% backed by owned-domain citations."
+        )
 
     return {
         "project_id": project_id,
@@ -2331,6 +2497,15 @@ def _build_citation_economics_payload(project_id: int, user_id: str) -> dict[str
             "top_domains": domain_kpis_rows,
         },
         "displacement_citation_domains": displacement_domains,
+        "citation_moat": {
+            "score": moat_score,
+            "status": moat_status,
+            "summary": summary,
+            "focus_cited_pct": focus_cited_pct,
+            "owned_cited_pct": owned_cited_pct,
+            "competitor_cited_pct": competitor_cited_pct,
+            "recommendations": recommendations[:3],
+        },
     }
 
 
@@ -2339,6 +2514,8 @@ def _compute_project_visibility_pct(project_id: int) -> float:
     if not prompts:
         return 0.0
 
+    project = Project.query.get(project_id)
+    focus_aliases = build_focus_brand_aliases(project.name, project.website_url or "") if project else []
     latest_by_prompt = _latest_responses_for_prompts(prompts)
     latest_responses: list[Response] = [
         response for rows in latest_by_prompt.values() for response in rows
@@ -2347,6 +2524,7 @@ def _compute_project_visibility_pct(project_id: int) -> float:
     if not latest_responses:
         return 0.0
 
+    responses_by_id = {response.id: response for response in latest_responses}
     response_ids = [r.id for r in latest_responses]
     focus_mention_ids = {
         mention.response_id
@@ -2354,6 +2532,11 @@ def _compute_project_visibility_pct(project_id: int) -> float:
             Mention.response_id.in_(response_ids),
             Mention.is_focus.is_(True),
         ).all()
+        if _mention_is_visible_in_answer(
+            responses_by_id.get(mention.response_id),
+            mention,
+            focus_aliases=focus_aliases,
+        )
     }
     mention_count = sum(1 for response in latest_responses if response.id in focus_mention_ids)
     return round((mention_count / len(latest_responses)) * 100, 1)
@@ -2365,11 +2548,14 @@ def _build_engine_focus_visibility(project_id: int) -> list[dict[str, Any]]:
     if not prompts:
         return []
 
+    project = Project.query.get(project_id)
+    focus_aliases = build_focus_brand_aliases(project.name, project.website_url or "") if project else []
     latest_by_prompt = _latest_responses_for_prompts(prompts)
     latest_responses: list[Response] = [
         response for rows in latest_by_prompt.values() for response in rows
     ]
 
+    responses_by_id = {response.id: response for response in latest_responses}
     response_ids = [r.id for r in latest_responses]
     focus_mentions_by_response: dict[int, Mention] = {}
     if response_ids:
@@ -2377,7 +2563,9 @@ def _build_engine_focus_visibility(project_id: int) -> list[dict[str, Any]]:
             Mention.response_id.in_(response_ids),
             Mention.is_focus.is_(True),
         ).all():
-            focus_mentions_by_response[mention.response_id] = mention
+            response = responses_by_id.get(mention.response_id)
+            if response and _mention_is_visible_in_answer(response, mention, focus_aliases=focus_aliases):
+                focus_mentions_by_response[mention.response_id] = mention
 
     by_engine: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"responses": 0, "mentions": 0, "ranks": []}
@@ -2425,8 +2613,8 @@ def _build_competitor_visibility_trend(
     """
     Build a multi-series "visibility over time" chart for focus brand + top competitors.
 
-    We derive daily visibility from actual Mention rows:
-    - For each Response, a brand is "visible" if it has at least one Mention in that response.
+    We derive daily visibility from visible-in-answer Mention rows:
+    - For each Response, a brand is visible only if the brand text appears in the answer.
     - Daily visibility_pct = responses_with_brand / total_responses_that_day * 100.
     """
     project = Project.query.get(project_id)
@@ -2434,6 +2622,7 @@ def _build_competitor_visibility_trend(
         return {"brands": [], "series": []}
 
     focus_brand = (project.name or "").strip()
+    focus_aliases = build_focus_brand_aliases(focus_brand, project.website_url or "")
     prompts = Prompt.query.filter_by(project_id=project_id).all()
     prompt_ids = [p.id for p in prompts]
     if not prompt_ids:
@@ -2470,11 +2659,15 @@ def _build_competitor_visibility_trend(
         return {"brands": brands, "series": []}
 
     response_ids = [r.id for r in responses]
+    responses_by_id = {r.id: r for r in responses}
     mentions = Mention.query.filter(Mention.response_id.in_(response_ids)).all()
 
     # response_id -> date -> set(brand_lower mentioned)
     mentioned_by_response: dict[int, set[str]] = defaultdict(set)
     for m in mentions:
+        response = responses_by_id.get(m.response_id)
+        if not response or not _mention_is_visible_in_answer(response, m, focus_aliases=focus_aliases):
+            continue
         raw = str(m.brand or "").strip()
         if not raw:
             continue
@@ -2797,6 +2990,7 @@ def _build_dashboard_payload(project_id: int) -> dict:
     project = Project.query.get(project_id)
     if not project:
         raise NotFoundError("Project not found")
+    focus_aliases = build_focus_brand_aliases(project.name, project.website_url or "")
 
     metrics = VisibilityMetric.query.filter_by(project_id=project_id).order_by(VisibilityMetric.date.asc()).all()
     visibility_trend = [{"date": metric.date, "score": metric.score} for metric in metrics]
@@ -2907,7 +3101,12 @@ def _collect_prompt_engine_matrix(project_id: int) -> dict[str, Any]:
 
         for response in latest_responses:
             mentions = mentions_by_resp.get(response.id, [])
-            focus_mention = next((m for m in mentions if m.is_focus), None)
+            visible_mentions = [
+                m
+                for m in mentions
+                if _mention_is_visible_in_answer(response, m, focus_aliases=focus_aliases)
+            ]
+            focus_mention = next((m for m in visible_mentions if m.is_focus), None)
             sentiment = focus_mention.sentiment if focus_mention else "not_mentioned"
             rank = focus_mention.rank if focus_mention else None
             mentioned = focus_mention is not None
@@ -2920,7 +3119,7 @@ def _collect_prompt_engine_matrix(project_id: int) -> dict[str, Any]:
                 "sources": sources,
                 "top_competitors": [
                     {"brand": m.brand, "rank": m.rank}
-                    for m in mentions
+                    for m in visible_mentions
                     if not m.is_focus
                     and not is_spurious_brand_mention(m.brand or "")
                     and not _looks_like_channel_noise(m.brand or "", m.context or "")
@@ -3246,7 +3445,7 @@ def get_dashboard_metrics(project_id):
 def get_project_intel_summary(project_id):
     project = _get_project_for_user(project_id)
 
-    cache_key = f"intel-summary:{project_id}"
+    cache_key = f"intel-summary:v2:{project_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return jsonify(cached)

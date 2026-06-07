@@ -1,20 +1,20 @@
 export const BRAND_BLUE = '#2563eb';
 export const BRAND_BLUE_LIGHT = '#3b82f6';
-export const SUCCESS = '#10b981';
-export const WARNING = '#f59e0b';
-export const DANGER = '#ef4444';
+export const BRAND_BLUE_DARK = '#1d4ed8';
+export const BRAND_BLUE_SOFT = '#93c5fd';
+export const NEUTRAL = '#64748b';
 
 export const CHART_COLORS = [
-  '#2563eb', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b',
-  '#ec4899', '#14b8a6', '#6366f1', '#f97316', '#84cc16',
+  '#2563eb', '#1d4ed8', '#3b82f6', '#60a5fa', '#93c5fd',
+  '#475569', '#64748b', '#94a3b8', '#cbd5e1', '#e2e8f0',
 ];
 
 export const GRADIENT_COLORS = [
   { from: '#2563eb', to: '#60a5fa' },
-  { from: '#8b5cf6', to: '#a78bfa' },
-  { from: '#06b6d4', to: '#67e8f9' },
-  { from: '#10b981', to: '#6ee7b7' },
-  { from: '#f59e0b', to: '#fcd34d' },
+  { from: '#1d4ed8', to: '#93c5fd' },
+  { from: '#3b82f6', to: '#bfdbfe' },
+  { from: '#475569', to: '#cbd5e1' },
+  { from: '#64748b', to: '#e2e8f0' },
 ];
 
 export const chartTheme = {
@@ -65,8 +65,8 @@ export const chartTheme = {
     accent: BRAND_BLUE,
     accentSoft: 'rgba(37,99,235,0.12)',
     accentGlow: 'rgba(37,99,235,0.06)',
-    success: SUCCESS,
-    danger: DANGER,
+    success: BRAND_BLUE_DARK,
+    danger: NEUTRAL,
     muted: '#94a3b8',
   },
   nivo: {
