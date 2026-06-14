@@ -11,12 +11,22 @@ function toArray(value) {
 function SliceTooltip({ slice }) {
   if (!slice) return null;
   const points = Array.isArray(slice.points) ? slice.points : [];
-  const date =
-    slice?.points?.[0]?.data?.xFormatted || slice?.points?.[0]?.data?.x || '';
+  const rawDate = slice?.points?.[0]?.data?.x;
+  let dateStr = '';
+  if (rawDate instanceof Date) {
+    dateStr = rawDate.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      timeZone: 'UTC',
+    });
+  } else {
+    dateStr = String(rawDate || '');
+  }
   return (
     <div className="rounded-xl border border-slate-200/60 bg-white px-3.5 py-2.5 shadow-xl">
       <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-        {date}
+        {dateStr}
       </p>
       <div className="mt-1 space-y-1">
         {points.map((p) => (
@@ -41,18 +51,6 @@ function SliceTooltip({ slice }) {
   );
 }
 
-function lineSeriesForVisibility(data) {
-  return [
-    {
-      id: 'Visibility',
-      data: toArray(data).map((d) => ({
-        x: d.date || '-',
-        y: Number(d.score ?? d.value ?? 0),
-      })),
-    },
-  ];
-}
-
 const RANGE_CONFIG = [
   { value: '7d', label: 'Last 7 days' },
   { value: '30d', label: 'Last 30 days' },
@@ -68,11 +66,30 @@ const MULTI_PALETTE = [
 ];
 
 export default function PerformancePanel({ range, onRangeChange, dashboard }) {
-  const sliceSize = range === '7d' ? 7 : 30;
-
   const competitorSeries = toArray(
     dashboard?.competitor_visibility_trend?.series
   );
+  const singleTrendRaw =
+    Array.isArray(dashboard?.visibility_trend) &&
+    dashboard.visibility_trend.length
+      ? dashboard.visibility_trend
+      : dashboard?.quality_score_trend;
+  const points = toArray(singleTrendRaw);
+
+  const allDates = [
+    ...competitorSeries.flatMap((s) => toArray(s.data).map((d) => d.x || d.date)),
+    ...points.map((d) => d.x || d.date),
+  ].filter(Boolean);
+
+  const maxDateStr =
+    allDates.length > 0
+      ? allDates.reduce((a, b) => (a > b ? a : b))
+      : new Date().toISOString().split('T')[0];
+
+  const maxDate = new Date(maxDateStr);
+  const minDate = new Date(maxDate);
+  minDate.setDate(maxDate.getDate() - (range === '7d' ? 6 : 29));
+  const minDateStr = minDate.toISOString().split('T')[0];
 
   const allCompetitors = toArray(dashboard?.competitors);
   const targetBrandName =
@@ -99,25 +116,33 @@ export default function PerformancePanel({ range, onRangeChange, dashboard }) {
 
   const usingCompetitorTrend = filteredSeries.length >= 2;
 
-  const singleTrendRaw =
-    Array.isArray(dashboard?.visibility_trend) &&
-    dashboard.visibility_trend.length
-      ? dashboard.visibility_trend
-      : dashboard?.quality_score_trend;
-  const points = toArray(singleTrendRaw);
-  const slicedSingle =
-    points.length > sliceSize ? points.slice(-sliceSize) : points;
   const visibilitySeries = usingCompetitorTrend
     ? filteredSeries.map((s) => ({
         ...s,
         data: toArray(s.data)
-          .slice(-sliceSize)
+          .filter((d) => {
+            const dDate = d.x ?? d.date;
+            return dDate && dDate >= minDateStr && dDate <= maxDateStr;
+          })
           .map((d) => ({
-            x: d.x ?? d.date ?? '-',
+            x: d.x ?? d.date,
             y: Number(d.y ?? d.score ?? d.value ?? 0),
           })),
       }))
-    : lineSeriesForVisibility(slicedSingle);
+    : [
+        {
+          id: 'Visibility',
+          data: points
+            .filter((d) => {
+              const dDate = d.x ?? d.date;
+              return dDate && dDate >= minDateStr && dDate <= maxDateStr;
+            })
+            .map((d) => ({
+              x: d.x ?? d.date,
+              y: Number(d.score ?? d.value ?? 0),
+            })),
+        },
+      ];
 
   return (
     <motion.div
@@ -166,23 +191,21 @@ export default function PerformancePanel({ range, onRangeChange, dashboard }) {
         <ResponsiveLine
           data={visibilitySeries}
           margin={{ top: 20, right: 24, bottom: 52, left: 48 }}
-          xScale={{ type: 'point' }}
+          xScale={{
+            type: 'time',
+            format: '%Y-%m-%d',
+            useUTC: true,
+            precision: 'day',
+            min: minDateStr,
+            max: maxDateStr,
+          }}
+          xFormat="time:%Y-%m-%d"
           yScale={{ type: 'linear', min: 0, max: 'auto' }}
           axisBottom={{
+            format: range === '7d' ? '%a' : '%b %d',
+            tickValues: range === '7d' ? 'every day' : 'every 5 days',
             tickRotation: 0,
             tickPadding: 8,
-            format: (value) => {
-              try {
-                const d = new Date(value);
-                return isNaN(d.getTime())
-                  ? value
-                  : new Intl.DateTimeFormat('en-US', {
-                      weekday: 'short',
-                    }).format(d);
-              } catch {
-                return value;
-              }
-            },
           }}
           axisLeft={{
             tickValues: 5,
