@@ -61,11 +61,6 @@ const SECTION_IDS = [
 
 const lbl = 'text-[11px] font-semibold text-slate-400';
 
-function DataBadge({ type }) {
-  if (type === 'measured') return <span className="inline-flex items-center gap-1 rounded-md bg-brand-primary/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-brand-primary"><span className="h-1 w-1 rounded-full bg-brand-primary" />Measured</span>;
-  return <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-slate-600"><span className="h-1 w-1 rounded-full bg-slate-400" />AI analysis</span>;
-}
-
 function isHttpUrl(value) {
   return /^https?:\/\/[^\s]+$/i.test(String(value || '').trim());
 }
@@ -1158,8 +1153,6 @@ const ProjectDetailView = () => {
                             <div>
                               <div className="flex flex-wrap items-center gap-2">
                                 <h2 className="text-base font-semibold tracking-tight text-slate-900">Summary</h2>
-                                <DataBadge type="ai" />
-                                {summaryCoverage && <CoverageBadge coverage={summaryCoverage} />}
                                 {intelSummaryLoading && (
                                   <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
                                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -1276,7 +1269,6 @@ const ProjectDetailView = () => {
                                   <Crown className="h-4 w-4 text-brand-primary" />
                                   Authority moat
                                 </h2>
-                                <DataBadge type="measured" />
                               </div>
                               <p className="mt-0.5 max-w-2xl text-sm text-slate-500">
                                 Which sources make AI engines trust you, and where competitors can still steal the answer.
@@ -1389,8 +1381,6 @@ const ProjectDetailView = () => {
                           <div className="px-6 py-5">
                             <div className="flex flex-wrap items-center gap-2">
                               <h2 className="text-base font-semibold tracking-tight text-slate-900">Visibility audit</h2>
-                              <DataBadge type="ai" />
-                              {auditCoverage && <CoverageBadge coverage={auditCoverage} />}
                             </div>
                             <p className="mt-0.5 text-sm text-slate-500">Evidence-backed issues and fixes from the answers collected so far</p>
                           </div>
@@ -1538,8 +1528,6 @@ const ProjectDetailView = () => {
                       <div>
                         <div className="flex items-center gap-2">
                           <p className="text-sm font-semibold text-slate-800">Competitor Analysis</p>
-                          <DataBadge type="measured" />
-                          {competitorIntel?.coverage && <CoverageBadge coverage={competitorIntel.coverage} />}
                         </div>
                         <p className="text-[11px] text-slate-400">
                           Directional from the first run, then stronger as more prompts complete. Visibility is % of measured answers that named each brand; AI Share is share of actual brand mentions.
@@ -1702,7 +1690,7 @@ const ProjectDetailView = () => {
                   <div className="flex items-center justify-between gap-4 border-b border-slate-100/80 px-6 py-4">
                     <div className="flex items-center gap-2.5">
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-primary/10 text-brand-primary"><Zap className="h-4 w-4" /></div>
-                      <div><div className="flex items-center gap-2"><p className="text-sm font-semibold text-slate-800">Content Studio</p><DataBadge type="ai" /></div><p className="text-[11px] text-slate-400">Drafts and rewrites to edit and publish yourself</p></div>
+                      <div><p className="text-sm font-semibold text-slate-800">Content Studio</p><p className="text-[11px] text-slate-400">Drafts and rewrites to edit and publish yourself</p></div>
                     </div>
                   </div>
 
@@ -1849,8 +1837,6 @@ const ProjectDetailView = () => {
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
                               <p className="text-sm font-semibold text-slate-800">Action plan</p>
-                              <DataBadge type="ai" />
-                              {opportunitiesCoverage && <CoverageBadge coverage={opportunitiesCoverage} />}
                             </div>
                             <p className="text-[11px] text-slate-400">Open an item to see steps you can do this week. Early runs are directional; confidence is computed from real evidence.</p>
                           </div>
@@ -1878,7 +1864,6 @@ const ProjectDetailView = () => {
                           <div className="glass-card-v2 p-6">
                             <div className="mb-2 flex flex-wrap items-center gap-2">
                               <h3 className="text-lg font-bold text-slate-900">Pinpointed Retrieval Points</h3>
-                              {opportunitiesCoverage && <CoverageBadge coverage={opportunitiesCoverage} />}
                             </div>
                             <p className="mb-4 text-sm text-slate-500">Specific articles, threads, and videos LLMs lean on. Ranked by how many of your queries they show up in.</p>
                             <div className="mb-6 space-y-3">
