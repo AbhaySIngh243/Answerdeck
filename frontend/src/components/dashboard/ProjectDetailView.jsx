@@ -161,7 +161,7 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
           </ul>
         )}
         {evidenceQuote && (
-          <blockquote className="mb-2 border-l-2 border-brand-primary/40 bg-slate-50/70 px-3 py-2 text-xs italic leading-relaxed text-slate-600">
+          <blockquote className="mb-2 border-l-2 border-brand-primary/40 bg-slate-50/70 px-3 py-2 text-xs leading-relaxed text-slate-600">
             &ldquo;{evidenceQuote}&rdquo;
           </blockquote>
         )}
@@ -231,8 +231,8 @@ function ActionPlanCard({ item, projectId, onGenerateDraft }) {
                           <ProseText text={step.title} className="mb-0.5 text-[13px] font-medium text-slate-800" />
                           <ProseText text={step.detail} className="text-xs leading-relaxed text-slate-500" />
                           {step.example && (
-                            <div className="mt-2 rounded-lg bg-slate-50 border border-slate-100 px-3 py-2 text-xs italic text-slate-500">
-                              <span className="mr-1 not-italic font-medium text-slate-600">Example:</span>
+                            <div className="mt-2 rounded-lg bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-slate-500">
+                              <span className="mr-1 font-medium text-slate-600">Example:</span>
                               {sanitizeProse(step.example)}
                             </div>
                           )}
@@ -1266,7 +1266,6 @@ const ProjectDetailView = () => {
                             <div>
                               <div className="flex flex-wrap items-center gap-2">
                                 <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight text-slate-900">
-                                  <Crown className="h-4 w-4 text-brand-primary" />
                                   Authority moat
                                 </h2>
                               </div>
@@ -1405,7 +1404,7 @@ const ProjectDetailView = () => {
                                       <div><p className={`${lbl} mb-1`}>Solution</p><ProseText text={item.solution} className="text-xs leading-relaxed text-slate-700" /></div>
                                     </div>
                                     {item.evidence_quote && (
-                                      <blockquote className="mt-3 border-l-2 border-brand-primary/40 bg-slate-50/70 px-3 py-2 text-xs italic leading-relaxed text-slate-600">
+                                      <blockquote className="mt-3 border-l-2 border-brand-primary/40 bg-slate-50/70 px-3 py-2 text-xs leading-relaxed text-slate-600">
                                         &ldquo;{sanitizeProse(item.evidence_quote)}&rdquo;
                                       </blockquote>
                                     )}
@@ -1868,7 +1867,7 @@ const ProjectDetailView = () => {
                             <p className="mb-4 text-sm text-slate-500">Specific articles, threads, and videos LLMs lean on. Ranked by how many of your queries they show up in.</p>
                             <div className="mb-6 space-y-3">
                               {points.length === 0 ? (
-                                <p className="px-2 text-xs italic text-slate-500">Run a fresh analysis to identify specific deep links.</p>
+                                <p className="px-2 text-xs text-slate-500">Run a fresh analysis to identify specific deep links.</p>
                               ) : (
                                 points.map((item, idx) => {
                                   const supportingQueries = toArray(item.cited_for_queries);
@@ -1894,7 +1893,7 @@ const ProjectDetailView = () => {
                             <p className="mb-4 text-sm text-slate-500">Domains frequently used by search-enabled LLMs for your niche. Ranked by cross-query reach.</p>
                             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
                               {domains.length === 0 && (
-                                <p className="col-span-full px-2 text-xs italic text-slate-500">No domain signal yet.</p>
+                                <p className="col-span-full px-2 text-xs text-slate-500">No domain signal yet.</p>
                               )}
                               {domains.map((item) => {
                                 const nQueries = Number(item.n_queries || 0);

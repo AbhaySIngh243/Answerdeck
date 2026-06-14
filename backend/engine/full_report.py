@@ -533,7 +533,7 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     )
     S_BODY_ITALIC = ParagraphStyle(
         "BodyItalic", parent=S_BODY,
-        fontName="Helvetica-Oblique", textColor=C(SLATE_700),
+        textColor=C(SLATE_700),
     )
     S_SMALL = ParagraphStyle(
         "Small", parent=styles["Normal"],
@@ -900,9 +900,9 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     ]
     for num, title in toc_items:
         story.append(
-            P(
+            Paragraph(
                 f'<font name="Helvetica-Bold" color="{BRAND_BLUE}">{num}</font>'
-                f'&nbsp;&nbsp;&nbsp;{esc(title)}',
+                f'&#160;&#160;&#160;{esc(title)}',
                 S_TOC,
             )
         )
@@ -1291,9 +1291,9 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         title_text = item.get("title", "Audit finding")
 
         story.append(Spacer(1, 6))
-        story.append(P(
+        story.append(Paragraph(
             f'<font name="Helvetica-Bold">{esc(title_text)}</font>'
-            f'&nbsp;&nbsp;<font name="Helvetica-Bold" size="7" color="{p_fg}">[{priority.upper()}]</font>',
+            f'&#160;&#160;<font name="Helvetica-Bold" size="7" color="{p_fg}">[{priority.upper()}]</font>',
             ParagraphStyle("AuditTitle", parent=S_BODY, fontSize=10, leading=14, textColor=C(SLATE_900)),
         ))
         if item.get("root_cause"):
@@ -1356,7 +1356,7 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     if action_plan:
         story.append(P("Opportunity Action Plan", S_SUB))
         for item in action_plan[:12]:
-            story.append(P(
+            story.append(Paragraph(
                 f'<font name="Helvetica-Bold">{esc(item.get("title", ""))}</font>',
                 ParagraphStyle("ActionTitle", parent=S_BODY, fontSize=10, leading=14),
             ))
@@ -1381,8 +1381,8 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         prompt_text = detail.get("prompt_text", "")
         brief = detail.get("analysis_brief") or {}
 
-        story.append(P(
-            f'<font name="Helvetica-Bold" color="{BRAND_BLUE}">\u25B6</font>&nbsp;&nbsp;'
+        story.append(Paragraph(
+            f'<font name="Helvetica-Bold" color="{BRAND_BLUE}">\u25B6</font>&#160;&#160;'
             f'<font name="Helvetica-Bold">{esc(_safe(prompt_text, 180))}</font>',
             ParagraphStyle("PromptTitle", parent=S_BODY, fontSize=10, leading=14, spaceBefore=12),
         ))
@@ -1506,7 +1506,7 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         if not responses:
             continue
 
-        story.append(P(
+        story.append(Paragraph(
             f'<font name="Helvetica-Bold">{esc(_safe(prompt_text, 160))}</font>',
             ParagraphStyle("AppendixPrompt", parent=S_BODY, fontSize=10, leading=14, spaceBefore=14, textColor=C(BRAND_BLUE_DARK)),
         ))
@@ -1518,9 +1518,9 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             text = resp.get("display_response_text") or resp.get("response_text") or ""
             resp_sources = resp.get("sources") or []
 
-            story.append(P(
+            story.append(Paragraph(
                 f'<font name="Helvetica-Bold">{esc(engine)}</font>'
-                f'&nbsp;&nbsp;<font size="7" color="{SLATE_400}">{esc(str(ts)[:19])}</font>',
+                f'&#160;&#160;<font size="7" color="{SLATE_400}">{esc(str(ts)[:19])}</font>',
                 ParagraphStyle("EngineLabel", parent=S_BODY, fontSize=9, spaceBefore=8),
             ))
 
