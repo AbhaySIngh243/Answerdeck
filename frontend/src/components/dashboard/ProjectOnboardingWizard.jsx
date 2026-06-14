@@ -305,7 +305,7 @@ function OnboardingHelpPanel({ projectId, step, context }) {
           </p>
         ) : (
           <p className="mt-2 text-[11px] text-slate-400">
-            Only fetches when you ask. Suggestions stay quiet otherwise.
+            Suggestions are auto-generated based on your brand context. Ask if you need custom ideas.
           </p>
         )}
       </div>
@@ -860,8 +860,15 @@ export default function ProjectOnboardingWizard() {
 
   if (isLoading || !form) {
     return (
-      <div className="flex h-52 items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-brand-primary" />
+      <div className="flex h-64 flex-col items-center justify-center gap-4 text-center">
+        <div className="relative">
+          <div className="absolute -inset-3 animate-pulse rounded-full bg-brand-primary/10" />
+          <Loader2 className="relative h-8 w-8 animate-spin text-brand-primary" />
+        </div>
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-slate-700">Retrieving your brand tracking settings…</p>
+          <p className="text-xs text-slate-400">This can take a moment if the server is waking up.</p>
+        </div>
       </div>
     );
   }

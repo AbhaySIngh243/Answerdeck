@@ -17,6 +17,8 @@ import {
   FileText,
   Globe,
   History,
+  Info,
+  AlertTriangle,
   Lightbulb,
   Loader2,
   Play,
@@ -287,6 +289,7 @@ const ProjectDetailView = () => {
   const [selectedPromptId, setSelectedPromptId] = useState(null);
   const [activeSection, setActiveSection] = useState('dashboard');
   const [dashChartMode, setDashChartMode] = useState('7d');
+  const [showGlossary, setShowGlossary] = useState(false);
   const [improveTarget, setImproveTarget] = useState(null); // {prompt_id, prompt_text}
   const deepIntelRef = useRef(null);
 
@@ -574,7 +577,11 @@ const ProjectDetailView = () => {
         }
         setShowDatePicker(false);
       } catch (err) {
-        setExportError(err.message || 'Export failed. Please retry.');
+        setExportError(
+          err?.status >= 500
+            ? 'The server is warming up or processing a large report. Please wait a moment and try again.'
+            : (err.message || 'Export failed. Please retry.'),
+        );
       } finally {
         setExportLoading(null);
       }
@@ -729,6 +736,37 @@ const ProjectDetailView = () => {
       pollJobStatus(item.job_id, item.prompt_id, 1);
     });
   }, [location.state, pollJobStatus]);
+
+  useEffect(() => {
+    let active = true;
+    const loadBackgroundJobs = async () => {
+      if (!id) return;
+      try {
+        const res = await api.getProjectJobs(id);
+        if (!active) return;
+        const jobs = Array.isArray(res?.jobs) ? res.jobs : [];
+        const runningOrPending = jobs.filter(
+          (j) => (j.status === 'running' || j.status === 'pending') && j.job_id && j.prompt_id
+        );
+        runningOrPending.forEach((item) => {
+          if (!activePollsRef.current.has(item.job_id)) {
+            setRunningPrompts((prev) => ({ ...prev, [item.prompt_id]: true }));
+            activePollsRef.current.set(item.job_id, { timeoutId: null, promptId: item.prompt_id });
+            pollJobStatus(item.job_id, item.prompt_id, 1);
+          }
+        });
+      } catch (err) {
+        console.error('Failed to load active background jobs:', err);
+      }
+    };
+    loadBackgroundJobs();
+    
+    const timer = setInterval(loadBackgroundJobs, 15000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [id, pollJobStatus]);
 
   if (isLoading) {
     return (
@@ -932,6 +970,66 @@ const ProjectDetailView = () => {
             {activeSection === 'dashboard' && (
               <motion.div key="dashboard" {...sectionMotion} className="space-y-5">
                 <OverviewKpiGrid dashboard={dashboard} prompts={prompts} enabledEngines={enabledEngines} metricsLoading={dashboardLoading} />
+
+                {/* Low-confidence warning banner */}
+                {(() => {
+                  const nResponses = Number(dashboard?.coverage?.n_responses ?? 0);
+                  if (nResponses > 0 && nResponses < 15) return (
+                    <div className="flex items-start gap-3 rounded-xl border border-amber-200/60 bg-amber-50/60 px-5 py-3.5">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-800">Early results — directional only</p>
+                        <p className="mt-0.5 text-xs text-amber-600">Based on {nResponses} model answer{nResponses === 1 ? '' : 's'} so far. Scores and rankings will stabilize as more prompts complete across engines.</p>
+                      </div>
+                    </div>
+                  );
+                  return null;
+                })()}
+
+                {/* Collapsible glossary */}
+                <div className="glass-card-v2 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setShowGlossary((v) => !v)}
+                    className="flex w-full items-center justify-between px-5 py-3 text-left transition-colors hover:bg-slate-50/50"
+                  >
+                    <span className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                      <Info className="h-4 w-4 text-slate-400" />
+                      What do the metrics mean?
+                    </span>
+                    <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform ${showGlossary ? 'rotate-180' : ''}`} />
+                  </button>
+                  {showGlossary && (
+                    <div className="space-y-3 border-t border-slate-100/80 px-5 py-4">
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
+                          <p className="text-xs font-semibold text-slate-700">Score</p>
+                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">Composite of mention rate, rank position, and sentiment across all tracked prompts. 0–100 scale.</p>
+                        </div>
+                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
+                          <p className="text-xs font-semibold text-slate-700">Visibility</p>
+                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">Percentage of (prompt × engine) cells where your brand was explicitly named in the answer text.</p>
+                        </div>
+                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
+                          <p className="text-xs font-semibold text-slate-700">AI Share</p>
+                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">Your brand's share of all brand-mention events. Differs from visibility, which measures presence per cell.</p>
+                        </div>
+                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
+                          <p className="text-xs font-semibold text-slate-700">Quality</p>
+                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">Weighted blend of how often the brand is mentioned, its typical rank position, and positive/negative sentiment.</p>
+                        </div>
+                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
+                          <p className="text-xs font-semibold text-slate-700">Moat score</p>
+                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">How defensible your visibility is — factoring in owned citations, official-site references, and source diversity.</p>
+                        </div>
+                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
+                          <p className="text-xs font-semibold text-slate-700">Answer position</p>
+                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">Average rank when your brand is named. #1 = first mentioned, higher numbers = mentioned later in the answer.</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 {!selectedPromptId && (() => {
                   if (!movements || movements.has_data === false) {

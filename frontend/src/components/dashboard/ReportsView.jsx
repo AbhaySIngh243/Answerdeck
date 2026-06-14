@@ -21,6 +21,7 @@ const item = {
 
 const ReportsView = () => {
   const [exporting, setExporting] = useState(null);
+  const [exportError, setExportError] = useState(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['reports-overview'],
@@ -32,6 +33,7 @@ const ReportsView = () => {
   const handleExport = async (project, format) => {
     const key = `${project.project_id}-${format}`;
     setExporting(key);
+    setExportError(null);
     try {
       const safeName = (project.name || 'report').replace(/\s+/g, '_');
       if (format === 'pdf') {
@@ -45,6 +47,12 @@ const ReportsView = () => {
           `${safeName}_full_report.csv`,
         );
       }
+    } catch (err) {
+      setExportError(
+        err?.status >= 500
+          ? 'The server is warming up or processing a large report. Please wait a moment and try again.'
+          : (err?.message || 'Export failed. Please try again.'),
+      );
     } finally {
       setExporting(null);
     }
@@ -97,6 +105,12 @@ const ReportsView = () => {
         </motion.div>
       ) : (
         <motion.div variants={item}>
+          {exportError && (
+            <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber-200/60 bg-amber-50/60 px-5 py-3.5">
+              <p className="text-sm text-amber-800">{exportError}</p>
+              <button onClick={() => setExportError(null)} className="shrink-0 text-xs font-medium text-amber-500 hover:text-amber-700">Dismiss</button>
+            </div>
+          )}
           <DashboardCard title="Project Reports" icon={FileText} noPadding>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">

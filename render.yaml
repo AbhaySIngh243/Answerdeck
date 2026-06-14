@@ -19,3 +19,9 @@ services:
         sync: false
       - key: RANKLORE_SEARCH_AUGMENT_ENABLED
         value: "true"
+      - key: CASHFREE_PLAN_CURRENCY
+        value: "USD"
+      - key: CASHFREE_PLAN_STANDARD_AMOUNT
+        value: "79"
+      - key: CASHFREE_PLAN_PRO_AMOUNT
+        value: "149"

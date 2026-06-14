@@ -1,8 +1,8 @@
 /** Shared billing copy and formatting. Keep in sync with backend plan_provisioner.PLAN_DEFINITIONS. */
 
 export const DEFAULT_PLAN_AMOUNTS = {
-  standard: 10,
-  pro: 15,
+  standard: 79,
+  pro: 149,
 };
 
 const PAYMENT_METHOD_LABELS = {
@@ -24,7 +24,7 @@ const STATUS_LABELS = {
   created: 'Payment incomplete',
 };
 
-export function formatPlanPrice(amount, currency = 'INR') {
+export function formatPlanPrice(amount, currency = 'USD') {
   const value = Number(amount);
   if (!Number.isFinite(value)) return '';
   const cur = String(currency || 'INR').toUpperCase();
@@ -49,7 +49,7 @@ export function planAmountFromHealth(billingHealth, planKey) {
 }
 
 export function billingCurrency(billingHealth) {
-  return (billingHealth?.currency || 'INR').toUpperCase();
+  return (billingHealth?.currency || 'USD').toUpperCase();
 }
 
 export function formatPaymentMethods(methods) {
@@ -79,7 +79,7 @@ export function isSandboxEnvironment(billingHealth) {
 }
 
 export function billingCycleNote(currency) {
-  const cur = String(currency || 'INR').toUpperCase();
+  const cur = String(currency || 'USD').toUpperCase();
   if (cur === 'INR') {
     return 'One-time monthly payment via Cashfree (UPI, card, net banking). Pay again each month to renew.';
   }

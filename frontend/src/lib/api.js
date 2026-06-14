@@ -82,6 +82,19 @@ function buildHelpfulError({ url, response, payload, isJson }) {
     }
   }
 
+  // Make 500 errors friendlier — Render free-tier cold starts are common.
+  if (status >= 500) {
+    const friendly =
+      backendMessage ||
+      'The server is warming up or temporarily unavailable. Please wait a moment and try again.';
+    const err = new Error(friendly);
+    err.name = 'ApiError';
+    err.status = status;
+    err.url = url;
+    err.requestId = requestId || null;
+    return err;
+  }
+
   const prefix = status ? `API ${status}${statusText ? ` ${statusText}` : ''}` : 'API error';
   const suffix = requestId ? ` (request_id: ${requestId})` : '';
   const details = backendMessage ? `: ${backendMessage}` : '';
@@ -297,6 +310,7 @@ export const api = {
       ),
       timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     }),
+  getProjectJobs: (projectId) => request(`/analysis/project/${projectId}/jobs`),
   getJobStatus: (jobId) => request(`/analysis/status/${jobId}`),
   getPromptResults: (promptId) => request(`/analysis/results/${promptId}`),
   getEngines: () => request('/analysis/engines'),
@@ -449,16 +463,31 @@ export async function downloadFile(path, filename, { timeoutMs } = {}) {
     clearTimeout(timer);
   }
   if (!response.ok) {
+    // If the server returned a text fallback (error report), download it anyway.
+    const ct = response.headers.get('content-type') || '';
+    if (ct.includes('text/plain')) {
+      const blob = await response.blob();
+      const errorFilename = filename.replace(/\.[^.]+$/, '_error.txt');
+      const dl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = dl;
+      a.download = errorFilename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(dl);
+      return;
+    }
     throw buildHelpfulError({ url: `${API_BASE_URL}${path}`, response, payload: null, isJson: false });
   }
 
   const blob = await response.blob();
-  const url = window.URL.createObjectURL(blob);
+  const dlUrl = window.URL.createObjectURL(blob);
   const link = document.createElement('a');
-  link.href = url;
+  link.href = dlUrl;
   link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
-  window.URL.revokeObjectURL(url);
+  window.URL.revokeObjectURL(dlUrl);
 }

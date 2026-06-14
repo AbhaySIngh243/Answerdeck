@@ -515,7 +515,7 @@ def async_run_analysis(
                     brand = detail.get("brand", "").strip()
                     if not brand or is_spurious_brand_mention(brand):
                         continue
-                    is_focus = is_focus_brand_match(brand, focus_brand_aliases)
+                    is_focus = is_focus_brand_match(brand, focus_brand_aliases) and not is_focus_brand_match(brand, competitor_brands)
                     mention = Mention(
                         response_id=new_response.id,
                         brand=brand,

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from flask import Blueprint, Response as FlaskResponse, g, jsonify, request
+from flask import Blueprint, Response as FlaskResponse, current_app, g, jsonify, request
 
 from sqlalchemy import func
 
@@ -21,6 +21,7 @@ from engine.analyzer import (
     build_focus_brand_aliases,
     calculate_visibility_score,
     generate_detailed_audit,
+    is_focus_brand_match,
     generate_action_playbook,
     generate_content_piece,
     generate_project_summary,
@@ -3064,6 +3065,7 @@ def _collect_prompt_engine_matrix(project_id: int) -> dict[str, Any]:
     project = Project.query.get(project_id)
     if not project:
         raise NotFoundError("Project not found")
+    focus_aliases = build_focus_brand_aliases(project.name, project.website_url or "")
 
     prompts = Prompt.query.filter_by(project_id=project_id).all()
     prompt_rows: list[dict] = []
@@ -3106,7 +3108,11 @@ def _collect_prompt_engine_matrix(project_id: int) -> dict[str, Any]:
                 for m in mentions
                 if _mention_is_visible_in_answer(response, m, focus_aliases=focus_aliases)
             ]
-            focus_mention = next((m for m in visible_mentions if m.is_focus), None)
+            
+            competitor_list = project.get_competitors_list()
+            is_dynamic_focus = lambda brand: is_focus_brand_match(brand, focus_aliases) and not is_focus_brand_match(brand, competitor_list)
+            
+            focus_mention = next((m for m in visible_mentions if is_dynamic_focus(m.brand)), None)
             sentiment = focus_mention.sentiment if focus_mention else "not_mentioned"
             rank = focus_mention.rank if focus_mention else None
             mentioned = focus_mention is not None
@@ -3120,7 +3126,7 @@ def _collect_prompt_engine_matrix(project_id: int) -> dict[str, Any]:
                 "top_competitors": [
                     {"brand": m.brand, "rank": m.rank}
                     for m in visible_mentions
-                    if not m.is_focus
+                    if not is_dynamic_focus(m.brand)
                     and not is_spurious_brand_mention(m.brand or "")
                     and not _looks_like_channel_noise(m.brand or "", m.context or "")
                     and not _looks_like_spec_phrase(m.brand or "")
@@ -3609,18 +3615,28 @@ def _export_date_params() -> tuple[str | None, str | None]:
 def export_project_csv(project_id):
     from engine.full_report import build_full_export_payload, render_full_report_csv
 
-    _get_project_for_user(project_id)
-    date_from, date_to = _export_date_params()
-    payload = build_full_export_payload(project_id, g.user.id, date_from=date_from, date_to=date_to)
-    content = render_full_report_csv(payload)
-    project_name = str((payload.get("project") or {}).get("name") or f"project_{project_id}")
-    safe_name = re.sub(r"[^\w\-]+", "_", project_name).strip("_") or f"project_{project_id}"
+    try:
+        _get_project_for_user(project_id)
+        date_from, date_to = _export_date_params()
+        payload = build_full_export_payload(project_id, g.user.id, date_from=date_from, date_to=date_to)
+        content = render_full_report_csv(payload)
+        project_name = str((payload.get("project") or {}).get("name") or f"project_{project_id}")
+        safe_name = re.sub(r"[^\w\-]+", "_", project_name).strip("_") or f"project_{project_id}"
 
-    return FlaskResponse(
-        content,
-        mimetype="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="answrdeck_{safe_name}_full_report.csv"'},
-    )
+        return FlaskResponse(
+            content,
+            mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="answrdeck_{safe_name}_full_report.csv"'},
+        )
+    except Exception as exc:
+        current_app.logger.exception("CSV export failed: %s", exc)
+        safe_name = f"project_{project_id}"
+        text = f"Answrdeck CSV Export Failed\n\nError: {exc}\n\nPlease contact support or try running the analysis again."
+        return FlaskResponse(
+            text,
+            mimetype="text/plain",
+            headers={"Content-Disposition": f'attachment; filename="answrdeck_{safe_name}_export_error.txt"'},
+        )
 
 
 @reports_bp.route("/project/<int:project_id>/export.pdf", methods=["GET"])
@@ -3628,20 +3644,32 @@ def export_project_csv(project_id):
 def export_project_pdf(project_id):
     from engine.full_report import build_full_export_payload, render_full_report_pdf
 
-    _get_project_for_user(project_id)
-    date_from, date_to = _export_date_params()
-    payload = build_full_export_payload(project_id, g.user.id, date_from=date_from, date_to=date_to)
-    project_name = str((payload.get("project") or {}).get("name") or f"project_{project_id}")
-    safe_name = re.sub(r"[^\w\-]+", "_", project_name).strip("_") or f"project_{project_id}"
+    try:
+        _get_project_for_user(project_id)
+        date_from, date_to = _export_date_params()
+        payload = build_full_export_payload(project_id, g.user.id, date_from=date_from, date_to=date_to)
+        project_name = str((payload.get("project") or {}).get("name") or f"project_{project_id}")
+        safe_name = re.sub(r"[^\w\-]+", "_", project_name).strip("_") or f"project_{project_id}"
+    except Exception as exc:
+        current_app.logger.exception("PDF export initialization failed: %s", exc)
+        safe_name = f"project_{project_id}"
+        text = f"Answrdeck PDF Export Failed\n\nError: {exc}\n\nPlease contact support or try running the analysis again."
+        return FlaskResponse(
+            text,
+            mimetype="text/plain",
+            headers={"Content-Disposition": f'attachment; filename="answrdeck_{safe_name}_export_error.txt"'},
+        )
 
     try:
         pdf_bytes = render_full_report_pdf(payload)
-    except RuntimeError:
+    except Exception as exc:
+        current_app.logger.exception("PDF generation failed: %s", exc)
         text = (
             f"Answrdeck AI Visibility Report\n"
             f"Project: {project_name}\n"
             f"Generated: {payload.get('generated_at', '')}\n\n"
-            f"PDF generation requires reportlab. Install it on the server and retry."
+            f"PDF generation failed: {exc}\n"
+            f"Please download the CSV report instead, or contact support."
         )
         return FlaskResponse(
             text,
