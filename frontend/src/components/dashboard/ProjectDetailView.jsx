@@ -970,11 +970,11 @@ const ProjectDetailView = () => {
                 {(() => {
                   const nResponses = Number(dashboard?.coverage?.n_responses ?? 0);
                   if (nResponses > 0 && nResponses < 15) return (
-                    <div className="flex items-start gap-3 rounded-xl border border-amber-200/60 bg-amber-50/60 px-5 py-3.5">
-                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                    <div className="flex items-start gap-3 rounded-xl border border-blue-200/60 bg-blue-50/60 px-5 py-3.5">
+                      <Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
                       <div>
-                        <p className="text-sm font-medium text-amber-800">Early results — directional only</p>
-                        <p className="mt-0.5 text-xs text-amber-600">Based on {nResponses} model answer{nResponses === 1 ? '' : 's'} so far. Scores and rankings will stabilize as more prompts complete across engines.</p>
+                        <p className="text-sm font-medium text-slate-800">Early results — directional only</p>
+                        <p className="mt-0.5 text-xs text-slate-500">Based on {nResponses} model answer{nResponses === 1 ? '' : 's'} so far. Scores and rankings will stabilize as more prompts complete across engines.</p>
                       </div>
                     </div>
                   );
