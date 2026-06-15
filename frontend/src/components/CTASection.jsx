@@ -78,7 +78,37 @@ const CTASection = () => {
           </p>
         </div>
 
-        <div className="mt-16 grid gap-6 md:grid-cols-3 md:gap-8">
+        <div className="mt-16 grid gap-6 md:grid-cols-2 md:gap-8 lg:grid-cols-4">
+          {/* Free */}
+          <div className="flex flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
+            <p className="text-xs font-bold uppercase tracking-wider text-[#64748b]">Free</p>
+            <p className="mt-3 flex items-baseline gap-1 text-[#0f172a]">
+              <span className="text-3xl font-bold tracking-tight">{formatPlanPrice(0, currency)}</span>
+              <span className="text-sm font-medium text-[#64748b]">/mo</span>
+            </p>
+            <p className="mt-2 text-sm text-[#64748b]">See your AI visibility on one brand. No card required.</p>
+            <ul className="mt-5 space-y-2.5 text-sm text-[#334155]">
+              <li className="flex gap-2">
+                <span className="text-brand-primary">✓</span>
+                <span>1 project</span>
+              </li>
+              <li className="flex gap-2">
+                <span className="text-brand-primary">✓</span>
+                <span>3 prompts per project</span>
+              </li>
+              <li className="flex gap-2">
+                <span className="text-brand-primary">✓</span>
+                <span>Full dashboard &amp; recommendations</span>
+              </li>
+            </ul>
+            <Link
+              to="/signup"
+              className="btn-secondary mt-8 w-full px-4 py-3.5 text-center text-sm font-semibold"
+            >
+              Start free
+            </Link>
+          </div>
+
           {/* Standard */}
           <div className="flex flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
             <p className="text-xs font-bold uppercase tracking-wider text-[#64748b]">Standard</p>

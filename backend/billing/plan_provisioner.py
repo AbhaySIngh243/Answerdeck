@@ -13,12 +13,12 @@ PLAN_DEFINITIONS = {
     "standard": {
         "amount_env": "CASHFREE_PLAN_STANDARD_AMOUNT",
         "recurring_amount": 79.0,
-        "name": "Answerdeck Standard Monthly",
+        "name": "Answrdeck Standard Monthly",
     },
     "pro": {
         "amount_env": "CASHFREE_PLAN_PRO_AMOUNT",
         "recurring_amount": 149.0,
-        "name": "Answerdeck Pro Monthly",
+        "name": "Answrdeck Pro Monthly",
     },
 }
 

@@ -8,7 +8,15 @@ import BrandLogo from '../BrandLogo';
 const LoginPage = () => {
   const { isSignedIn, loading } = useAuth();
 
-  if (!loading && isSignedIn) {
+  if (loading) {
+    return (
+      <div className="flex min-h-[100dvh] items-center justify-center bg-[#f8fafc]">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-brand-primary" />
+      </div>
+    );
+  }
+
+  if (isSignedIn) {
     return <Navigate to="/dashboard" replace />;
   }
 

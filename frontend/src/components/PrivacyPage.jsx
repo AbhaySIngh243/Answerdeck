@@ -79,10 +79,10 @@ export default function PrivacyPage() {
         </p>
         <p>These providers currently include:</p>
         <ul className="list-disc space-y-1 pl-5">
-          <li>OpenAI</li>
-          <li>Anthropic</li>
+          <li>OpenAI (ChatGPT)</li>
+          <li>Anthropic (Claude)</li>
           <li>Google AI (Gemini)</li>
-          <li>DeepSeek</li>
+          <li>Perplexity</li>
         </ul>
         <p>
           Data shared with these providers is used solely to generate responses and analyses required
@@ -97,14 +97,16 @@ export default function PrivacyPage() {
       <section>
         <h2 className="text-xl font-semibold text-slate-900">Analytics and Advertising</h2>
         <p>
-          We use analytics tools to understand how visitors interact with our website and platform.
+          We may use analytics and advertising tools to understand how visitors interact with our
+          website and measure marketing performance. These are <strong>optional</strong> and are
+          only loaded after you accept cookies in our consent banner.
         </p>
-        <p>These may include:</p>
+        <p>When enabled, these may include:</p>
         <ul className="list-disc space-y-1 pl-5">
           <li>Google Analytics</li>
           <li>Microsoft Clarity</li>
         </ul>
-        <p>We may also use advertising and conversion tracking technologies provided by:</p>
+        <p>We may also use conversion tracking technologies provided by:</p>
         <ul className="list-disc space-y-1 pl-5">
           <li>Meta</li>
           <li>LinkedIn</li>
@@ -112,7 +114,8 @@ export default function PrivacyPage() {
         </ul>
         <p>
           These tools may use cookies or similar technologies to measure website traffic, campaign
-          performance, and user engagement.
+          performance, and user engagement. If you decline optional cookies, we do not load these
+          scripts.
         </p>
       </section>
 
@@ -120,15 +123,15 @@ export default function PrivacyPage() {
         <h2 className="text-xl font-semibold text-slate-900">Cookies</h2>
         <p>Answrdeck uses cookies and similar technologies to:</p>
         <ul className="list-disc space-y-1 pl-5">
-          <li>Maintain user sessions</li>
-          <li>Authenticate users</li>
+          <li>Maintain user sessions (essential — required to sign in and use the product)</li>
+          <li>Authenticate users (essential)</li>
           <li>Remember preferences</li>
-          <li>Analyze website traffic</li>
-          <li>Measure marketing effectiveness</li>
+          <li>Analyze website traffic (optional — only after consent)</li>
+          <li>Measure marketing effectiveness (optional — only after consent)</li>
         </ul>
         <p>
-          You can control cookie settings through your browser. Disabling cookies may impact certain
-          features of the service.
+          You can accept or decline optional cookies via the banner on our website, or control cookie
+          settings through your browser. Disabling essential cookies may prevent you from signing in.
         </p>
       </section>
 

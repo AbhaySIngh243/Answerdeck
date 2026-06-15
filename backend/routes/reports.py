@@ -1721,7 +1721,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
 
     if total_models <= 0:
         what_happened = "No model answers have been collected for this prompt yet."
-        why_it_matters = "The prompt needs one answered run before Answerdeck can diagnose visibility."
+        why_it_matters = "The prompt needs one answered run before Answrdeck can diagnose visibility."
         next_move = "Run this prompt across the selected models."
     elif not mentioned_engines:
         comp_note = f" {top_competitor['name']} is currently the strongest extracted competitor." if top_competitor else ""

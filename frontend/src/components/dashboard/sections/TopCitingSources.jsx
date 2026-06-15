@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react';
 import { ResponsivePie } from '@nivo/pie';
-import { ResponsiveLine } from '@nivo/line';
 import { Volume2, Info, ArrowRight, Loader2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 
@@ -39,24 +38,11 @@ function getTypeChartColor(type) {
   }
 }
 
-// Generate a fake but realistic sparkline data array
-function generateSparklineData(seed, trend = 'up') {
-  let val = 10 + (seed % 10);
-  const data = [];
-  for (let i = 0; i < 15; i++) {
-    data.push({ x: i, y: val });
-    val += (Math.random() - 0.4) * 4;
-    if (trend === 'up') val += 1;
-    if (val < 2) val = 2;
-  }
-  return [{ id: 'trend', data }];
-}
-
 export default function TopCitingSources({ sources = [], totalPrompts, totalEngines = 1, focusBrand, isLoading = false }) {
   const totalCitations = sources.reduce((sum, s) => sum + (s.source_mentions || 0), 0);
   
   const enrichedSources = useMemo(() => {
-    return sources.map((s, idx) => {
+    return sources.map((s) => {
       const type = getDomainType(s.domain || s.label || '', focusBrand);
       
       // Since a domain can be cited multiple times in a single response,
@@ -76,7 +62,6 @@ export default function TopCitingSources({ sources = [], totalPrompts, totalEngi
         presence,
         sov,
         avgPerPrompt,
-        sparklineData: generateSparklineData(idx, idx < 3 ? 'up' : 'flat')
       };
     }).sort((a, b) => b.source_mentions - a.source_mentions);
   }, [sources, totalPrompts, totalCitations, focusBrand]);
@@ -93,6 +78,15 @@ export default function TopCitingSources({ sources = [], totalPrompts, totalEngi
       color: getTypeChartColor(type)
     })).sort((a, b) => b.value - a.value);
   }, [enrichedSources]);
+
+  const calloutText = useMemo(() => {
+    if (typeData.length === 0) {
+      return 'Run analysis on more prompts to see which kinds of sources AI engines cite most in your space.';
+    }
+    const topTypes = typeData.slice(0, 2).map((d) => d.label);
+    const joined = topTypes.length > 1 ? `${topTypes[0]} and ${topTypes[1]}` : topTypes[0];
+    return `${joined} sources drive the most AI citations in your space. Strengthening presence in these channels can improve your visibility across AI engines.`;
+  }, [typeData]);
 
   if (isLoading && enrichedSources.length === 0) {
     return (
@@ -148,17 +142,16 @@ export default function TopCitingSources({ sources = [], totalPrompts, totalEngi
                 <tr className="border-b border-slate-100 bg-white">
                   <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[20%]">Domain</th>
                   <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[15%]">Type</th>
-                  <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[20%]">
-                    <div className="flex items-center gap-1">% presence <Info className="h-3 w-3 text-slate-400" /></div>
+                  <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[24%]">
+                    <div className="flex items-center gap-1" title="Estimated share of responses that cite this domain, after de-duplicating repeated citations within a single answer.">Est. presence <Info className="h-3 w-3 text-slate-400" /></div>
                   </th>
-                  <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[15%]">
+                  <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[18%]">
                     <div className="flex items-center gap-1">Avg citations<br/>per prompt <Info className="h-3 w-3 text-slate-400" /></div>
                   </th>
-                  <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[10%]">
+                  <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[12%]">
                     <div className="flex items-center gap-1">Total<br/>citations <Info className="h-3 w-3 text-slate-400" /></div>
                   </th>
-                  <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[10%]">Trend (30d)</th>
-                  <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[10%]">
+                  <th className="px-5 py-4 text-xs font-semibold text-slate-500 w-[14%]">
                     <div className="flex items-center gap-1">Share of voice <Info className="h-3 w-3 text-slate-400" /></div>
                   </th>
                 </tr>
@@ -194,25 +187,6 @@ export default function TopCitingSources({ sources = [], totalPrompts, totalEngi
                     </td>
                     <td className="px-5 py-4 text-sm font-bold text-slate-700">{s.avgPerPrompt.toFixed(1)}</td>
                     <td className="px-5 py-4 text-sm font-bold text-slate-700">{s.source_mentions.toLocaleString()}</td>
-                    <td className="px-5 py-4 h-12">
-                      <div className="h-full w-20">
-                        <ResponsiveLine
-                          data={s.sparklineData}
-                          margin={{ top: 5, right: 0, bottom: 5, left: 0 }}
-                          xScale={{ type: 'point' }}
-                          yScale={{ type: 'linear', min: 'auto', max: 'auto' }}
-                          curve="monotoneX"
-                          enablePoints={false}
-                          enableGridX={false}
-                          enableGridY={false}
-                          enableArea={true}
-                          areaOpacity={0.15}
-                          colors={['#3b82f6']}
-                          isInteractive={false}
-                          animate={false}
-                        />
-                      </div>
-                    </td>
                     <td className="px-5 py-4 text-sm font-bold text-slate-700">{s.sov.toFixed(1)}%</td>
                   </tr>
                 ))}
@@ -278,7 +252,7 @@ export default function TopCitingSources({ sources = [], totalPrompts, totalEngi
               <h5 className="text-sm font-bold text-blue-600">What this means</h5>
             </div>
             <p className="text-xs text-slate-600 leading-relaxed font-medium">
-              Editorial and UGC sources drive the most AI citations in your space. Strengthening presence in these channels can improve your visibility across AI engines.
+              {calloutText}
             </p>
           </div>
           

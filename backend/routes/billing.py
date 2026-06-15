@@ -83,11 +83,15 @@ def _api_public_base() -> str:
 
 def _normalize_phone(raw: str) -> str:
     digits = re.sub(r"\D", "", raw or "")
+    # Indian convenience: drop the +91 country code so we keep a clean 10-digit number.
     if digits.startswith("91") and len(digits) == 12:
         digits = digits[2:]
-    if not _PHONE_RE.match(digits):
-        raise ValidationError("customer_phone must be a valid 10-digit Indian mobile number.")
-    return digits
+    # Accept either a 10-digit Indian mobile or an international number (with country
+    # code). Cashfree converts currency at checkout, so non-Indian buyers must be able
+    # to pay too — we only enforce a sane digit-length range here.
+    if _PHONE_RE.match(digits) or (8 <= len(digits) <= 15):
+        return digits
+    raise ValidationError("customer_phone must be a valid phone number including country code.")
 
 
 def _normalize_email(raw: str | None, fallback_user_email: str | None) -> str:
@@ -102,7 +106,7 @@ def _customer_name(email: str, raw_name: str | None) -> str:
     if name:
         return name[:40]
     local = email.split("@", 1)[0].strip()
-    return (local or "Answerdeck User")[:40]
+    return (local or "Answrdeck User")[:40]
 
 
 def _format_cashfree_error(exc: Exception) -> str:
@@ -416,7 +420,7 @@ def subscribe():
             "clerk_user_id": str(uid),
             "internal_plan": str(plan_key),
         },
-        order_note=f"Answerdeck {plan_key} plan - {PLAN_ACCESS_DAYS} days access",
+        order_note=f"Answrdeck {plan_key} plan - {PLAN_ACCESS_DAYS} days access",
     )
 
     try:

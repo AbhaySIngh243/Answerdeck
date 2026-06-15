@@ -36,6 +36,7 @@ from engine.brain_pipeline import (
 from engine.llm_clients import (
     get_available_engine_catalog,
     get_search_layer_status,
+    llm_response_is_error,
     query_engines,
     set_search_layer_provider,
 )
@@ -56,6 +57,7 @@ from models import (
     db,
 )
 from auth import require_auth
+from billing.entitlements import get_daily_run_quota
 from routes.reports import (
     invalidate_project_report_caches,
     _classify_domain_signal,
@@ -192,6 +194,46 @@ def _active_job_counts(user_id: str) -> tuple[int, int, int, int]:
     global_running = AnalysisJob.query.filter_by(status="running").count()
     global_pending = AnalysisJob.query.filter_by(status="pending").count()
     return user_running, user_pending, global_running, global_pending
+
+
+def _runs_today(user_id: str) -> int:
+    """Count analysis jobs this user has created since 00:00 UTC today.
+
+    ``created_at`` is stored as an ISO-8601 UTC string, which sorts lexicographically,
+    so a string lower-bound comparison is correct and index-friendly.
+    """
+    start_of_day = (
+        datetime.now(timezone.utc)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .isoformat()
+    )
+    return (
+        AnalysisJob.query.filter(
+            AnalysisJob.user_id == user_id,
+            AnalysisJob.created_at >= start_of_day,
+        ).count()
+    )
+
+
+def _run_quota_remaining(user_id: str) -> tuple[int, int]:
+    """Return (remaining_runs_today, daily_quota) for this user's plan."""
+    quota = get_daily_run_quota(user_id)
+    used = _runs_today(user_id)
+    return max(0, quota - used), quota
+
+
+def _run_quota_response(quota: int):
+    response = jsonify(
+        {
+            "error": (
+                f"Daily analysis limit reached ({quota} runs/day on your plan). "
+                "Upgrade your plan for a higher limit, or try again tomorrow."
+            ),
+            "code": "run_quota_exceeded",
+        }
+    )
+    response.headers["Retry-After"] = "3600"
+    return response, 429
 
 
 def _maybe_trigger_cross_prompt_synthesis(project_id: int, user_id: str, app_obj=None) -> None:
@@ -359,10 +401,40 @@ def async_run_analysis(
             variant_responses = result.get("variant_responses", {}) if isinstance(result, dict) else {}
             search_context = result.get("search_context", {}) if isinstance(result, dict) else {}
 
+            # Data integrity: engines that errored return placeholder strings like
+            # "[ChatGPT error: ...]". These must never be persisted as real answers or
+            # fed into mention/score extraction, otherwise failures masquerade as data.
+            failed_engines: list[str] = []
+            if isinstance(raw_responses, dict):
+                clean_responses: dict[str, str] = {}
+                for eng_name, text in raw_responses.items():
+                    if isinstance(text, str) and not llm_response_is_error(text):
+                        clean_responses[eng_name] = text
+                    else:
+                        failed_engines.append(eng_name)
+                raw_responses = clean_responses
+            if failed_engines:
+                app_obj.logger.warning(
+                    "Dropping %d engine(s) that returned errors for prompt %s: %s",
+                    len(failed_engines),
+                    prompt_id,
+                    ", ".join(failed_engines),
+                )
+                if isinstance(variant_responses, dict):
+                    for eng_name in failed_engines:
+                        variant_responses.pop(eng_name, None)
+
             if not raw_responses:
                 if job:
                     job.status = "failed"
-                    job.error = "No LLM engines configured. Add API keys for ChatGPT/Perplexity/Gemini/Claude/DeepSeek."
+                    if failed_engines:
+                        job.error = (
+                            "All AI engines failed to respond ("
+                            + ", ".join(failed_engines)
+                            + "). This is usually a transient provider error or an invalid/expired API key. Please retry."
+                        )
+                    else:
+                        job.error = "No LLM engines configured. Add API keys for ChatGPT/Perplexity/Gemini/Claude/DeepSeek."
                     job.completed_at = _now_iso()
                     db.session.commit()
                 return
@@ -380,7 +452,7 @@ def async_run_analysis(
                 if isinstance(raw_variants, dict):
                     for variant_key in ("direct", "comparative", "use_case"):
                         value = raw_variants.get(variant_key)
-                        if isinstance(value, str) and value.strip():
+                        if isinstance(value, str) and value.strip() and not llm_response_is_error(value):
                             per_engine[variant_key] = value
                 if "direct" not in per_engine and isinstance(direct_text, str) and direct_text.strip():
                     per_engine["direct"] = direct_text
@@ -1044,6 +1116,10 @@ def run_analysis(prompt_id):
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
+    remaining_quota, daily_quota = _run_quota_remaining(g.user.id)
+    if remaining_quota <= 0:
+        return _run_quota_response(daily_quota)
+
     _reap_stale_jobs()
     user_running, user_pending, global_running, global_pending = _active_job_counts(g.user.id)
     if user_running + user_pending >= MAX_CONCURRENT_JOBS_PER_USER:
@@ -1106,12 +1182,21 @@ def run_all_prompts(project_id):
     if not prompts:
         return jsonify({"message": "No prompts found for this project", "results": []}), 200
 
+    remaining_quota, daily_quota = _run_quota_remaining(g.user.id)
+    if remaining_quota <= 0:
+        return _run_quota_response(daily_quota)
+
     _reap_stale_jobs()
     user_running, user_pending, global_running, global_pending = _active_job_counts(g.user.id)
     available_user_slots = max(0, MAX_CONCURRENT_JOBS_PER_USER - (user_running + user_pending))
     available_global_queue_slots = max(0, MAX_QUEUED_JOBS_GLOBAL - (global_running + global_pending))
     available_global_running_slots = max(0, MAX_CONCURRENT_JOBS_GLOBAL - global_running)
-    available_slots = min(available_user_slots, available_global_queue_slots, available_global_running_slots)
+    available_slots = min(
+        available_user_slots,
+        available_global_queue_slots,
+        available_global_running_slots,
+        remaining_quota,
+    )
     if available_slots <= 0:
         if available_user_slots <= 0:
             response = jsonify({"error": "Too many queued jobs. Please wait for current analysis to finish."})
@@ -1299,6 +1384,10 @@ def run_test_prompt(project_id):
         return jsonify({"error": str(exc)}), 400
     if not query:
         return jsonify({"error": "query is required"}), 400
+
+    remaining_quota, daily_quota = _run_quota_remaining(g.user.id)
+    if remaining_quota <= 0:
+        return _run_quota_response(daily_quota)
 
     result = query_engines(
         query,

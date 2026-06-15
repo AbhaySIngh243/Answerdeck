@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { FileText, Search, ChevronDown } from 'lucide-react';
+import { FileText, Search } from 'lucide-react';
 import { Button } from '../../ui/button';
 import { cn } from '../../../lib/utils';
 
@@ -29,8 +29,8 @@ function ModelBadges({ models }) {
   return (
     <div className="flex flex-wrap gap-1.5">
       {list.slice(0, 4).map((m) => (
-        <span key={m} className="inline-flex items-center rounded-md bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
-          {String(m).slice(0, 10)}
+        <span key={m} className="inline-flex items-center rounded-md bg-slate-50 px-2 py-0.5 text-[11px] font-semibold capitalize text-slate-600">
+          {String(m)}
         </span>
       ))}
       {list.length > 4 && (
@@ -44,6 +44,15 @@ function ModelBadges({ models }) {
 
 export default function PromptPerformanceTable({ loading, rows, onViewAll }) {
   const safeRows = Array.isArray(rows) ? rows : [];
+  const [query, setQuery] = useState('');
+
+  const filteredRows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return safeRows;
+    return safeRows.filter((row) =>
+      String(row.prompt_text || '').toLowerCase().includes(q)
+    );
+  }, [safeRows, query]);
 
   return (
     <motion.div
@@ -70,18 +79,11 @@ export default function PromptPerformanceTable({ loading, rows, onViewAll }) {
               <input
                 type="text"
                 placeholder="Search prompts..."
-                disabled
-                className="w-full rounded-xl border border-slate-200/60 bg-white/60 py-2 pl-9 pr-3 text-[13px] font-medium text-slate-600 placeholder:text-slate-400 backdrop-blur-sm"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="w-full rounded-xl border border-slate-200/60 bg-white py-2 pl-9 pr-3 text-[13px] font-medium text-slate-700 placeholder:text-slate-400 outline-none transition-colors focus:border-brand-primary focus:ring-2 focus:ring-brand-primary/20"
               />
             </div>
-            <button
-              type="button"
-              disabled
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200/60 bg-white/60 px-3 py-2 text-[13px] font-medium text-slate-600 backdrop-blur-sm"
-              title="Filter is coming soon"
-            >
-              All prompts <ChevronDown className="h-4 w-4 text-slate-400" />
-            </button>
             <Button variant="ghost" size="sm" onClick={onViewAll} className="text-brand-primary">
               View all
             </Button>
@@ -109,11 +111,11 @@ export default function PromptPerformanceTable({ loading, rows, onViewAll }) {
                   <td className="px-5 py-3.5"><div className="h-3 w-12 animate-pulse rounded-md bg-slate-100" /></td>
                 </tr>
               ))
-              : safeRows.slice(0, 8).map((row, idx) => {
+              : filteredRows.slice(0, 8).map((row, idx) => {
                 const vis = row.visibility_pct ?? row.visibility ?? 0;
                 const status = statusForVisibility(vis);
                 return (
-                  <tr key={`${row.prompt_id ?? idx}`} className={cn('transition-colors hover:bg-slate-50/50', idx < safeRows.slice(0, 8).length - 1 && 'border-b border-slate-50')}>
+                  <tr key={`${row.prompt_id ?? idx}`} className={cn('transition-colors hover:bg-slate-50/50', idx < filteredRows.slice(0, 8).length - 1 && 'border-b border-slate-50')}>
                     <td className="max-w-[260px] truncate px-5 py-3.5 text-[13px] font-semibold text-slate-800">
                       {row.prompt_text}
                       {row.updated_at && (
@@ -136,6 +138,15 @@ export default function PromptPerformanceTable({ loading, rows, onViewAll }) {
                   </tr>
                 );
               })}
+            {!loading && filteredRows.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-5 py-10 text-center text-sm text-slate-400">
+                  {safeRows.length === 0
+                    ? 'No prompt data yet. Run an analysis to populate this table.'
+                    : `No prompts match “${query}”.`}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

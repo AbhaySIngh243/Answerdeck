@@ -39,7 +39,7 @@ def demo_request():
 
     if not demo_email_ready():
         raise ValidationError(
-            "Demo requests are temporarily unavailable. Email hello@answedek.com or dev@answrdeck.com and we will get back to you."
+            "Demo requests are temporarily unavailable. Email hello@answrdeck.com or dev@answrdeck.com and we will get back to you."
         )
 
     payload = {
@@ -54,12 +54,12 @@ def demo_request():
         send_demo_request_email(payload)
     except Exception as exc:
         raise ValidationError(
-            "We could not send your request right now. Try again shortly or email hello@answedek.com or dev@answrdeck.com."
+            "We could not send your request right now. Try again shortly or email hello@answrdeck.com or dev@answrdeck.com."
         ) from exc
 
     return jsonify(
         {
             "message": "Thanks — your demo request was sent. We will reply within one business day.",
-            "sent_to": "hello@answedek.com",
+            "sent_to": "hello@answrdeck.com",
         }
     )

@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 
 def _to_address() -> str:
-    return (os.getenv("DEMO_REQUEST_TO_EMAIL") or "hello@answedek.com").strip()
+    return (os.getenv("DEMO_REQUEST_TO_EMAIL") or "hello@answrdeck.com").strip()
 
 
 def _mail_provider_configured() -> bool:
@@ -110,7 +110,7 @@ def _send_via_smtp(payload: dict) -> None:
     port = int((os.getenv("SMTP_PORT") or "587").strip())
     user = (os.getenv("SMTP_USER") or "").strip()
     password = (os.getenv("SMTP_PASSWORD") or "").strip()
-    from_email = (os.getenv("SMTP_FROM_EMAIL") or user or "noreply@answerdeck.com").strip()
+    from_email = (os.getenv("SMTP_FROM_EMAIL") or user or "noreply@answrdeck.com").strip()
     use_tls = (os.getenv("SMTP_USE_TLS") or "true").strip().lower() in ("1", "true", "yes")
 
     msg = EmailMessage()

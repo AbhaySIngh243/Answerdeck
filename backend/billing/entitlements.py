@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 from models import UserBilling
@@ -14,6 +15,20 @@ STANDARD_MAX_PROMPTS_PER_PROJECT = 10
 
 PRO_MAX_PROJECTS = 3
 PRO_MAX_PROMPTS_PER_PROJECT = 10
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+# Daily analysis-run quota (one "run" == one prompt analyzed). Bounds API spend so
+# free users can evaluate the product without burning unlimited LLM/search credits.
+FREE_MAX_RUNS_PER_DAY = _env_int("ANSWRDECK_FREE_RUNS_PER_DAY", 20)
+STANDARD_MAX_RUNS_PER_DAY = _env_int("ANSWRDECK_STANDARD_RUNS_PER_DAY", 150)
+PRO_MAX_RUNS_PER_DAY = _env_int("ANSWRDECK_PRO_RUNS_PER_DAY", 500)
 
 # Paid access after successful PG order (stored lowercase).
 ACTIVE_SUBSCRIPTION_STATUSES = frozenset({"active", "paid"})
@@ -74,9 +89,19 @@ def effective_plan(clerk_user_id: str) -> str:
     return "free"
 
 
+def get_daily_run_quota(clerk_user_id: str) -> int:
+    plan = effective_plan(clerk_user_id)
+    if plan == "standard":
+        return STANDARD_MAX_RUNS_PER_DAY
+    if plan == "pro":
+        return PRO_MAX_RUNS_PER_DAY
+    return FREE_MAX_RUNS_PER_DAY
+
+
 def limits_payload(clerk_user_id: str) -> dict:
     max_p, max_pr = get_limits(clerk_user_id)
     return {
         "max_projects": max_p,
         "max_prompts_per_project": max_pr,
+        "max_runs_per_day": get_daily_run_quota(clerk_user_id),
     }

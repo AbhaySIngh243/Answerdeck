@@ -98,7 +98,14 @@ const DashboardHome = () => {
     retryDelay: (attempt) => Math.min(1200 * Math.pow(2, attempt), 8000),
   });
 
-  const latestProject = Array.isArray(projects) && projects.length > 0 ? projects[0] : null;
+  const latestProject =
+    Array.isArray(projects) && projects.length > 0
+      ? [...projects].sort((a, b) => {
+          const at = String(a?.updated_at || a?.created_at || '');
+          const bt = String(b?.updated_at || b?.created_at || '');
+          return bt.localeCompare(at);
+        })[0]
+      : null;
 
   const {
     data: latestPrompts = [],
@@ -122,13 +129,16 @@ const DashboardHome = () => {
     (sum, p) => sum + (p.tracked_prompts || 0),
     0
   );
+  const analyzedProjects = overviewProjects.filter(
+    (p) => parseFloat(p.current_score || 0) > 0
+  );
   const avgScore =
-    overviewProjects.length > 0
+    analyzedProjects.length > 0
       ? Math.round(
-          overviewProjects.reduce(
+          analyzedProjects.reduce(
             (sum, p) => sum + parseFloat(p.current_score || 0),
             0
-          ) / overviewProjects.length
+          ) / analyzedProjects.length
         )
       : 0;
 
@@ -157,7 +167,7 @@ const DashboardHome = () => {
       <motion.div variants={item} className="flex items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            {shouldShowSetupHome ? 'Welcome to Answerdeck' : greeting}
+            {shouldShowSetupHome ? 'Welcome to Answrdeck' : greeting}
           </h1>
           <p className="mt-1 text-sm text-slate-400">{today}</p>
         </div>
@@ -291,20 +301,18 @@ const DashboardHome = () => {
             sub="across all projects"
           />
           <StatsCard
-            label="Reports"
-            value={overviewProjects.length}
+            label="Projects Analyzed"
+            value={analyzedProjects.length}
             icon={BarChart3}
             color="amber"
-            sub="available"
+            sub="with live results"
           />
           <StatsCard
             label="Avg Score"
-            value={`${avgScore}%`}
+            value={analyzedProjects.length > 0 ? `${avgScore}%` : '—'}
             icon={Activity}
             color="green"
-            sub="visibility score"
-            trend={avgScore > 50 ? 'up' : avgScore > 0 ? 'down' : undefined}
-            trendValue={avgScore > 0 ? `${avgScore}%` : undefined}
+            sub={analyzedProjects.length > 0 ? 'visibility score' : 'run analysis to see'}
           />
         </motion.div>
       )}

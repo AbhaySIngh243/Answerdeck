@@ -226,7 +226,7 @@ def _send_via_smtp(to_email: str, subject: str, text_body: str, html_body: str) 
     port = int((os.getenv("SMTP_PORT") or "587").strip())
     user = (os.getenv("SMTP_USER") or "").strip()
     password = (os.getenv("SMTP_PASSWORD") or "").strip()
-    from_email = (os.getenv("SMTP_FROM_EMAIL") or user or "noreply@answerdeck.com").strip()
+    from_email = (os.getenv("SMTP_FROM_EMAIL") or user or "noreply@answrdeck.com").strip()
     use_tls = (os.getenv("SMTP_USE_TLS") or "true").strip().lower() in ("1", "true", "yes")
 
     msg = EmailMessage()

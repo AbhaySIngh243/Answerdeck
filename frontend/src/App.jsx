@@ -12,6 +12,7 @@ import PrivacyPage from './components/PrivacyPage';
 import TermsPage from './components/TermsPage';
 import AboutPage from './components/AboutPage';
 import ContactPage from './components/ContactPage';
+import CookieConsentBanner from './components/CookieConsentBanner';
 
 const DashboardLayout = lazy(() => import('./components/dashboard/DashboardLayout'));
 const DashboardHome = lazy(() => import('./components/dashboard/DashboardHome'));
@@ -137,6 +138,7 @@ function App() {
           <ToastProvider>
             <div className="min-h-screen bg-transparent selection:bg-brand-primary/25 selection:text-white">
               <AppRoutes />
+              <CookieConsentBanner />
             </div>
           </ToastProvider>
         </AuthProvider>

@@ -73,6 +73,17 @@ RANKLORE_SEARCH_AUGMENT_SNIPPET_CHARS = max(80, min(int(os.getenv("RANKLORE_SEAR
 RANKLORE_SEARCH_PROVIDER_STRICT = os.getenv("RANKLORE_SEARCH_PROVIDER_STRICT", "true").lower() in {"1", "true", "yes"}
 URL_PATTERN = re.compile(r"https?://[^\s<>\"')\]]+")
 
+# Hard per-request HTTP timeout for LLM calls so a stalled provider can never tie
+# up a worker until the Gunicorn hard limit (~180s). Kept well below that ceiling.
+try:
+    LLM_REQUEST_TIMEOUT = max(5.0, float(os.getenv("RANKLORE_LLM_TIMEOUT", "60")))
+except (TypeError, ValueError):
+    LLM_REQUEST_TIMEOUT = 60.0
+try:
+    LLM_MAX_RETRIES = max(0, int(os.getenv("RANKLORE_LLM_MAX_RETRIES", "1")))
+except (TypeError, ValueError):
+    LLM_MAX_RETRIES = 1
+
 
 def _openai_error_looks_transient(exc: BaseException) -> bool:
     """True for server/rate issues where a short retry often succeeds."""
@@ -97,14 +108,27 @@ def _build_client(api_key: str, base_url: str | None = None) -> OpenAI | None:
     if not api_key:
         return None
     if base_url:
-        return OpenAI(base_url=base_url, api_key=api_key)
-    return OpenAI(api_key=api_key)
+        return OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=LLM_REQUEST_TIMEOUT,
+            max_retries=LLM_MAX_RETRIES,
+        )
+    return OpenAI(
+        api_key=api_key,
+        timeout=LLM_REQUEST_TIMEOUT,
+        max_retries=LLM_MAX_RETRIES,
+    )
 
 
 def _build_anthropic_client(api_key: str) -> Anthropic | None:
     if not api_key:
         return None
-    return Anthropic(api_key=api_key)
+    return Anthropic(
+        api_key=api_key,
+        timeout=LLM_REQUEST_TIMEOUT,
+        max_retries=LLM_MAX_RETRIES,
+    )
 
 
 ENGINE_CONFIG: dict[str, dict[str, Any]] = {
@@ -553,9 +577,12 @@ def chat(
                     "country": country,
                 }
             web_exc: BaseException | None = None
+            # Web grounding is the slowest call; give it bounded extra headroom.
+            web_search_timeout = min(LLM_REQUEST_TIMEOUT * 1.5, 120.0)
+            web_client = client.with_options(timeout=web_search_timeout)
             for attempt in range(3):
                 try:
-                    response = client.responses.create(
+                    response = web_client.responses.create(
                         model=OPENAI_WEB_SEARCH_MODEL,
                         input=prompt,
                         tools=[tool_cfg],

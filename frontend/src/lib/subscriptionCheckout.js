@@ -58,6 +58,15 @@ function normalizePhone(raw) {
   return digits;
 }
 
+// Accept a 10-digit Indian mobile or any valid international number (with country
+// code). Cashfree handles currency conversion at checkout, so we must not block
+// non-Indian buyers — we only check for a sane digit-length range.
+function isValidCheckoutPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (/^[6-9]\d{9}$/.test(digits)) return true;
+  return digits.length >= 8 && digits.length <= 15;
+}
+
 async function resolveCustomerContact(user, overrides = {}, onRequestPhone) {
   const email =
     overrides.customerEmail ||
@@ -74,12 +83,12 @@ async function resolveCustomerContact(user, overrides = {}, onRequestPhone) {
   if (!email) {
     throw new Error('Add an email address to your account before subscribing.');
   }
-  if (!/^[6-9]\d{9}$/.test(phone)) {
+  if (!isValidCheckoutPhone(phone)) {
     if (typeof onRequestPhone === 'function') {
       phone = normalizePhone(await onRequestPhone());
     }
-    if (!/^[6-9]\d{9}$/.test(phone)) {
-      throw new Error('A valid 10-digit Indian mobile number is required for Cashfree checkout.');
+    if (!isValidCheckoutPhone(phone)) {
+      throw new Error('A valid phone number (with country code) is required for Cashfree checkout.');
     }
   }
 
@@ -88,7 +97,7 @@ async function resolveCustomerContact(user, overrides = {}, onRequestPhone) {
     user?.fullName ||
     user?.firstName ||
     email.split('@')[0] ||
-    'Answerdeck User';
+    'Answrdeck User';
 
   return { customerEmail: email, customerPhone: phone, customerName };
 }

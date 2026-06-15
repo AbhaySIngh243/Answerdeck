@@ -4,7 +4,7 @@ CRUD for brand projects.
 """
 
 from flask import Blueprint, request, jsonify, g
-from datetime import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import json
 import re
@@ -624,8 +624,11 @@ def complete_onboarding(project_id):
     if isinstance(seed_prompts, list) and seed_prompts:
         existing_prompts = Prompt.query.filter_by(project_id=project.id, user_id=g.user.id).all()
         existing_by_text = {p.prompt_text.strip().lower(): p for p in existing_prompts}
-        now = datetime.now().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         seen_seed_prompts: set[str] = set()
+        # Enforce the plan's per-project prompt cap here too — onboarding must not be
+        # a backdoor around the limit enforced on the regular create-prompt route.
+        _, max_prompts = get_limits(g.user.id)
         for text in seed_prompts[:20]:
             cleaned = str(text).strip()
             key = cleaned.lower()
@@ -639,6 +642,9 @@ def complete_onboarding(project_id):
                     existing.selected_models = engines_json
                 prompt_rows.append({"id": existing.id, "prompt_text": existing.prompt_text, "is_new": False})
                 continue
+            if len(existing_by_text) >= max_prompts:
+                # Already at the plan cap — stop seeding additional new prompts.
+                break
             prompt = Prompt(
                 user_id=g.user.id,
                 project_id=project.id,

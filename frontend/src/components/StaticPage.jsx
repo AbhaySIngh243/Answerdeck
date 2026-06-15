@@ -24,7 +24,7 @@ export default function StaticPage({ title, subtitle, children }) {
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-12 sm:px-6 lg:px-8">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-brand-primary">
-          Answerdeck
+          Answrdeck
         </p>
         <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">{title}</h1>
         {subtitle ? (

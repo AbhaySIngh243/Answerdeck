@@ -6,12 +6,12 @@ export default function TermsPage() {
   return (
     <StaticPage
       title="Terms of service"
-      subtitle="Plain-English rules for using Answerdeck."
+      subtitle="Plain-English rules for using Answrdeck."
     >
       <section>
         <h2 className="text-xl font-semibold text-slate-900">Using the service</h2>
         <p>
-          Answerdeck is a brand visibility monitoring product. You agree to use it only for
+          Answrdeck is a brand visibility monitoring product. You agree to use it only for
           lawful market research purposes, and not to impersonate another brand, scrape other
           users&apos; content, or abuse the LLM/search APIs we call on your behalf.
         </p>
@@ -20,15 +20,17 @@ export default function TermsPage() {
       <section>
         <h2 className="text-xl font-semibold text-slate-900">Subscriptions</h2>
         <p>
-          Plans are one-time monthly payments via Cashfree (UPI, card, or net banking for INR). Pay again each month
-          to renew. Cancel from Settings stops renewal — access continues until the paid period ends.
+          Plans are one-time monthly payments processed securely via Cashfree. International cards are
+          supported (your bank converts the amount at checkout); customers in India can also pay by UPI or
+          net banking. Pay again each month to renew. Cancelling from Settings stops renewal — access
+          continues until the paid period ends.
         </p>
       </section>
 
       <section>
         <h2 className="text-xl font-semibold text-slate-900">No guarantees about LLM output</h2>
         <p>
-          The analysis surfaces raw responses from third-party LLMs. While Answerdeck verifies
+          The analysis surfaces raw responses from third-party LLMs. While Answrdeck verifies
           cited URLs and filters unsupported brand claims, we cannot guarantee the accuracy of any
           statement an LLM makes. Use the outputs as market intelligence, not legal or medical
           advice.
