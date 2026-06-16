@@ -108,8 +108,30 @@ const ProjectsView = () => {
 
   const deleteProjectMutation = useMutation({
     mutationFn: api.deleteProject,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
+    onMutate: async (projectId) => {
+      await queryClient.cancelQueries({ queryKey: ['projects'] });
+      const previous = queryClient.getQueryData(['projects']);
+      queryClient.setQueryData(['projects'], (old) =>
+        (Array.isArray(old) ? old : []).filter((project) => project.id !== projectId),
+      );
+      return { previous };
+    },
+    onError: (_error, _projectId, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['projects'], context.previous);
+      }
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['billing', 'me'] });
+    },
   });
+
+  const handleDeleteProject = (event, projectId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    deleteProjectMutation.mutate(projectId);
+  };
 
   const handleCreateProject = (event) => {
     event.preventDefault();
@@ -189,12 +211,19 @@ const ProjectsView = () => {
         </motion.div>
       ) : (
         <motion.div variants={container} initial="hidden" animate="visible" className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+          <AnimatePresence mode="popLayout">
           {safeProjects.map((project) => {
             const competitors = Array.isArray(project.competitors) ? project.competitors : [];
             const domain = getDomainFromWebsiteUrl(project.website_url);
             const projectRoute = project.context_ready ? `/dashboard/project/${project.id}` : `/dashboard/project/${project.id}/onboarding`;
             return (
-              <motion.div key={project.id} variants={item} whileHover={{ y: -4, transition: { duration: 0.2 } }}>
+              <motion.div
+                key={project.id}
+                layout
+                variants={item}
+                exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.12 } }}
+                whileHover={{ y: -4, transition: { duration: 0.2 } }}
+              >
                 <div className="glass-card-v2 group flex h-full flex-col overflow-hidden transition-shadow duration-200 hover:shadow-[0_12px_40px_rgba(15,23,42,0.1)]">
                   <div className="flex flex-1 flex-col gap-4 p-5">
                     <div className="flex items-start justify-between">
@@ -203,7 +232,7 @@ const ProjectsView = () => {
                       </div>
                       <Button
                         variant="ghost" size="icon"
-                        onClick={() => deleteProjectMutation.mutate(project.id)}
+                        onClick={(event) => handleDeleteProject(event, project.id)}
                         className="h-8 w-8 text-slate-400 hover:bg-red-50 hover:text-red-500"
                         title="Delete project"
                       >
@@ -258,6 +287,7 @@ const ProjectsView = () => {
               </motion.div>
             );
           })}
+          </AnimatePresence>
         </motion.div>
       )}
 
