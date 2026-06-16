@@ -141,8 +141,8 @@ const CTASection = () => {
           </div>
 
           {/* Pro */}
-          <div className="flex flex-col rounded-2xl border-2 border-brand-primary/40 bg-gradient-to-b from-[#eff6ff] to-white p-6 shadow-md md:-mt-2 md:mb-2 md:pb-8">
-            <p className="text-xs font-bold uppercase tracking-wider text-brand-primary">Pro</p>
+          <div className="flex flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
+            <p className="text-xs font-bold uppercase tracking-wider text-[#64748b]">Pro</p>
             <p className="mt-3 flex items-baseline gap-1 text-[#0f172a]">
               <span className="text-3xl font-bold tracking-tight">{proPrice}</span>
               <span className="text-sm font-medium text-[#64748b]">/mo</span>
@@ -165,7 +165,7 @@ const CTASection = () => {
             <button
               type="button"
               onClick={() => queueCheckout('pro')}
-              className="btn-primary mt-8 w-full px-4 py-3.5 text-sm shadow-md shadow-blue-500/25"
+              className="btn-primary mt-8 w-full px-4 py-3.5 text-sm"
             >
               Start Pro
             </button>
