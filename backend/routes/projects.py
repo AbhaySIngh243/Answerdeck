@@ -36,7 +36,8 @@ ONBOARDING_MAX_STEP = 5
 # Legacy projects were only required to complete 3 steps. We still treat those
 # as "done" so existing users aren't bumped back into onboarding.
 ONBOARDING_LEGACY_COMPLETE_STEPS = frozenset({3, 5})
-ONBOARDING_SUGGESTION_TIMEOUT_SECONDS = 12
+# Brief synthesis + candidate generation can take two LLM round-trips.
+ONBOARDING_SUGGESTION_TIMEOUT_SECONDS = 45
 
 
 def _parse_competitors(value):
@@ -519,7 +520,7 @@ def onboarding_suggestions(project_id):
         "competitors": ctx_competitors,
     }
 
-    snapshot = {"homepage": {}, "pages": [], "keywords": [], "link_count": 0}
+    snapshot = {"homepage": {}, "pages": [], "keywords": [], "buyer_signals": [], "link_count": 0}
     db_competitors = _extract_competitor_suggestions(project, max_items=8)
     fallback_prompt_payload = build_fallback_prompt_suggestions(project_ctx)
 
@@ -527,6 +528,14 @@ def onboarding_suggestions(project_id):
     try:
         snapshot_future = executor.submit(collect_site_snapshot, ctx_domain)
         snapshot = _future_result(snapshot_future, snapshot)
+
+        # Rebuild a context-rich fallback in case the main suggestion future times out.
+        enriched_fallback_ctx = {
+            **project_ctx,
+            "keywords": snapshot.get("keywords", []),
+            "buyer_signals": snapshot.get("buyer_signals", []),
+        }
+        fallback_prompt_payload = build_fallback_prompt_suggestions(enriched_fallback_ctx)
 
         prompt_future = executor.submit(
             generate_project_prompt_suggestions, project_ctx, 5, snapshot
@@ -696,6 +705,13 @@ def get_project_suggested_prompts(project_id):
     if not project:
         raise NotFoundError("Project not found")
 
+    # Best effort snapshot for richer suggestions (this endpoint is not on the critical onboarding path).
+    snap = {"homepage": {}, "pages": [], "keywords": [], "buyer_signals": [], "link_count": 0}
+    try:
+        snap = collect_site_snapshot(project.website_url or "") or snap
+    except Exception:
+        pass
+
     payload = generate_project_prompt_suggestions(
         {
             "name": project.name,
@@ -704,6 +720,7 @@ def get_project_suggested_prompts(project_id):
             "website_url": project.website_url,
             "competitors": project.get_competitors_list(),
         },
-        max_prompts=3,
+        max_prompts=6,
+        snapshot=snap,
     )
     return jsonify(payload)
