@@ -15,7 +15,7 @@ import {
   X,
 } from 'lucide-react';
 
-import { api, waitForAnalysisJob } from '../../lib/api';
+import { api } from '../../lib/api';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Select } from '../ui/select';
@@ -556,6 +556,22 @@ export default function ProjectOnboardingWizard() {
     if (project && !form) setForm(defaultFormState(project));
   }, [project, form]);
 
+  // Onboarding has no engine picker, so always run across every engine that is
+  // actually available on this deployment (e.g. all four) instead of a stale
+  // hardcoded default that may include an engine without a configured API key.
+  useEffect(() => {
+    if (availableEngines.length === 0) return;
+    const ids = availableEngines.map((engine) => engine.id);
+    setForm((prev) => {
+      if (!prev) return prev;
+      const current = Array.isArray(prev.step4?.target_engines) ? prev.step4.target_engines : [];
+      const sameSet =
+        current.length === ids.length && ids.every((engineId) => current.includes(engineId));
+      if (sameSet) return prev;
+      return { ...prev, step4: { ...prev.step4, target_engines: ids } };
+    });
+  }, [availableEngines]);
+
   const saveStepMutation = useMutation({
     mutationFn: ({ step, data }) => api.updateOnboardingStep(id, { step, data }),
     onSuccess: (payload) => {
@@ -575,7 +591,7 @@ export default function ProjectOnboardingWizard() {
   const launchMutation = useMutation({
     onMutate: () => {
       setLaunchingAnalysis(true);
-      setLaunchDetail('Saving your setup and preparing the first prompt.');
+      setLaunchDetail('Saving your setup and preparing your prompts.');
     },
     mutationFn: async () => {
       await saveStepMutation.mutateAsync({ step: TOTAL_STEPS, data: buildStepPayload(TOTAL_STEPS) });
@@ -586,16 +602,19 @@ export default function ProjectOnboardingWizard() {
         throw new Error('No onboarding prompt was available to run.');
       }
 
-      setLaunchDetail('Running the first prompt across your selected engines.');
+      setLaunchDetail('Starting the analysis across your selected engines.');
+      const analysisJobs = [];
+
+      // Queue the first prompt first so it is guaranteed a worker slot, then
+      // hand off to the project view which renders the live execution state.
       const firstRun = await api.runPromptAnalysis(firstPrompt.id, {
         searchProvider: form.step4.search_provider,
       });
       if (firstRun?.job_id) {
-        await waitForAnalysisJob(firstRun.job_id);
+        analysisJobs.push({ prompt_id: firstPrompt.id, job_id: firstRun.job_id });
       }
-      setLaunchDetail('Refreshing your dashboard with the first result.');
-      await invalidateProjectQueries(queryClient, id, firstPrompt.id);
 
+      // Queue the remaining prompts best-effort (server enforces capacity).
       const remainingPrompts = prompts.slice(1).filter((prompt) => prompt?.id);
       const backgroundRuns = await Promise.allSettled(
         remainingPrompts.map((prompt) =>
@@ -604,9 +623,13 @@ export default function ProjectOnboardingWizard() {
             .then((run) => ({ prompt_id: prompt.id, job_id: run?.job_id }))
         )
       );
-      const analysisJobs = backgroundRuns
-        .filter((result) => result.status === 'fulfilled' && result.value?.job_id)
-        .map((result) => result.value);
+      backgroundRuns.forEach((result) => {
+        if (result.status === 'fulfilled' && result.value?.job_id) {
+          analysisJobs.push(result.value);
+        }
+      });
+
+      await invalidateProjectQueries(queryClient, id, firstPrompt.id);
 
       return { analysisJobs, firstPromptId: firstPrompt.id };
     },
@@ -614,6 +637,8 @@ export default function ProjectOnboardingWizard() {
       navigate(`/dashboard/project/${id}`, {
         state: {
           analysisJobs: Array.isArray(payload?.analysisJobs) ? payload.analysisJobs : [],
+          openSection: 'prompts',
+          openPromptId: payload?.firstPromptId || null,
         },
       });
     },

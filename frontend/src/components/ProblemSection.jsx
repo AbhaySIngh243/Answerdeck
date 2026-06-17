@@ -3,7 +3,7 @@ import React from 'react';
 const painPoints = [
   {
     title: 'AI is the new shortlist',
-    label: 'Shoppers ask assistants what to buy. The answer is a short list of brands — not ten blue links.',
+    label: 'Shoppers ask assistants what to buy. The answer is a short list of brands, not ten blue links.',
   },
   {
     title: 'Every engine differs',
@@ -30,7 +30,7 @@ const ProblemSection = () => {
           <h2 className="heading-section mt-3">Visibility is only step one</h2>
           <div className="accent-heading-rule" />
           <p className="mx-auto mt-6 max-w-[600px] text-base leading-relaxed text-[#64748b] sm:text-[17px] sm:leading-relaxed">
-            Answrdeck is built for teams who want to move — not stare at dashboards. We measure real model answers, then
+            Answrdeck is built for teams who want to move, not stare at dashboards. We measure real model answers, then
             hand you prioritized fixes grounded in what each engine actually said.
           </p>
         </div>
@@ -53,7 +53,7 @@ const ProblemSection = () => {
           </p>
           <p className="mt-4 text-base leading-relaxed text-[#64748b] sm:text-[17px]">
             Recommendations name the engine and competitor. Opportunities ship with a step-by-step plan. Content Studio
-            drafts copy from your measured gaps — you review and publish.
+            drafts copy from your measured gaps. You review and publish.
           </p>
           <p className="mt-3 text-sm font-medium text-brand-primary">Diagnosis and execution in one workspace.</p>
         </div>

@@ -98,7 +98,7 @@ export default function RequestDemoDialog({ open, onOpenChange }) {
                 </div>
                 <p className="text-base font-semibold text-slate-900">Request sent</p>
                 <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                  Thanks — we sent your details to{' '}
+                  Thanks. We sent your details to{' '}
                   <span className="font-medium text-slate-800">{SUPPORT_EMAIL_HELLO}</span>. Check your inbox for a reply
                   soon.
                 </p>

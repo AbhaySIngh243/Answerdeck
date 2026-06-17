@@ -65,7 +65,7 @@ const CTASection = () => {
 
           <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
             <Link to="/signup" className="btn-primary px-7 py-3.5 text-sm">
-              Start free — no card required
+              Start free, no card required
             </Link>
             <a href="#how-it-works" className="btn-secondary px-7 py-3.5 text-sm">
               See how it works

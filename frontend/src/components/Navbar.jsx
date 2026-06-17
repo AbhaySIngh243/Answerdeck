@@ -5,7 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import BrandLogo from './BrandLogo';
 
 const navLinks = [
-  { href: '#features', label: 'Product' },
+  { href: '#platform', label: 'Product' },
   { href: '#how-it-works', label: 'How it works' },
   { href: '#pricing', label: 'Pricing' },
 ];

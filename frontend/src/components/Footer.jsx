@@ -4,7 +4,7 @@ import BrandLogo from './BrandLogo';
 import { SUPPORT_EMAIL_DEV, SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 const PRODUCT_LINKS = [
-  { label: 'Features', href: '/#features', external: false },
+  { label: 'Features', href: '/#platform', external: false },
   { label: 'Pricing', href: '/#pricing', external: false },
   { label: 'How it works', href: '/#how-it-works', external: false },
 ];
@@ -33,7 +33,7 @@ const Footer = () => {
             </div>
             <p className="max-w-xs text-[13px] leading-relaxed text-[#64748b]">
               Answrdeck measures how AI assistants recommend your brand, then gives you evidence-backed actions and
-              drafts so you can fix gaps — not just find them.
+              drafts so you can fix gaps, not just find them.
             </p>
           </div>
 

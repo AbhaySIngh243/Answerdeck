@@ -282,8 +282,8 @@ const ProjectDetailView = () => {
   const [newPromptModels, setNewPromptModels] = useState([]);
   const [runningPrompts, setRunningPrompts] = useState({});
   const [runError, setRunError] = useState('');
-  const [selectedPromptId, setSelectedPromptId] = useState(null);
-  const [activeSection, setActiveSection] = useState('dashboard');
+  const [selectedPromptId, setSelectedPromptId] = useState(() => location.state?.openPromptId || null);
+  const [activeSection, setActiveSection] = useState(() => location.state?.openSection || 'dashboard');
   const [dashChartMode, setDashChartMode] = useState('7d');
   const [showGlossary, setShowGlossary] = useState(false);
   const [improveTarget, setImproveTarget] = useState(null); // {prompt_id, prompt_text}
@@ -737,6 +737,17 @@ const ProjectDetailView = () => {
       activePollsRef.current.set(item.job_id, { timeoutId: null, promptId: item.prompt_id });
       pollJobStatus(item.job_id, item.prompt_id, 1);
     });
+
+    // Coming straight from onboarding: open the first prompt's live analysis
+    // panel and bring it into view so the user sees the execution in progress
+    // instead of an empty aggregate dashboard.
+    const openPromptId = location.state?.openPromptId;
+    if (openPromptId) {
+      setSelectedPromptId(openPromptId);
+      requestAnimationFrame(() =>
+        deepIntelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      );
+    }
   }, [location.state, pollJobStatus]);
 
   useEffect(() => {
