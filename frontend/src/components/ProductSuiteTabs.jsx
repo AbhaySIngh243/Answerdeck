@@ -15,6 +15,7 @@ const modules = [
       'Track how visibility moves run over run',
     ],
     img: 'visibility-dashboard.webp',
+    src: '/dashboard.png',
   },
   {
     id: 'prompts',
@@ -149,7 +150,9 @@ const ProductSuiteTabs = () => {
           <ImagePlaceholder
             key={current.img}
             name={current.img}
+            src={current.src}
             label={current.label}
+            alt={`Answrdeck ${current.label} view`}
             aspect="16 / 11"
           />
         </div>

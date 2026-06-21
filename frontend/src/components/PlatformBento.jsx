@@ -1,5 +1,5 @@
 import React from 'react';
-import { BarChart3, Search, Users, Globe, Zap, Sparkles } from 'lucide-react';
+import { BarChart3, Search, Users, Globe, Zap } from 'lucide-react';
 import ImagePlaceholder from './ImagePlaceholder';
 
 const featured = {
@@ -7,6 +7,7 @@ const featured = {
   title: 'Multi-engine visibility dashboard',
   desc: 'One view for ChatGPT, Gemini, Perplexity, and Claude. Track visibility trends, KPIs, and which models mention you versus skip you over time.',
   img: 'visibility-dashboard.webp',
+  imgSrc: '/dashboard.png',
   imgLabel: 'Visibility trends across every engine',
 };
 
@@ -61,7 +62,9 @@ const PlatformBento = () => {
             <p className="mb-6 max-w-xl text-[15px] leading-relaxed text-[#64748b]">{featured.desc}</p>
             <ImagePlaceholder
               name={featured.img}
+              src={featured.imgSrc}
               label={featured.imgLabel}
+              alt="Answrdeck project dashboard with visibility trends, KPIs, and prompt performance"
               aspect="16 / 9"
               className="mt-auto"
             />

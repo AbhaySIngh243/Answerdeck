@@ -232,7 +232,7 @@
   }
 
   .section-transition {
-    height: 72px;
+    height: 40px;
     background: linear-gradient(to bottom, transparent, rgba(226, 232, 240, 0.35), transparent);
     pointer-events: none;
   }

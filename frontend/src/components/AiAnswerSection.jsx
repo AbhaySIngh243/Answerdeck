@@ -22,7 +22,7 @@ const metrics = [
 
 const AiAnswerSection = () => {
   return (
-    <section className="section-band-soft py-24" id="ai-answers">
+    <section className="section-band-soft pb-20 pt-10 md:pb-24 md:pt-14" id="ai-answers">
       <div className="mx-auto grid max-w-7xl grid-cols-1 items-center gap-12 px-4 sm:px-6 lg:grid-cols-2 lg:gap-16 lg:px-8">
         <div>
           <p className="landing-eyebrow">AI search metrics</p>

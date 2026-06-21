@@ -17,7 +17,6 @@ function LandingPage() {
       <Navbar />
       <main>
         <HeroSection />
-        <SectionTransition />
         <RevealSection as="div">
           <AiAnswerSection />
         </RevealSection>

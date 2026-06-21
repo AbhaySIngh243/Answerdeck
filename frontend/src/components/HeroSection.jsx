@@ -57,7 +57,7 @@ const HeroSection = () => {
   const [demoOpen, setDemoOpen] = useState(false);
 
   return (
-    <section className="relative overflow-hidden hero-gradient pb-20 pt-12 md:pb-28 md:pt-16">
+    <section className="relative overflow-hidden hero-gradient pb-10 pt-12 md:pb-12 md:pt-16">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#e2e8f0] to-transparent opacity-80" aria-hidden />
       <div className="mx-auto grid max-w-7xl grid-cols-1 items-center gap-12 px-4 sm:px-6 lg:grid-cols-2 lg:gap-16 lg:px-8">
         <div className="z-10">

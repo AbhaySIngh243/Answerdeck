@@ -56,16 +56,18 @@ const HowItWorks = () => {
             <div className="glass-card rounded-2xl border border-[#e2e8f0] p-3 shadow-lg shadow-slate-900/5 md:p-4">
               <div className="mb-3 flex items-center justify-between px-2 pt-1">
                 <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#64748b]">
-                  Visibility score
+                  Project onboarding
                 </span>
                 <span className="rounded-full bg-brand-primary/10 px-2 py-0.5 text-[11px] font-semibold text-brand-primary">
-                  Per engine
+                  Step 1
                 </span>
               </div>
               <ImagePlaceholder
-                name="visibility-score.webp"
-                label="Visibility score & trend over time"
-                aspect="4 / 3"
+                name="onboarding.png"
+                src="/onboarding.png"
+                label="Brand, competitors, and buyer prompts setup"
+                alt="Answrdeck project onboarding wizard"
+                fit="natural"
               />
             </div>
           </div>
