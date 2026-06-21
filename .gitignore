@@ -29,6 +29,7 @@ frontend/build/
 .vscode/
 .idea/
 .codex/
+.codex-tmp/
 
 # Ignore local debug logs
 debug-*.log
