@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import PlatformRow from './PlatformRow';
 import RequestDemoDialog from './RequestDemoDialog';
 
 const IMG = {
@@ -74,21 +73,20 @@ const HeroSection = () => {
           </p>
           <div className="mt-8 flex flex-col items-stretch gap-4 sm:flex-row sm:items-center">
             <Link to="/signup" className="btn-primary text-center sm:w-auto">
-              Start for free →
+              Start free
             </Link>
             <button
               type="button"
               onClick={() => setDemoOpen(true)}
               className="btn-secondary text-center sm:w-auto"
             >
-              Request demo →
+              Request demo
             </button>
           </div>
         </div>
 
         <HeroIllustration />
       </div>
-      <PlatformRow />
       <RequestDemoDialog open={demoOpen} onOpenChange={setDemoOpen} />
     </section>
   );

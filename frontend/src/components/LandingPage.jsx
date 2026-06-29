@@ -1,11 +1,9 @@
 import React from 'react';
 import Navbar from './Navbar';
 import HeroSection from './HeroSection';
-import AiAnswerSection from './AiAnswerSection';
 import PlatformBento from './PlatformBento';
-import ProductSuiteTabs from './ProductSuiteTabs';
 import HowItWorks from './HowItWorks';
-import ComparisonSection from './ComparisonSection';
+import PhoneShowcaseSection from './PhoneShowcaseSection';
 import CTASection from './CTASection';
 import Footer from './Footer';
 import RevealSection from './RevealSection';
@@ -18,15 +16,7 @@ function LandingPage() {
       <main>
         <HeroSection />
         <RevealSection as="div">
-          <AiAnswerSection />
-        </RevealSection>
-        <SectionTransition />
-        <RevealSection as="div">
           <PlatformBento />
-        </RevealSection>
-        <SectionTransition />
-        <RevealSection as="div">
-          <ProductSuiteTabs />
         </RevealSection>
         <SectionTransition />
         <RevealSection as="div">
@@ -34,7 +24,7 @@ function LandingPage() {
         </RevealSection>
         <SectionTransition />
         <RevealSection as="div">
-          <ComparisonSection />
+          <PhoneShowcaseSection />
         </RevealSection>
         <SectionTransition />
         <RevealSection as="div">

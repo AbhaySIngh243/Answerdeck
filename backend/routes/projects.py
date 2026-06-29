@@ -36,8 +36,12 @@ ONBOARDING_MAX_STEP = 5
 # Legacy projects were only required to complete 3 steps. We still treat those
 # as "done" so existing users aren't bumped back into onboarding.
 ONBOARDING_LEGACY_COMPLETE_STEPS = frozenset({3, 5})
-# Brief synthesis + candidate generation can take two LLM round-trips.
-ONBOARDING_SUGGESTION_TIMEOUT_SECONDS = 45
+# Onboarding should feel interactive. If site crawling or AI is slow, return
+# fallback suggestions instead of blocking the wizard.
+ONBOARDING_SITE_SNAPSHOT_TIMEOUT_SECONDS = 5
+ONBOARDING_PROMPT_TIMEOUT_SECONDS = 12
+ONBOARDING_COMPETITOR_TIMEOUT_SECONDS = 6
+ONBOARDING_INDUSTRY_TIMEOUT_SECONDS = 4
 
 
 def _parse_competitors(value):
@@ -247,9 +251,9 @@ def _extract_competitor_suggestions(project: Project, max_items: int = 8) -> lis
     return ranked[:max_items]
 
 
-def _future_result(future, fallback):
+def _future_result(future, fallback, timeout_seconds: int | float):
     try:
-        return future.result(timeout=ONBOARDING_SUGGESTION_TIMEOUT_SECONDS)
+        return future.result(timeout=timeout_seconds)
     except TimeoutError:
         return fallback
     except Exception:
@@ -527,7 +531,11 @@ def onboarding_suggestions(project_id):
     executor = ThreadPoolExecutor(max_workers=4)
     try:
         snapshot_future = executor.submit(collect_site_snapshot, ctx_domain)
-        snapshot = _future_result(snapshot_future, snapshot)
+        snapshot = _future_result(
+            snapshot_future,
+            snapshot,
+            ONBOARDING_SITE_SNAPSHOT_TIMEOUT_SECONDS,
+        )
 
         # Rebuild a context-rich fallback in case the main suggestion future times out.
         enriched_fallback_ctx = {
@@ -551,19 +559,27 @@ def onboarding_suggestions(project_id):
             else executor.submit(suggest_industry_label, project_ctx, snapshot)
         )
 
-        prompt_payload = _future_result(prompt_future, fallback_prompt_payload)
+        prompt_payload = _future_result(
+            prompt_future,
+            fallback_prompt_payload,
+            ONBOARDING_PROMPT_TIMEOUT_SECONDS,
+        )
         ai_competitors = db_competitors
         if not ai_competitors and competitor_future is not None:
-            ai_competitors = _future_result(competitor_future, [])
+            ai_competitors = _future_result(
+                competitor_future,
+                [],
+                ONBOARDING_COMPETITOR_TIMEOUT_SECONDS,
+            )
         suggested_industry = (
             ctx_industry
             if ctx_industry
-            else _future_result(industry_future, "")
+            else _future_result(industry_future, "", ONBOARDING_INDUSTRY_TIMEOUT_SECONDS)
             if industry_future is not None
             else ""
         )
     finally:
-        executor.shutdown(wait=True, cancel_futures=False)
+        executor.shutdown(wait=False, cancel_futures=True)
 
     return jsonify(
         {

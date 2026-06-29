@@ -1,5 +1,6 @@
 import React from 'react';
 import ImagePlaceholder from './ImagePlaceholder';
+import PlatformRow from './PlatformRow';
 
 const steps = [
   {
@@ -72,6 +73,8 @@ const HowItWorks = () => {
             </div>
           </div>
         </div>
+
+        <PlatformRow />
       </div>
     </section>
   );

@@ -303,11 +303,7 @@ function OnboardingHelpPanel({ projectId, step, context }) {
             {askMutation.error?.message ||
               'Assistant is offline right now — you can still keep moving.'}
           </p>
-        ) : (
-          <p className="mt-2 text-[11px] text-slate-400">
-            Suggestions are auto-generated based on your brand context. Ask if you need custom ideas.
-          </p>
-        )}
+        ) : null}
       </div>
     </aside>
   );
@@ -1091,13 +1087,34 @@ export default function ProjectOnboardingWizard() {
             {suggestionsMutation.isPending && (
               <div className="flex items-center gap-2 rounded-lg border border-brand-primary/20 bg-brand-primary/5 p-3 text-sm text-brand-primary">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Generating prompt suggestions based on your brand...
+                Creating fresh AI prompts for {form.step1.brand_name || 'your brand'}...
               </div>
             )}
 
-            {suggestedPrompts.length > 0 && (
+            {!suggestionsMutation.isPending &&
+              suggestionsFetchState === 'error' &&
+              suggestedPrompts.length === 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  Prompt generation is taking too long. You can add a custom prompt below or try
+                  again.
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => suggestionsMutation.mutate()}
+                    className="mt-3"
+                  >
+                    <Sparkles className="mr-1 h-3.5 w-3.5" />
+                    Try again
+                  </Button>
+                </div>
+              )}
+
+            {!suggestionsMutation.isPending && suggestedPrompts.length > 0 && (
               <div className="space-y-2">
-                <p className="text-sm font-medium text-slate-700">AI-suggested prompts</p>
+                <p className="text-sm font-medium text-slate-700">
+                  AI prompts for {form.step1.brand_name || 'your brand'}
+                </p>
                 <div className="space-y-1.5">
                   {suggestedPrompts.map((prompt) => {
                     const selected = form.step3.seed_prompts.includes(prompt);
@@ -1127,19 +1144,35 @@ export default function ProjectOnboardingWizard() {
                     );
                   })}
                 </div>
-                {!suggestionsMutation.isPending && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => suggestionsMutation.mutate()}
+                >
+                  <Sparkles className="mr-1 h-3.5 w-3.5" />
+                  Regenerate prompts
+                </Button>
+              </div>
+            )}
+
+            {!suggestionsMutation.isPending &&
+              suggestionsFetchState === 'success' &&
+              suggestedPrompts.length === 0 && (
+                <div className="rounded-lg border border-slate-200 p-3 text-sm text-slate-500">
+                  No AI prompts came back yet. Add your own prompt below or try generating again.
                   <Button
                     type="button"
                     variant="secondary"
                     size="sm"
                     onClick={() => suggestionsMutation.mutate()}
+                    className="mt-3"
                   >
                     <Sparkles className="mr-1 h-3.5 w-3.5" />
-                    Regenerate suggestions
+                    Generate prompts
                   </Button>
-                )}
-              </div>
-            )}
+                </div>
+              )}
 
             <div className="space-y-1.5 rounded-lg border border-slate-200 p-3">
               <p className="text-sm font-medium text-slate-700">Add a custom prompt</p>

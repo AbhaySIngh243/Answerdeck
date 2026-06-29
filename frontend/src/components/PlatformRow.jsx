@@ -21,7 +21,7 @@ const engines = [
 
 const PlatformRow = () => {
   return (
-    <div className="mt-10 px-4 sm:px-6 lg:px-8">
+    <div className="mt-16 px-4 sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-3xl flex-col items-center gap-5">
         <span className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#94a3b8]">
           Measured across leading AI engines

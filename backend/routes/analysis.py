@@ -41,6 +41,7 @@ from engine.llm_clients import (
     set_search_layer_provider,
 )
 from engine.url_verifier import verify_urls
+from engine.perplexity_search import search_web
 from exceptions import NotFoundError
 from extensions import executor
 from models import (
@@ -405,6 +406,7 @@ def async_run_analysis(
             # "[ChatGPT error: ...]". These must never be persisted as real answers or
             # fed into mention/score extraction, otherwise failures masquerade as data.
             failed_engines: list[str] = []
+            failed_engine_reasons: list[str] = []
             if isinstance(raw_responses, dict):
                 clean_responses: dict[str, str] = {}
                 for eng_name, text in raw_responses.items():
@@ -412,13 +414,17 @@ def async_run_analysis(
                         clean_responses[eng_name] = text
                     else:
                         failed_engines.append(eng_name)
+                        # Keep the placeholder text (e.g. "[Perplexity error: ...]")
+                        # so the actual provider failure reason is diagnosable.
+                        reason = str(text or "").strip() or "empty response"
+                        failed_engine_reasons.append(f"{eng_name}: {reason}")
                 raw_responses = clean_responses
             if failed_engines:
                 app_obj.logger.warning(
                     "Dropping %d engine(s) that returned errors for prompt %s: %s",
                     len(failed_engines),
                     prompt_id,
-                    ", ".join(failed_engines),
+                    "; ".join(failed_engine_reasons),
                 )
                 if isinstance(variant_responses, dict):
                     for eng_name in failed_engines:
@@ -508,6 +514,51 @@ def async_run_analysis(
                 "summary": f"Search grounding via {search_context.get('provider', 'none')}",
                 "provider": search_context.get("provider", "none"),
             }
+
+            # Engine-independent source layer. The Sources and Execution sections
+            # must always be available regardless of which LLM engines were
+            # selected or whether any of them returned citations (e.g. Perplexity
+            # quota exhausted, ChatGPT web-search returning no annotations). When
+            # no grounding sources exist, fetch real sources from the configured
+            # search provider (Serper/Perplexity). This does NOT alter the measured
+            # model answers — it only backs the report's sources/recommendations.
+            if not research_data["sources"]:
+                try:
+                    fallback_search = search_web(prompt.prompt_text, max_results=8)
+                    fallback_results = (
+                        fallback_search.get("results", [])
+                        if isinstance(fallback_search, dict) and fallback_search.get("ok")
+                        else []
+                    )
+                    seen_fallback_urls: set[str] = set()
+                    fallback_sources: list[dict[str, str]] = []
+                    for item in fallback_results:
+                        if not isinstance(item, dict):
+                            continue
+                        url = str(item.get("url") or "").strip()
+                        if not url or url in seen_fallback_urls:
+                            continue
+                        seen_fallback_urls.add(url)
+                        fallback_sources.append(
+                            {
+                                "title": str(item.get("title") or "").strip(),
+                                "url": url,
+                                "domain": _domain_from_url(url),
+                                "snippet": str(item.get("snippet") or "").strip(),
+                            }
+                        )
+                    if fallback_sources:
+                        provider_label = (
+                            fallback_search.get("provider", "search")
+                            if isinstance(fallback_search, dict)
+                            else "search"
+                        )
+                        research_data["sources"] = fallback_sources
+                        research_data["provider"] = provider_label
+                        research_data["summary"] = f"Source layer via {provider_label}"
+                except Exception as exc:
+                    app_obj.logger.info("Fallback source search failed: %s", exc)
+
             analyses["research_data"] = research_data
 
             synthesis = synthesize_evidence(
@@ -623,8 +674,10 @@ def async_run_analysis(
 
             # Persist research grounding as a dedicated *_research response so
             # reporting endpoints can reliably recover structured citations later.
-            if search_context.get("ok") and research_data.get("sources"):
-                provider_name = str(search_context.get("provider") or "search").strip().lower() or "search"
+            # Stored whenever we have sources — from grounding OR the engine-
+            # independent fallback search — so Sources/Execution always populate.
+            if research_data.get("sources"):
+                provider_name = str(research_data.get("provider") or "search").strip().lower() or "search"
                 provider_name = provider_name.replace(" ", "_")
                 research_urls = []
                 for src in research_data.get("sources", []):

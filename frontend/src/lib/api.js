@@ -20,6 +20,9 @@ function apiBaseLooksLocal() {
 const DEFAULT_REQUEST_TIMEOUT_MS = Number(
   import.meta.env.VITE_API_TIMEOUT_MS || 60000,
 );
+const ONBOARDING_SUGGESTIONS_TIMEOUT_MS = Number(
+  import.meta.env.VITE_ONBOARDING_SUGGESTIONS_TIMEOUT_MS || 25000,
+);
 
 function timeoutHintMessage(timeoutMs) {
   if (apiBaseLooksLocal()) {
@@ -261,7 +264,8 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      timeoutMs: ONBOARDING_SUGGESTIONS_TIMEOUT_MS,
+      retries: 0,
     }),
   completeOnboarding: (projectId) =>
     request(`/projects/${projectId}/onboarding/complete`, {

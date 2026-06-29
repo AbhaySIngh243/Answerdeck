@@ -78,16 +78,16 @@ const CTASection = () => {
           </p>
         </div>
 
-        <div className="mt-16 grid gap-6 md:grid-cols-2 md:gap-8 lg:grid-cols-4">
+        <div className="mt-16 grid items-stretch gap-6 md:grid-cols-2 md:gap-8 lg:grid-cols-4">
           {/* Free */}
-          <div className="flex flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
+          <div className="flex h-full flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
             <p className="text-xs font-bold uppercase tracking-wider text-[#64748b]">Free</p>
             <p className="mt-3 flex items-baseline gap-1 text-[#0f172a]">
               <span className="text-3xl font-bold tracking-tight">{formatPlanPrice(0, currency)}</span>
               <span className="text-sm font-medium text-[#64748b]">/mo</span>
             </p>
             <p className="mt-2 text-sm text-[#64748b]">See your AI visibility on one brand. No card required.</p>
-            <ul className="mt-5 space-y-2.5 text-sm text-[#334155]">
+            <ul className="mt-5 flex-1 space-y-2.5 text-sm text-[#334155]">
               <li className="flex gap-2">
                 <span className="text-brand-primary">✓</span>
                 <span>1 project</span>
@@ -110,14 +110,14 @@ const CTASection = () => {
           </div>
 
           {/* Standard */}
-          <div className="flex flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
+          <div className="flex h-full flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
             <p className="text-xs font-bold uppercase tracking-wider text-[#64748b]">Standard</p>
             <p className="mt-3 flex items-baseline gap-1 text-[#0f172a]">
               <span className="text-3xl font-bold tracking-tight">{standardPrice}</span>
               <span className="text-sm font-medium text-[#64748b]">/mo</span>
             </p>
             <p className="mt-2 text-sm text-[#64748b]">One brand, full analysis stack. Recommendations and drafts included.</p>
-            <ul className="mt-5 space-y-2.5 text-sm text-[#334155]">
+            <ul className="mt-5 flex-1 space-y-2.5 text-sm text-[#334155]">
               <li className="flex gap-2">
                 <span className="text-brand-primary">✓</span>
                 <span>1 project</span>
@@ -141,14 +141,14 @@ const CTASection = () => {
           </div>
 
           {/* Pro */}
-          <div className="flex flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
+          <div className="flex h-full flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
             <p className="text-xs font-bold uppercase tracking-wider text-[#64748b]">Pro</p>
             <p className="mt-3 flex items-baseline gap-1 text-[#0f172a]">
               <span className="text-3xl font-bold tracking-tight">{proPrice}</span>
               <span className="text-sm font-medium text-[#64748b]">/mo</span>
             </p>
             <p className="mt-2 text-sm text-[#64748b]">For teams tracking multiple brands or markets.</p>
-            <ul className="mt-5 space-y-2.5 text-sm text-[#334155]">
+            <ul className="mt-5 flex-1 space-y-2.5 text-sm text-[#334155]">
               <li className="flex gap-2">
                 <span className="text-brand-primary">✓</span>
                 <span>3 projects</span>
@@ -172,11 +172,11 @@ const CTASection = () => {
           </div>
 
           {/* Custom */}
-          <div className="flex flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
+          <div className="flex h-full flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
             <p className="text-xs font-bold uppercase tracking-wider text-[#64748b]">Custom</p>
             <p className="mt-3 text-3xl font-bold tracking-tight text-[#0f172a]">Let&apos;s talk</p>
             <p className="mt-2 text-sm text-[#64748b]">Higher volume, invoice billing, or hands-on onboarding. We&apos;ll scope it together.</p>
-            <ul className="mt-5 space-y-2.5 text-sm text-[#334155]">
+            <ul className="mt-5 flex-1 space-y-2.5 text-sm text-[#334155]">
               <li className="flex gap-2">
                 <span className="text-brand-primary">✓</span>
                 <span>Unlimited projects &amp; prompts (by agreement)</span>
