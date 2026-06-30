@@ -38,19 +38,15 @@ export default function ImagePlaceholder({
   if (src) {
     if (fit === 'natural') {
       return (
-        <div className={`group/visual relative ${className}`}>
+        <div className={`group/visual relative min-w-0 ${className}`}>
           <Glow />
-          <div
-            className={`overflow-hidden rounded-xl border border-[#e2e8f0] bg-slate-50 shadow-sm ${liftClass}`}
-          >
-            <img
-              src={src}
-              alt={imageAlt}
-              className="block h-auto w-full"
-              loading="lazy"
-              decoding="async"
-            />
-          </div>
+          <img
+            src={src}
+            alt={imageAlt}
+            className={`block h-auto w-full max-w-full rounded-xl shadow-sm ${liftClass}`}
+            loading="lazy"
+            decoding="async"
+          />
         </div>
       );
     }
@@ -61,10 +57,10 @@ export default function ImagePlaceholder({
         : 'object-cover object-top';
 
     return (
-      <div className={`group/visual relative w-full ${className}`}>
+      <div className={`group/visual relative min-w-0 w-full ${className}`}>
         <Glow />
         <div
-          className={`relative w-full overflow-hidden rounded-xl border border-[#e2e8f0] bg-white shadow-sm ${liftClass}`}
+          className={`relative w-full min-w-0 overflow-hidden rounded-xl border border-[#e2e8f0] bg-white shadow-sm ${liftClass}`}
           style={{ aspectRatio: aspect }}
         >
           <img
