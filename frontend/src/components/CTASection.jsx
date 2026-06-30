@@ -4,7 +4,6 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
 import { PENDING_CASHFREE_PLAN_KEY } from '../lib/subscriptionCheckout';
 import {
-  billingCycleNote,
   billingCurrency,
   formatPlanPrice,
   planAmountFromHealth,
@@ -198,10 +197,6 @@ const CTASection = () => {
             </a>
           </div>
         </div>
-
-        <p className="mx-auto mt-10 max-w-2xl text-center text-xs leading-relaxed text-[#94a3b8]">
-          {billingCycleNote(currency)} You can end the plan from Settings; access continues until your paid period ends.
-        </p>
       </div>
     </section>
   );
