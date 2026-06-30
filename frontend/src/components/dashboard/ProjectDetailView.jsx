@@ -114,6 +114,19 @@ function renderTextWithLinks(text, linkClassName) {
   return parts.length > 0 ? parts : s;
 }
 
+function answerPreviewText(value, maxLength = 520) {
+  const text = sanitizeProse(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > maxLength ? `${text.slice(0, maxLength).trim()}...` : text;
+}
+
+function textMentionsBrand(text, brand) {
+  const cleanedBrand = sanitizeProse(brand || '').trim();
+  const cleanedText = sanitizeProse(text || '');
+  if (!cleanedBrand || !cleanedText) return false;
+  return cleanedText.toLowerCase().includes(cleanedBrand.toLowerCase());
+}
+
 const sectionMotion = {
   initial: { opacity: 0, y: 12 },
   animate: { opacity: 1, y: 0 },
@@ -2071,34 +2084,88 @@ const ProjectDetailView = () => {
                   </div>
                 )}
                 <div className="glass-card-v2 p-6">
-                  <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-                    <h5 className="flex items-center gap-2 text-xs font-semibold text-slate-700"><FileText className="h-4 w-4 text-slate-500" /> Raw LLM responses</h5>
-                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-500">{toArray(promptDetailData.raw_responses).length} models</span>
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h5 className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                        <FileText className="h-4 w-4 text-brand-primary" /> Model answer signals
+                      </h5>
+                      <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-500">
+                        Clean visibility readout per engine. Open a model only when you need the supporting answer excerpt.
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-500">{toArray(promptDetailData.raw_responses).length} models checked</span>
                   </div>
                   {toArray(promptDetailData.raw_responses).length === 0 ? (
-                    <p className="text-sm text-slate-500">No raw model responses are available yet.</p>
+                    <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No model answer signals are available yet.</p>
                   ) : (
-                    <div className="columns-1 lg:columns-2 gap-4 space-y-4">
-                      {toArray(promptDetailData.raw_responses).map((response) => (
-                        <details key={response.id || response.engine} className="glass-inset group overflow-hidden rounded-xl break-inside-avoid inline-block w-full">
-                          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
-                            <span className="truncate text-sm font-semibold text-slate-900">{modelIdToName[response.engine] || response.engine}</span>
-                            <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
-                          </summary>
-                          <div className="border-t border-slate-200/60 px-4 py-4">
-                            <div className="max-h-72 overflow-y-auto rounded-lg bg-white/70 p-4">
-                              <FormattedProse text={response.display_response_text || response.response_text} className="text-xs" />
-                            </div>
-                            {toArray(response.sources).length > 0 && (
-                              <div className="mt-3 flex flex-wrap gap-1.5">
-                                {toArray(response.sources).slice(0, 6).map((source) => (
-                                  <a key={source} href={source} target="_blank" rel="noreferrer" className="max-w-full truncate rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-medium text-brand-primary hover:underline">{source}</a>
-                                ))}
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                      {toArray(promptDetailData.raw_responses).map((response) => {
+                        const sources = toArray(response.sources);
+                        const responseText = response.display_response_text || response.response_text;
+                        const preview = answerPreviewText(responseText);
+                        const hasMentionField =
+                          response.mentioned != null ||
+                          response.mentions_focus != null ||
+                          response.focus_mentioned != null;
+                        const mentioned = hasMentionField
+                          ? Boolean(response.mentioned ?? response.mentions_focus ?? response.focus_mentioned)
+                          : textMentionsBrand(responseText, project.name);
+                        const rank = response.rank ?? response.position ?? response.focus_rank;
+                        const sentiment = response.sentiment || response.focus_sentiment || 'neutral';
+
+                        return (
+                          <details key={response.id || response.engine} className="glass-inset group overflow-hidden rounded-xl">
+                            <summary className="cursor-pointer list-none px-4 py-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <span className="block truncate text-sm font-semibold text-slate-900">{modelIdToName[response.engine] || response.engine}</span>
+                                  <span className="mt-1 block text-xs text-slate-500">
+                                    {mentioned ? 'Brand appears in this answer' : 'Brand not clearly mentioned'}
+                                  </span>
+                                </div>
+                                <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
                               </div>
-                            )}
-                          </div>
-                        </details>
-                      ))}
+                              <div className="mt-4 grid grid-cols-3 gap-2">
+                                <div className={`rounded-lg border px-3 py-2 ${mentioned ? 'border-brand-primary/20 bg-brand-primary/[0.06] text-brand-primary' : 'border-slate-200 bg-white/70 text-slate-500'}`}>
+                                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em]">Mention</p>
+                                  <p className="mt-1 text-sm font-bold">{mentioned ? 'Yes' : 'No'}</p>
+                                </div>
+                                <div className="rounded-lg border border-slate-200 bg-white/70 px-3 py-2 text-slate-600">
+                                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em]">Rank</p>
+                                  <p className="mt-1 text-sm font-bold">{rank != null ? `#${rank}` : '-'}</p>
+                                </div>
+                                <div className="rounded-lg border border-slate-200 bg-white/70 px-3 py-2 text-slate-600">
+                                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em]">Sources</p>
+                                  <p className="mt-1 text-sm font-bold">{sources.length}</p>
+                                </div>
+                              </div>
+                            </summary>
+                            <div className="border-t border-slate-200/60 px-4 py-4">
+                              <div className="rounded-lg bg-white/75 p-4">
+                                <div className="mb-3 flex flex-wrap items-center gap-2">
+                                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold capitalize text-slate-500">{sentiment}</span>
+                                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-500">Answer excerpt</span>
+                                </div>
+                                {preview ? (
+                                  <FormattedProse text={preview} className="text-xs leading-relaxed text-slate-700" />
+                                ) : (
+                                  <p className="text-xs text-slate-400">No answer excerpt available.</p>
+                                )}
+                              </div>
+                              {sources.length > 0 && (
+                                <div className="mt-3">
+                                  <p className={`${lbl} mb-2`}>Cited sources</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {sources.slice(0, 6).map((source) => (
+                                      <a key={source} href={source} target="_blank" rel="noreferrer" className="max-w-full truncate rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-medium text-brand-primary hover:underline">{source}</a>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </details>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
