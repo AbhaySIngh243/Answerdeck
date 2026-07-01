@@ -487,10 +487,15 @@ function promptQualityScore(prompt, brandName) {
     reasons.push('Avoid "vs" / "versus" — pure comparison prompts rank poorly.');
   }
 
-  if (/\b(best|top|recommended|affordable|cheap|budget|for)\b/.test(lower)) {
+  if (/\b(deals?|discounts?|coupons?|sales?|holiday|exclusive offers?|where can i find|cheapest|bargain)\b/.test(lower)) {
+    score -= 40;
+    reasons.push('Avoid deal/coupon language — track category recommendations instead.');
+  }
+
+  if (/\b(best|top|leading|recommended|most reliable|brands)\b/.test(lower)) {
     score += 10;
   } else {
-    reasons.push('Add intent keywords like "best", "top", or "for <audience>".');
+    reasons.push('Add visibility keywords like "best", "top", or "brands for".');
   }
 
   const clamped = Math.max(0, Math.min(100, score));
@@ -1199,7 +1204,7 @@ export default function ProjectOnboardingWizard() {
                 <Textarea
                   value={customPrompt}
                   onChange={(e) => setCustomPrompt(e.target.value)}
-                  placeholder='e.g. "Best project management tool for remote teams"'
+                  placeholder='e.g. "Best refrigerators for large families in 2025"'
                   rows={2}
                   className="flex-1"
                   onKeyDown={(e) => {

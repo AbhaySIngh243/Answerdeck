@@ -40,9 +40,11 @@ _STEP_FOCUS = {
     3: {
         "title": "Prompt intent map",
         "focus": (
-            "Help the user pick high-intent prompts covering awareness, consideration, and "
-            "decision. Prompts must not contain the brand name, should be 5-12 words, and "
-            "should read like a real search query. Flag weak or brand-biased prompts."
+            "Help the user pick AI visibility prompts — category-level queries like "
+            "'best refrigerators 2025' or 'top OLED TV brands' where LLMs naturally "
+            "recommend brands. Prompts must not contain the brand name, should be "
+            "5-12 words, and should NOT be deal-hunting or discount queries. Flag "
+            "shopping/coupon language and weak generic prompts."
         ),
     },
     4: {

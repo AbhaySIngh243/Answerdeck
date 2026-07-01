@@ -1,8 +1,14 @@
-"""Website-aware prompt suggestion generation for project onboarding."""
+"""AI visibility prompt suggestions for project onboarding.
+
+Generates category-level tracking queries a marketing team would run across LLMs
+to measure whether their brand gets mentioned and how it ranks — not consumer
+deal-hunting or coupon-style shopping queries.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
@@ -12,7 +18,10 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-from engine.llm_clients import chat, chat_with_fallback
+from engine.llm_clients import chat_with_fallback
+from engine.perplexity_search import search_web
+
+log = logging.getLogger(__name__)
 
 HTTP_TIMEOUT_SECONDS = 3
 MAX_PAGE_CHARS = 120_000
@@ -158,6 +167,26 @@ _COHESION_SKIP_TOKENS = {
     "data",
     "cloud",
 }
+
+# Prompts that measure visibility — not bargain hunting.
+_VISIBILITY_INTENT_RE = re.compile(
+    r"(?:"
+    r"\bbest\b|\btop\b|\bleading\b|\brecommended\b|\bmost\s+(?:reliable|popular|trusted|efficient)\b|"
+    r"\bwhich\b|\bwhat\s+(?:are\s+the|is\s+the)\b|\brank(?:ed|ing)?\b|"
+    r"\bbrands?\s+for\b|\boptions\s+for\b|\bworth\s+(?:buying|considering)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_SHOPPING_JUNK_RE = re.compile(
+    r"(?:"
+    r"\bdeals?\b|\bdiscounts?\b|\bcoupons?\b|\bpromo(?:tion)?s?\b|\bsales?\b|"
+    r"\bholiday\b|\bblack\s+friday\b|\bexclusive\s+offers?\b|\bwhere\s+can\s+i\s+find\b|"
+    r"\bcheapest\b|\blowest\s+price\b|\bsave\s+money\b|\bbargain\b|\bclearance\b|"
+    r"\brebate\b|\bcashback\b|\bfree\s+shipping\b|\bprice\s+drop\b|\bmarkdown\b"
+    r")",
+    re.IGNORECASE,
+)
 
 _PRIORITY_PATH_HINTS = (
     "pricing",
@@ -431,10 +460,13 @@ def _is_valid_prompt(value: str, brand: str) -> bool:
     if _contains_brand(text, brand):
         return False
     count = _word_count(text)
-    # 5-16 words allows natural buyer language without being essay-length.
     if count < 5 or count > 16:
         return False
     if re.search(r"\b(vs|versus)\b", text, flags=re.IGNORECASE):
+        return False
+    if _SHOPPING_JUNK_RE.search(text):
+        return False
+    if not _VISIBILITY_INTENT_RE.search(text):
         return False
     return True
 
@@ -447,57 +479,76 @@ def _short_category(category: str) -> str:
 
 
 def _build_fallback_prompts(project: dict[str, Any]) -> list[str]:
-    """Context-aware fallback. Uses keywords, buyer signals and category instead of pure generics."""
+    """Visibility-tracking fallbacks anchored to product categories and market segments."""
     category = _short_category(project.get("category") or "")
     region = str(project.get("region") or "").strip()
-    keywords = [str(k).lower() for k in (project.get("keywords") or []) if k]
-    signals = [str(s).lower() for s in (project.get("buyer_signals") or []) if s]
     brand = project.get("name") or ""
+    profile = project.get("brand_profile") or {}
+    if not isinstance(profile, dict):
+        profile = {}
 
-    # Try to synthesize from real site language first
+    categories = [
+        str(c).strip()
+        for c in (profile.get("product_categories") or profile.get("product_lines") or [])
+        if str(c or "").strip()
+    ]
+    use_cases = [
+        str(u).strip()
+        for u in (profile.get("use_cases") or profile.get("typical_scenarios") or [])
+        if str(u or "").strip()
+    ]
+    keywords = [str(k).lower() for k in (project.get("keywords") or []) if k]
+
+    if not categories:
+        for kw in keywords:
+            if kw not in _COHESION_SKIP_TOKENS and len(kw) > 3:
+                categories.append(kw)
+    if not categories and category and category not in ("software", ""):
+        categories = [category]
+
+    region_suffix = f" in {region}" if region and region.lower() != "global" else ""
     ideas: list[str] = []
 
-    # Pull concrete signals like "soc 2", "for startups", "slack", pricing hints
-    for sig in signals[:4]:
-        s = _clean_text(sig, 70)
-        if not s:
+    for cat in categories[:5]:
+        cat_clean = _clean_text(cat, 50)
+        if not cat_clean:
             continue
-        if "for " in s or "under" in s or "soc" in s or "compliance" in s:
-            ideas.append(f"Best options {s}")
-            ideas.append(f"Tools for {s}")
-
-    # Use distinctive keywords
-    strong_kws = [k for k in keywords if k not in _COHESION_SKIP_TOKENS and len(k) > 4][:5]
-    for kw in strong_kws:
-        ideas.append(f"Best {kw} tools for teams")
-        ideas.append(f"Which {kw} solution fits {region or 'growing teams'}")
-
-    # Reasonable defaults anchored to category + region
-    region_phrase = f" in {region}" if region and region.lower() != "global" else ""
-    if category and category not in ("software", ""):
         ideas.extend([
-            f"Best {category} for teams that need {strong_kws[0] if strong_kws else 'reliability'}{region_phrase}",
-            f"What {category} offers the best support and value{region_phrase}",
-            f"Recommended {category} for startups and scaling teams",
+            f"Best {cat_clean} brands in 2025{region_suffix}",
+            f"Top {cat_clean} for home and everyday use",
+            f"Most recommended {cat_clean} options right now",
+            f"Leading {cat_clean} for quality and reliability",
         ])
 
-    # Last resort category-only (still better than pure "software")
+    for use_case in use_cases[:3]:
+        uc = _clean_text(use_case, 60)
+        if not uc:
+            continue
+        ideas.append(f"Best products for {uc}{region_suffix}")
+
+    if category and category not in ("software", ""):
+        ideas.extend([
+            f"Best {category} brands ranked for 2025{region_suffix}",
+            f"Top {category} options worth considering today",
+        ])
+
     if not ideas:
+        cat = category or "products"
         ideas = [
-            f"Which {category or 'tools'} are worth evaluating{region_phrase}",
-            f"Best {category or 'platforms'} for reliability and support",
-            f"What {category or 'solutions'} deliver the best value for growing teams",
+            f"Best {cat} brands in 2025{region_suffix}",
+            f"Top {cat} for quality and reliability",
+            f"Most recommended {cat} options right now",
         ]
 
-    # Dedup + validate
     out: list[str] = []
-    seen = set()
-    for c in ideas:
-        if not c or c.lower() in seen:
+    seen: set[str] = set()
+    for candidate in ideas:
+        key = candidate.lower()
+        if key in seen:
             continue
-        if _is_valid_prompt(c, brand):
-            seen.add(c.lower())
-            out.append(c)
+        if _is_valid_prompt(candidate, brand):
+            seen.add(key)
+            out.append(candidate)
         if len(out) >= 6:
             break
 
@@ -505,9 +556,7 @@ def _build_fallback_prompts(project: dict[str, Any]) -> list[str]:
 
 
 def build_fallback_prompt_suggestions(project: dict[str, Any]) -> dict[str, Any]:
-    # Pass through any keywords/signals we have so the fallback can be contextual.
     ctx = dict(project or {})
-    # If caller passed a snapshot-style dict, merge useful bits.
     snap = ctx.pop("snapshot", None) or {}
     if isinstance(snap, dict):
         if not ctx.get("keywords"):
@@ -517,14 +566,15 @@ def build_fallback_prompt_suggestions(project: dict[str, Any]) -> dict[str, Any]
 
     fallback = _build_fallback_prompts(ctx)
     if len(fallback) < 3:
-        # Extremely defensive last resort — still tries to use category
-        cat = _short_category(ctx.get("category") or "tools")
+        cat = _short_category(ctx.get("category") or "products")
+        region = str(ctx.get("region") or "").strip()
+        region_suffix = f" in {region}" if region and region.lower() != "global" else ""
         fallback = [
-            f"Which {cat} options are worth shortlisting",
-            f"Best {cat} for growing teams and reliability",
-            f"Recommended {cat} with strong support and value",
+            f"Best {cat} brands in 2025{region_suffix}",
+            f"Top {cat} for quality and reliability",
+            f"Most recommended {cat} options right now",
         ]
-    return {"prompts": fallback[:6], "source": "context-aware-fallback"}
+    return {"prompts": fallback[:6], "source": "brand-aware-fallback"}
 
 
 def _build_site_context_for_llm(snapshot: dict[str, Any]) -> str:
@@ -729,67 +779,275 @@ def _extract_strict_prompts(raw: str, brand: str) -> list[str]:
     return cleaned
 
 
-def _synthesize_offering_brief(
-    snapshot: dict[str, Any], category: str, brand_name: str
+def _build_web_research_context(research: dict[str, Any]) -> str:
+    parts: list[str] = []
+    kg = research.get("knowledge_graph") or {}
+    if isinstance(kg, dict):
+        for key in ("title", "type", "description", "website"):
+            val = _clean_text(kg.get(key) or "", 200)
+            if val:
+                parts.append(f"Knowledge graph {key}: {val}")
+
+    for title in (research.get("search_titles") or [])[:6]:
+        t = _clean_text(title, 120)
+        if t:
+            parts.append(f"Search result title: {t}")
+
+    for snippet in (research.get("search_snippets") or [])[:8]:
+        s = _clean_text(snippet, 220)
+        if s:
+            parts.append(f"Search snippet: {s}")
+
+    if not parts:
+        return "No web research results available."
+    return "\n".join(parts)
+
+
+def _research_brand_via_web(
+    brand_name: str,
+    category: str,
+    region: str,
+    website_url: str = "",
 ) -> dict[str, Any]:
-    """Use a fast LLM pass to turn raw site text into a crisp, specific understanding of what this product is.
+    """Use Serper (or configured search provider) to learn what the brand sells."""
+    brand = (brand_name or "").strip()
+    if not brand:
+        return {"search_snippets": [], "search_titles": [], "knowledge_graph": {}}
 
-    This is the key to non-generic prompts: we need to know the *actual* thing being sold and who buys it.
-    """
+    region_bit = f" {region}" if region and region.lower() != "global" else ""
+    category_bit = f" {category}" if category and category not in ("software", "") else ""
+    queries = [
+        f"{brand} company products categories what they make{category_bit}{region_bit}",
+        f"what does {brand} sell market segments{category_bit}",
+    ]
+    if website_url:
+        host = (urlparse(_normalize_url(website_url)).hostname or "").replace("www.", "")
+        if host:
+            queries.append(f"{brand} {host} product lines services")
+
+    snippets: list[str] = []
+    titles: list[str] = []
+    knowledge_graph: dict[str, Any] = {}
+
+    try:
+        with ThreadPoolExecutor(max_workers=min(3, len(queries))) as pool:
+            futures = {
+                pool.submit(search_web, query, 5): query
+                for query in queries[:3]
+            }
+            for future in as_completed(futures, timeout=7):
+                try:
+                    result = future.result()
+                except Exception:
+                    continue
+                if not isinstance(result, dict) or not result.get("ok"):
+                    continue
+                for item in result.get("results") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    title = _clean_text(item.get("title") or "", 140)
+                    snippet = _clean_text(item.get("snippet") or "", 260)
+                    if title:
+                        titles.append(title)
+                    if snippet:
+                        snippets.append(snippet)
+                kg = result.get("knowledge_graph")
+                if isinstance(kg, dict) and kg and not knowledge_graph:
+                    knowledge_graph = kg
+    except Exception as exc:
+        log.info("brand web research failed for %s: %s", brand, exc)
+
+    return {
+        "search_snippets": snippets[:14],
+        "search_titles": titles[:10],
+        "knowledge_graph": knowledge_graph,
+    }
+
+
+def _synthesize_brand_intelligence_profile(
+    *,
+    brand_name: str,
+    category: str,
+    region: str,
+    snapshot: dict[str, Any],
+    web_research: dict[str, Any],
+) -> dict[str, Any]:
+    """Turn site text + Serper research into a crisp brand profile for prompt generation."""
     site_context = _build_site_context_for_llm(snapshot)
-    if not site_context or site_context.startswith("No website"):
-        return {
-            "product_what": category or "software",
-            "buyer_personas": [],
-            "jobs_to_be_done": [],
-            "decision_factors": [],
-            "typical_scenarios": [],
-            "site_language": [],
-        }
+    web_context = _build_web_research_context(web_research)
+    empty_profile = {
+        "brand_summary": category or brand_name,
+        "product_categories": [],
+        "product_lines": [],
+        "market_segments": [],
+        "use_cases": [],
+        "decision_factors": [],
+        "competitive_themes": [],
+        "category_language": [],
+    }
 
-    prompt = f"""You are a sharp B2B researcher. Read the website context and produce a tight JSON brief describing the offering.
+    if (
+        site_context.startswith("No website")
+        and not (web_research.get("search_snippets") or web_research.get("knowledge_graph"))
+    ):
+        if category:
+            empty_profile["product_categories"] = [category]
+        return empty_profile
 
-Brand (for context only, never put in prompts): {brand_name}
-Broad category hint: {category}
+    prompt = f"""You are a brand intelligence analyst helping an AI visibility platform (like Profound).
+
+Read the brand research below and produce a JSON profile of what this company actually sells and where it competes.
+
+Brand (for context only — never put in tracking prompts): {brand_name}
+Industry hint: {category or "unknown"}
+Region focus: {region or "global"}
 
 Website context:
 {site_context}
 
-Return ONLY this JSON (no extra text):
+Web search research (Serper/Google):
+{web_context}
+
+Return ONLY this JSON:
 {{
-  "product_what": "one specific sentence: what the product actually is and who it serves",
-  "buyer_personas": ["2-4 short personas or roles, e.g. 'ops lead at 30-200 person SaaS'"],
-  "jobs_to_be_done": ["2-4 real jobs/problems buyers have, in natural language"],
-  "decision_factors": ["price", "compliance", "integrations", "support", "speed", "security", ... up to 6],
-  "typical_scenarios": ["2-4 concrete buying situations or constraints mentioned or implied, e.g. 'SOC 2 for Series A', 'Slack + Notion stack', 'under $99/mo for a 10 person team'"],
-  "site_language": ["5-10 exact or close phrases buyers would use from the site (lowercase ok)"]
+  "brand_summary": "one sentence: who they are and what markets they compete in",
+  "product_categories": ["3-6 specific product/service categories they are known for, e.g. 'refrigerators', 'OLED TVs', 'project management software'"],
+  "product_lines": ["2-5 named product lines or business units if known"],
+  "market_segments": ["2-4 market segments, e.g. 'consumer electronics', 'home appliances', 'B2B SaaS'"],
+  "use_cases": ["3-5 real buyer scenarios where someone asks AI for recommendations, e.g. 'kitchen renovation', 'home theater setup', 'remote team collaboration'"],
+  "decision_factors": ["quality", "reliability", "energy efficiency", "design", "price tier", ... up to 6 factors buyers weigh"],
+  "competitive_themes": ["2-4 themes this brand competes on, e.g. 'smart home integration', 'premium OLED displays'"],
+  "category_language": ["6-10 natural phrases people use when asking AI to recommend in this space"]
 }}"""
 
     try:
         raw = chat_with_fallback(prompt, temperature=0.15, json_mode=True)
         parsed = _extract_json(raw)
         if not isinstance(parsed, dict):
-            raise ValueError("brief not a dict")
+            raise ValueError("brand profile not a dict")
         return {
-            "product_what": _clean_text(parsed.get("product_what") or category, 160),
-            "buyer_personas": [ _clean_text(p, 70) for p in (parsed.get("buyer_personas") or []) if p ][:4],
-            "jobs_to_be_done": [ _clean_text(j, 70) for j in (parsed.get("jobs_to_be_done") or []) if j ][:4],
-            "decision_factors": [ _clean_text(d, 40) for d in (parsed.get("decision_factors") or []) if d ][:6],
-            "typical_scenarios": [ _clean_text(s, 80) for s in (parsed.get("typical_scenarios") or []) if s ][:4],
-            "site_language": [ str(x).lower().strip() for x in (parsed.get("site_language") or []) if x ][:12],
+            "brand_summary": _clean_text(parsed.get("brand_summary") or category, 180),
+            "product_categories": [
+                _clean_text(c, 60)
+                for c in (parsed.get("product_categories") or [])
+                if c
+            ][:6],
+            "product_lines": [_clean_text(p, 60) for p in (parsed.get("product_lines") or []) if p][:5],
+            "market_segments": [
+                _clean_text(m, 60) for m in (parsed.get("market_segments") or []) if m
+            ][:4],
+            "use_cases": [_clean_text(u, 70) for u in (parsed.get("use_cases") or []) if u][:5],
+            "decision_factors": [
+                _clean_text(d, 40) for d in (parsed.get("decision_factors") or []) if d
+            ][:6],
+            "competitive_themes": [
+                _clean_text(t, 70) for t in (parsed.get("competitive_themes") or []) if t
+            ][:4],
+            "category_language": [
+                str(x).lower().strip() for x in (parsed.get("category_language") or []) if x
+            ][:12],
         }
     except Exception:
-        # Best effort: fall back to keywords we already extracted.
         kws = snapshot.get("keywords") or []
-        sigs = snapshot.get("buyer_signals") or []
+        cats = [category] if category else []
+        for kw in kws:
+            t = str(kw).strip()
+            if t and t not in _COHESION_SKIP_TOKENS:
+                cats.append(t)
         return {
-            "product_what": category or "software",
-            "buyer_personas": [],
-            "jobs_to_be_done": [],
-            "decision_factors": [],
-            "typical_scenarios": sigs[:3],
-            "site_language": [k.lower() for k in kws[:8]],
+            **empty_profile,
+            "brand_summary": category or brand_name,
+            "product_categories": cats[:5],
+            "category_language": [k.lower() for k in kws[:8]],
         }
+
+
+def _synthesize_offering_brief(
+    snapshot: dict[str, Any], category: str, brand_name: str
+) -> dict[str, Any]:
+    """Backward-compatible alias — callers should prefer _synthesize_brand_intelligence_profile."""
+    return _synthesize_brand_intelligence_profile(
+        brand_name=brand_name,
+        category=category,
+        region="",
+        snapshot=snapshot,
+        web_research={},
+    )
+
+
+def _build_visibility_prompt_generation_prompt(
+    project_name: str,
+    category: str,
+    region: str,
+    profile: dict[str, Any],
+    site_context: str,
+    web_context: str,
+) -> str:
+    """Generate prompts a marketing team tracks to measure AI brand visibility."""
+    summary = profile.get("brand_summary") or category
+    categories = ", ".join(profile.get("product_categories") or []) or category
+    lines = ", ".join(profile.get("product_lines") or []) or "(none identified)"
+    segments = ", ".join(profile.get("market_segments") or []) or "(general market)"
+    use_cases = "\n- ".join(profile.get("use_cases") or ["standard category evaluation"])
+    factors = ", ".join(profile.get("decision_factors") or ["quality", "reliability", "value"])
+    themes = ", ".join(profile.get("competitive_themes") or [])
+    language = ", ".join(profile.get("category_language") or [])
+
+    return f"""You help brand marketing teams set up AI visibility tracking (similar to Profound).
+
+They will run these queries across ChatGPT, Perplexity, Gemini, and Claude to see whether their brand gets mentioned and where it ranks versus competitors.
+
+Brand being tracked (NEVER include in prompts): {project_name}
+What they do: {summary}
+Product categories: {categories}
+Product lines: {lines}
+Market segments: {segments}
+Region focus: {region or "global"}
+
+Buyer scenarios where AI recommends brands:
+- {use_cases}
+
+Decision factors buyers weigh: {factors}
+Competitive themes: {themes or "(category leadership, quality, innovation)"}
+Natural category language: {language or "(none extracted)"}
+
+Website context:
+{site_context}
+
+Web research:
+{web_context}
+
+Task: Write 10-12 short queries a marketing team would track to measure brand visibility in AI answers.
+
+GOOD examples (for a home appliance / electronics brand):
+- "best refrigerators for large families in 2025"
+- "top OLED TV brands for home theater"
+- "most reliable washer dryer brands right now"
+- "leading smart kitchen appliances for renovation"
+- "best energy efficient fridge brands"
+
+GOOD examples (for B2B SaaS):
+- "best project management tools for remote teams 2025"
+- "top CRM platforms for small sales teams"
+- "most recommended analytics tools for startups"
+
+BAD — never generate these:
+- "where can I find deals on smart TVs"
+- "holiday discounts on appliances"
+- "exclusive offers on home entertainment"
+- Any coupon, sale, discount, bargain, or deal-hunting language
+
+Rules:
+- Category-level recommendation queries where AI naturally lists brand names in the answer
+- Mix: category leadership ("best X 2025"), use-case ("best X for Y"), segment ("top X brands for Z")
+- 5-16 words each, natural language, like a real person asking an AI assistant
+- NEVER mention "{project_name}" or close variants
+- No "vs" direct head-to-head comparisons
+- Anchor to THIS brand's actual categories and use cases from the research above
+- Do not repeat the same category with tiny wording changes
+
+Return ONLY a JSON array of strings:
+["prompt one", "prompt two", "..."]"""
 
 
 def _build_rich_candidate_prompt(
@@ -799,92 +1057,79 @@ def _build_rich_candidate_prompt(
     brief: dict[str, Any],
     site_context: str,
 ) -> str:
-    """A much richer prompt that gives the LLM a real understanding of the offering instead of generic category + rules."""
-    what = brief.get("product_what") or category
-    personas = ", ".join(brief.get("buyer_personas") or []) or "various professional buyers"
-    jobs = "\n- ".join(brief.get("jobs_to_be_done") or ["evaluating options in this category"])
-    factors = ", ".join(brief.get("decision_factors") or ["fit", "price", "support", "reliability"])
-    scenarios = "\n- ".join(brief.get("typical_scenarios") or [])
-    language = ", ".join(brief.get("site_language") or [])
-
-    return f"""You are helping a brand understand how AI engines portray them vs competitors.
-
-The brand sells: {what}
-Typical buyers: {personas}
-Region: {region or "global"}
-
-What buyers are actually trying to solve (from the site):
-- {jobs}
-
-Common decision factors buyers care about: {factors}
-
-Real scenarios or constraints that come up:
-- {scenarios or "standard evaluation scenarios in the category"}
-
-Natural language buyers use on or about this site: {language or "(none extracted)"}
-
-Task:
-Write 8-10 short, natural questions a buyer would type into ChatGPT, Perplexity, Gemini or Claude when they are in the market for something like this — BEFORE they have a shortlist and without knowing this brand's name.
-
-Rules:
-- NEVER mention the brand name "{project_name}".
-- Sound like a real human with a job to do (ops lead, founder, procurement, marketer, etc.), not SEO copy.
-- Be specific to the product described above. Use the jobs, scenarios, and language.
-- Mix stages: some broad discovery ("best options for..."), some persona/use-case, some with concrete constraints (team size, compliance, stack, budget, support, timeline).
-- 5-16 words each. Conversational. No "vs" brand comparisons.
-- Avoid ultra-generic "best X for Y" that could apply to any software. Anchor to what this actually is.
-
-Return ONLY a JSON array of strings:
-["question one here", "question two here", "..."]"""
+    """Backward-compatible wrapper."""
+    return _build_visibility_prompt_generation_prompt(
+        project_name,
+        category,
+        region,
+        brief,
+        site_context,
+        "See website context above.",
+    )
 
 
-def _score_prompt_specificity(prompt: str, brief: dict[str, Any], keywords: list[str]) -> float:
-    """Higher is better. Looks for overlap with the actual offering, not generic filler."""
+def _score_prompt_specificity(prompt: str, profile: dict[str, Any], keywords: list[str]) -> float:
+    """Higher is better. Rewards category-specific visibility prompts, penalizes junk."""
     p = (prompt or "").lower()
     score = 0.0
 
-    site_lang = [str(x).lower() for x in (brief.get("site_language") or [])]
-    scenarios = [str(x).lower() for x in (brief.get("typical_scenarios") or [])]
-    jobs = [str(x).lower() for x in (brief.get("jobs_to_be_done") or [])]
-    factors = [str(x).lower() for x in (brief.get("decision_factors") or [])]
+    if _SHOPPING_JUNK_RE.search(p):
+        return 0.0
 
-    # Strong signal: uses language that actually appears on the site or in the brief
-    for token in site_lang + keywords:
+    category_terms = [
+        str(x).lower()
+        for x in (
+            (profile.get("product_categories") or [])
+            + (profile.get("product_lines") or [])
+            + (profile.get("category_language") or [])
+            + (profile.get("use_cases") or [])
+            + (profile.get("competitive_themes") or [])
+        )
+    ]
+    factors = [str(x).lower() for x in (profile.get("decision_factors") or [])]
+
+    for token in category_terms + keywords:
+        token = str(token).lower().strip()
         if token and len(token) >= 4 and token in p:
-            score += 1.8
+            score += 2.0
 
-    for s in scenarios:
-        if s and any(w in p for w in re.findall(r"[a-z0-9]{4,}", s)):
-            score += 1.2
+    for factor in factors:
+        if factor and factor in p:
+            score += 0.8
 
-    for j in jobs:
-        if j and any(w in p for w in re.findall(r"[a-z0-9]{4,}", j)):
-            score += 1.0
+    if _VISIBILITY_INTENT_RE.search(p):
+        score += 1.5
 
-    for f in factors:
-        if f and f in p:
-            score += 0.9
+    if re.search(r"\b20\d{2}\b", p):
+        score += 0.8
 
-    # Reward concrete constraints that buyers actually have
-    if re.search(r"\b(for\s+\d|team|users?|seats?|month|year|under\s+\$|soc|gdpr|compliance|integrat|slack|startup|scale)", p):
-        score += 1.3
+    if re.search(r"\bfor\s+(?:home|families|teams|business|enterprise|kitchen|office|travel)", p):
+        score += 1.0
 
-    # Penalize ultra-bland patterns
-    bland = ["best software", "best tools", "recommended software", "top options for business", "best solution"]
+    bland = [
+        "best products",
+        "top products",
+        "best options",
+        "recommended options",
+        "best software",
+        "best tools",
+    ]
     if any(b in p for b in bland):
-        score -= 2.5
-
-    # Slight bonus for natural question words that real buyers use
-    if any(w in p for w in ("which", "what", "how", "for a ", "that works with", "with good", "under ")):
-        score += 0.4
+        score -= 2.0
 
     return max(0.0, score)
 
 
 def _is_overly_generic_prompt(prompt: str) -> bool:
-    """Reject interchangeable SEO-style prompts that could apply to any product."""
+    """Reject interchangeable prompts that could apply to any brand."""
     p = (prompt or "").lower().strip()
+    if _SHOPPING_JUNK_RE.search(p):
+        return True
     generic_patterns = (
+        r"^where can i find\b",
+        r"^are there .+ deals\b",
+        r"^can i get a discount\b",
+        r"^how to upgrade my .+ with\b",
         r"^which are the best .+ options$",
         r"^best software options",
         r"^recommended software tools",
@@ -896,66 +1141,78 @@ def _is_overly_generic_prompt(prompt: str) -> bool:
     return any(re.search(pat, p) for pat in generic_patterns)
 
 
-def _select_diverse_prompts(candidates: list[str], brief: dict[str, Any], keywords: list[str], max_n: int = 8) -> list[str]:
-    """Pick a diverse, high-signal set instead of forcing a rigid triple."""
+def _select_diverse_prompts(candidates: list[str], profile: dict[str, Any], keywords: list[str], max_n: int = 8) -> list[str]:
+    """Pick a diverse set of high-signal visibility prompts."""
     if not candidates:
         return []
 
-    has_site_signal = bool(keywords) or bool(brief.get("site_language")) or bool(brief.get("jobs_to_be_done"))
-    min_score = 1.0 if has_site_signal else 0.0
+    has_brand_signal = bool(
+        profile.get("product_categories")
+        or profile.get("category_language")
+        or profile.get("use_cases")
+        or keywords
+    )
+    min_score = 1.5 if has_brand_signal else 0.5
 
     scored = []
-    for c in candidates:
-        if not _is_valid_prompt(c, ""):  # brand already stripped upstream
+    for candidate in candidates:
+        if not _is_valid_prompt(candidate, ""):
             continue
-        if _is_overly_generic_prompt(c):
+        if _is_overly_generic_prompt(candidate):
             continue
-        s = _score_prompt_specificity(c, brief, keywords)
-        if s < min_score:
+        score = _score_prompt_specificity(candidate, profile, keywords)
+        if score < min_score:
             continue
-        scored.append((s, c))
+        scored.append((score, candidate))
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
     selected: list[str] = []
-    seen_norm = set()
+    seen_norm: set[str] = set()
 
-    # Try to get a good spread: broad discovery, use-case/persona, constraint-driven
-    def kind(p: str) -> str:
-        pl = p.lower()
-        if any(x in pl for x in ("under ", "budget", "price", "cost", "$", "free", "affordable", "small ", "startup", "compliance", "soc", "support", "warranty", "timeline")):
-            return "constraint"
-        if any(x in pl for x in ("for ", "teams", "companies", "founders", "marketers", "ops", "engineers", "sales")):
-            return "persona"
-        return "broad"
+    def kind(prompt: str) -> str:
+        pl = prompt.lower()
+        if re.search(r"\b20\d{2}\b", pl) or "brands" in pl or "leading" in pl:
+            return "category_leadership"
+        if any(x in pl for x in (" for ", "home", "families", "teams", "business", "kitchen", "office")):
+            return "use_case"
+        if any(x in pl for x in ("reliable", "efficient", "premium", "enterprise", "energy", "smart")):
+            return "segment"
+        return "category_leadership"
 
-    buckets = {"broad": [], "persona": [], "constraint": []}
-    for sc, p in scored:
-        k = kind(p)
-        buckets[k].append((sc, p))
+    buckets = {"category_leadership": [], "use_case": [], "segment": []}
+    for score, prompt in scored:
+        buckets[kind(prompt)].append((score, prompt))
 
-    # Round-robin from best across buckets
-    order = ["broad", "persona", "constraint", "broad", "persona", "constraint", "broad", "persona"]
-    for o in order:
-        for sc, p in buckets[o]:
-            norm = p.lower()
+    order = [
+        "category_leadership",
+        "use_case",
+        "segment",
+        "category_leadership",
+        "use_case",
+        "segment",
+        "category_leadership",
+        "use_case",
+    ]
+    for bucket in order:
+        for score, prompt in buckets[bucket]:
+            norm = prompt.lower()
             if norm in seen_norm:
                 continue
             seen_norm.add(norm)
-            selected.append(p)
+            selected.append(prompt)
             if len(selected) >= max_n:
                 break
         if len(selected) >= max_n:
             break
 
-    # If we still need more, just take highest remaining
     if len(selected) < max_n:
-        for sc, p in scored:
-            norm = p.lower()
+        for score, prompt in scored:
+            norm = prompt.lower()
             if norm in seen_norm:
                 continue
             seen_norm.add(norm)
-            selected.append(p)
+            selected.append(prompt)
             if len(selected) >= max_n:
                 break
 
@@ -1092,63 +1349,91 @@ def generate_project_prompt_suggestions(
     project_name = str(project.get("name") or "").strip()
     category = _short_category(project.get("category") or "")
     region = str(project.get("region") or "").strip()
+    website_url = str(project.get("website_url") or "").strip()
     try:
         want = max(3, min(12, int(max_prompts or 8)))
     except (TypeError, ValueError):
         want = 8
 
-    snapshot = snapshot if isinstance(snapshot, dict) else _collect_site_snapshot(project.get("website_url") or "")
+    snapshot = snapshot if isinstance(snapshot, dict) else _collect_site_snapshot(website_url)
     site_context = _build_site_context_for_llm(snapshot)
 
-    # The "intelligence" step: understand what they actually sell and who buys it.
-    brief = _synthesize_offering_brief(snapshot, category, project_name)
+    # Step 1: Research the brand via Serper.
+    web_research: dict[str, Any] = {"search_snippets": [], "search_titles": [], "knowledge_graph": {}}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        web_future = pool.submit(
+            _research_brand_via_web,
+            project_name,
+            category,
+            region,
+            website_url,
+        )
+        try:
+            web_research = web_future.result(timeout=8)
+        except Exception as exc:
+            log.info("web research timed out for %s: %s", project_name, exc)
 
-    # Generate a larger set of candidates with a context-rich prompt.
-    gen_prompt = _build_rich_candidate_prompt(project_name, category, region, brief, site_context)
+    web_context = _build_web_research_context(web_research)
+
+    # Step 2: Synthesize brand intelligence from research + site.
+    profile = _synthesize_brand_intelligence_profile(
+        brand_name=project_name,
+        category=category,
+        region=region,
+        snapshot=snapshot,
+        web_research=web_research,
+    )
+
+    # Step 3: Generate visibility-tracking prompt candidates.
+    gen_prompt = _build_visibility_prompt_generation_prompt(
+        project_name,
+        category,
+        region,
+        profile,
+        site_context,
+        web_context,
+    )
 
     candidates: list[str] = []
     try:
-        raw = chat_with_fallback(gen_prompt, temperature=0.45, json_mode=True)
+        raw = chat_with_fallback(gen_prompt, temperature=0.35, json_mode=True)
         parsed = _extract_json(raw)
         if isinstance(parsed, list):
-            candidates = [ _normalize_words(str(x)) for x in parsed if x ]
+            candidates = [_normalize_words(str(x)) for x in parsed if x]
         elif isinstance(parsed, dict):
-            # tolerate common wrappers
             for key in ("prompts", "candidates", "questions", "items"):
                 if isinstance(parsed.get(key), list):
-                    candidates = [ _normalize_words(str(x)) for x in parsed[key] if x ]
+                    candidates = [_normalize_words(str(x)) for x in parsed[key] if x]
                     break
             if not candidates:
-                for v in parsed.values():
-                    if isinstance(v, str):
-                        candidates.append(_normalize_words(v))
-    except Exception:
+                for value in parsed.values():
+                    if isinstance(value, str):
+                        candidates.append(_normalize_words(value))
+    except Exception as exc:
+        log.info("visibility prompt generation failed for %s: %s", project_name, exc)
         candidates = []
 
-    # Clean: no brand, valid length, dedupe
     cleaned: list[str] = []
-    seen = set()
-    for c in candidates:
-        if not c or not _is_valid_prompt(c, project_name):
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or not _is_valid_prompt(candidate, project_name):
             continue
-        n = c.lower()
-        if n in seen:
+        norm = candidate.lower()
+        if norm in seen:
             continue
-        seen.add(n)
-        cleaned.append(c)
+        seen.add(norm)
+        cleaned.append(candidate)
 
     keywords = list(snapshot.get("keywords") or [])
-
-    # Intelligent selection for diversity + specificity to *this* offering.
-    selected = _select_diverse_prompts(cleaned, brief, keywords, max_n=want)
+    selected = _select_diverse_prompts(cleaned, profile, keywords, max_n=want)
 
     if selected:
-        return {"prompts": selected, "source": "site-aware-llm"}
+        return {"prompts": selected, "source": "brand-research-llm"}
 
-    # Only if everything failed, fall back — but make the fallback use what we know.
     fb_ctx = {
         **(project or {}),
         "keywords": keywords or (snapshot or {}).get("keywords", []),
         "buyer_signals": (snapshot or {}).get("buyer_signals", []),
+        "brand_profile": profile,
     }
     return build_fallback_prompt_suggestions(fb_ctx)
