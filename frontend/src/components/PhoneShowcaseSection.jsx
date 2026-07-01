@@ -28,12 +28,12 @@ const proofPoints = [
 
 const PhoneShowcaseSection = () => {
   return (
-    <section className="relative overflow-hidden bg-white py-24 md:py-28" id="proof">
+    <section className="landing-section relative overflow-hidden bg-white py-12 md:py-14" id="proof">
       <div
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            'radial-gradient(circle at 50% 22%, rgba(37,99,235,0.14), transparent 22%), linear-gradient(180deg, rgba(248,250,252,0.9) 0%, rgba(255,255,255,1) 46%, rgba(248,250,252,0.92) 100%)',
+            'radial-gradient(circle at 50% 18%, rgba(37,99,235,0.1), transparent 28%), linear-gradient(180deg, rgba(255,255,255,0.2) 0%, rgba(248,250,252,0.45) 100%)',
         }}
         aria-hidden
       />

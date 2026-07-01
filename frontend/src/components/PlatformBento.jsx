@@ -1,5 +1,5 @@
 import React from 'react';
-import { BarChart3, LineChart, Search, Users } from 'lucide-react';
+import { LineChart, Search, Users } from 'lucide-react';
 
 const cards = [
   {
@@ -21,9 +21,9 @@ const cards = [
 
 const PlatformBento = () => {
   return (
-    <section className="border-y border-[#e2e8f0]/60 bg-white py-24" id="platform">
+    <section className="landing-section bg-white py-12 md:py-14" id="platform">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="mb-14 max-w-3xl">
+        <div className="mb-8 max-w-3xl">
           <p className="landing-eyebrow">Inside the dashboard</p>
           <h2 className="heading-section mt-2">The dashboard that turns AI mentions into next actions</h2>
           <p className="mt-6 text-base leading-relaxed text-[#64748b] sm:text-[17px]">
@@ -32,27 +32,15 @@ const PlatformBento = () => {
           </p>
         </div>
 
-        <article className="glass-card group/visual overflow-hidden rounded-[2rem] border border-brand-primary/20 bg-gradient-to-b from-brand-primary/[0.05] via-white to-white p-5 sm:p-7 lg:p-9">
-          <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-3">
-              <span className="flex h-11 w-11 flex-none items-center justify-center rounded-xl bg-brand-primary/10 text-brand-primary">
-                <BarChart3 className="h-5 w-5" />
-              </span>
-              <h3 className="text-xl font-bold tracking-tight text-[#0f172a]">Multi-engine visibility dashboard</h3>
-            </div>
-            <p className="max-w-xl text-[15px] leading-relaxed text-[#64748b]">
-              One place to review visibility trends across ChatGPT, Gemini, Perplexity, and Claude without bouncing
-              between screenshots, spreadsheets, or manual prompt logs.
-            </p>
-          </div>
+        <div className="group/visual overflow-hidden rounded-2xl border border-[#e2e8f0] shadow-lg shadow-slate-900/[0.06]">
           <img
             src="/dashboard.png"
             alt="Answrdeck project dashboard with visibility trends, KPIs, and prompt performance"
-            className="block h-auto w-full max-w-full rounded-xl border border-[#e2e8f0] shadow-lg shadow-slate-900/5 transition-transform duration-300 motion-safe:group-hover/visual:-translate-y-1"
+            className="block h-auto w-full"
             loading="lazy"
             decoding="async"
           />
-        </article>
+        </div>
 
         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {cards.map((c) => (

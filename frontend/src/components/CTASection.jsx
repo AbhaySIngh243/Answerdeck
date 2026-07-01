@@ -42,7 +42,7 @@ const CTASection = () => {
   return (
     <section
       id="pricing"
-      className="relative overflow-x-clip border-t border-[#e2e8f0]/60 bg-white py-24 md:py-32"
+      className="landing-section relative overflow-x-clip bg-white py-12 md:py-16"
     >
       <div
         className="pointer-events-none absolute inset-0"

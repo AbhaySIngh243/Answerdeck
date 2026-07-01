@@ -13,21 +13,22 @@ function LandingPage() {
   return (
     <>
       <Navbar />
-      <main>
+      <main className="landing-flow">
         <HeroSection />
-        <RevealSection as="div">
+        <SectionTransition variant="hero-white" />
+        <RevealSection as="div" delay={0}>
           <PlatformBento />
         </RevealSection>
-        <SectionTransition />
-        <RevealSection as="div">
+        <SectionTransition variant="white-soft" />
+        <RevealSection as="div" delay={80}>
           <HowItWorks />
         </RevealSection>
-        <SectionTransition />
-        <RevealSection as="div">
+        <SectionTransition variant="soft-white" />
+        <RevealSection as="div" delay={120}>
           <PhoneShowcaseSection />
         </RevealSection>
-        <SectionTransition />
-        <RevealSection as="div">
+        <SectionTransition variant="glow-pricing" />
+        <RevealSection as="div" delay={160}>
           <CTASection />
         </RevealSection>
       </main>

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-export default function RevealSection({ as: Tag = 'section', className = '', children, id }) {
+export default function RevealSection({ as: Tag = 'section', className = '', children, id, delay = 0 }) {
   const ref = useRef(null);
   const [visible, setVisible] = useState(false);
 
@@ -32,6 +32,7 @@ export default function RevealSection({ as: Tag = 'section', className = '', chi
       id={id}
       ref={ref}
       className={`reveal-section ${visible ? 'is-visible' : ''} ${className}`.trim()}
+      style={{ transitionDelay: visible ? `${delay}ms` : '0ms' }}
     >
       {children}
     </Tag>

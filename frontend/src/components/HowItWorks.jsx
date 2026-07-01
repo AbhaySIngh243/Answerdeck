@@ -21,9 +21,9 @@ const steps = [
 
 const HowItWorks = () => {
   return (
-    <section className="section-band-soft py-24" id="how-it-works">
+    <section className="landing-section section-band-soft py-12 md:py-14" id="how-it-works">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="mb-14 text-center">
+        <div className="mb-8 text-center">
           <p className="landing-eyebrow">How it works</p>
           <h2 className="heading-section mt-2">From measurement to shipped changes</h2>
           <div className="accent-heading-rule" />
@@ -50,19 +50,11 @@ const HowItWorks = () => {
           ))}
         </ol>
 
-        <div className="group/visual mt-12 overflow-hidden rounded-[2rem] border border-[#e2e8f0] bg-white p-3 shadow-lg shadow-slate-900/5 sm:p-4">
-          <div className="mb-3 flex items-center justify-between px-2">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#64748b]">
-              Project onboarding
-            </span>
-            <span className="rounded-full bg-brand-primary/10 px-2 py-0.5 text-[11px] font-semibold text-brand-primary">
-              Step 1
-            </span>
-          </div>
+        <div className="group/visual mt-8 overflow-hidden rounded-2xl border border-[#e2e8f0] shadow-lg shadow-slate-900/[0.06]">
           <img
             src="/onboarding.png"
             alt="Answrdeck project onboarding wizard"
-            className="block h-auto w-full max-w-full rounded-xl border border-[#e2e8f0] transition-transform duration-300 motion-safe:group-hover/visual:-translate-y-1"
+            className="block h-auto w-full"
             loading="lazy"
             decoding="async"
           />
