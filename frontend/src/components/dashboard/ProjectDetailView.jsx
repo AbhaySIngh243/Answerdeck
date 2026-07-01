@@ -298,7 +298,6 @@ const ProjectDetailView = () => {
   const [selectedPromptId, setSelectedPromptId] = useState(() => location.state?.openPromptId || null);
   const [activeSection, setActiveSection] = useState(() => location.state?.openSection || 'dashboard');
   const [dashChartMode, setDashChartMode] = useState('7d');
-  const [showGlossary, setShowGlossary] = useState(false);
   const [improveTarget, setImproveTarget] = useState(null); // {prompt_id, prompt_text}
   const deepIntelRef = useRef(null);
 
@@ -1011,51 +1010,6 @@ const ProjectDetailView = () => {
                   );
                   return null;
                 })()}
-
-                {/* Collapsible glossary */}
-                <div className="glass-card-v2 overflow-hidden">
-                  <button
-                    type="button"
-                    onClick={() => setShowGlossary((v) => !v)}
-                    className="flex w-full items-center justify-between px-5 py-3 text-left transition-colors hover:bg-slate-50/50"
-                  >
-                    <span className="flex items-center gap-2 text-sm font-medium text-slate-700">
-                      <Info className="h-4 w-4 text-slate-400" />
-                      What do the metrics mean?
-                    </span>
-                    <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform ${showGlossary ? 'rotate-180' : ''}`} />
-                  </button>
-                  {showGlossary && (
-                    <div className="space-y-3 border-t border-slate-100/80 px-5 py-4">
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
-                          <p className="text-xs font-semibold text-slate-700">Score</p>
-                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">Composite of mention rate, rank position, and sentiment across all tracked prompts. 0–100 scale.</p>
-                        </div>
-                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
-                          <p className="text-xs font-semibold text-slate-700">Visibility</p>
-                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">Percentage of (prompt × engine) cells where your brand was explicitly named in the answer text.</p>
-                        </div>
-                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
-                          <p className="text-xs font-semibold text-slate-700">AI Share</p>
-                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">Your brand's share of all brand-mention events. Differs from visibility, which measures presence per cell.</p>
-                        </div>
-                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
-                          <p className="text-xs font-semibold text-slate-700">Quality</p>
-                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">Weighted blend of how often the brand is mentioned, its typical rank position, and positive/negative sentiment.</p>
-                        </div>
-                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
-                          <p className="text-xs font-semibold text-slate-700">Moat score</p>
-                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">How defensible your visibility is — factoring in owned citations, official-site references, and source diversity.</p>
-                        </div>
-                        <div className="glass-inset rounded-lg px-3.5 py-2.5">
-                          <p className="text-xs font-semibold text-slate-700">Answer position</p>
-                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">Average rank when your brand is named. #1 = first mentioned, higher numbers = mentioned later in the answer.</p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
 
                 {!selectedPromptId && (() => {
                   if (!movements || movements.has_data === false) {

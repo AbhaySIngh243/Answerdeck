@@ -35,6 +35,7 @@ export default function OverviewKpiGrid({
       value: promptCount,
       sub: 'Active queries tracked',
       icon: FileText,
+      hint: 'Number of active queries you are tracking across AI engines.',
     },
     {
       label: 'AI Models',
@@ -43,18 +44,21 @@ export default function OverviewKpiGrid({
         ? enabledEngines.map((e) => e.name).join(', ')
         : 'No engines enabled',
       icon: Waypoints,
+      hint: 'AI engines (ChatGPT, Perplexity, Gemini, etc.) analyzing your tracked prompts.',
     },
     {
       label: 'Visibility',
       value: metricsLoading ? '…' : `${visibilityPct}%`,
       sub: metricsLoading ? 'Loading metrics…' : 'Across all prompts',
       icon: Eye,
+      hint: 'Percentage of (prompt × engine) cells where your brand was explicitly named in the answer text.',
     },
     {
       label: 'Your Avg Position',
       value: avgPosition,
       sub: 'Across all prompts',
       icon: BarChart3,
+      hint: 'Average rank when your brand is named. #1 = first mentioned; higher numbers = mentioned later in the answer.',
     },
   ];
 
@@ -71,6 +75,7 @@ export default function OverviewKpiGrid({
           label={c.label}
           value={c.value}
           sub={c.sub}
+          hint={c.hint}
           icon={c.icon}
           valueClassName={c.valueClassName}
         />
