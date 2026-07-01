@@ -996,6 +996,25 @@ const ProjectDetailView = () => {
               <motion.div key="dashboard" {...sectionMotion} className="space-y-5">
                 <OverviewKpiGrid dashboard={dashboard} prompts={prompts} enabledEngines={enabledEngines} metricsLoading={dashboardLoading} />
 
+                {dashboardLoading ? (
+                  <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.5fr_1fr]">
+                    <div className="glass-card-v2 animate-pulse rounded-2xl p-6">
+                      <div className="mb-4 h-4 w-40 rounded bg-slate-100" />
+                      <div className="h-48 rounded-xl bg-slate-50" />
+                    </div>
+                    <div className="glass-card-v2 animate-pulse rounded-2xl p-6">
+                      <div className="mb-4 h-4 w-32 rounded bg-slate-100" />
+                      <div className="h-48 rounded-xl bg-slate-50" />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.5fr_1fr]">
+                    <PerformancePanel range={dashChartMode} onRangeChange={setDashChartMode} dashboard={dashboard} />
+                    <CompetitorSnapshot competitors={toArray(dashboard?.competitors)} onViewAll={() => setActiveSection('competitors')} />
+                  </div>
+                )}
+                <PromptPerformanceTable loading={promptAnalysisLoading} rows={toArray(promptAnalysis?.rows)} onViewAll={() => setActiveSection('prompts')} />
+
                 {/* Low-confidence warning banner */}
                 {(() => {
                   const nResponses = Number(dashboard?.coverage?.n_responses ?? 0);
@@ -1083,25 +1102,6 @@ const ProjectDetailView = () => {
                     </div>
                   );
                 })()}
-
-                {dashboardLoading ? (
-                  <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.5fr_1fr]">
-                    <div className="glass-card-v2 animate-pulse rounded-2xl p-6">
-                      <div className="mb-4 h-4 w-40 rounded bg-slate-100" />
-                      <div className="h-48 rounded-xl bg-slate-50" />
-                    </div>
-                    <div className="glass-card-v2 animate-pulse rounded-2xl p-6">
-                      <div className="mb-4 h-4 w-32 rounded bg-slate-100" />
-                      <div className="h-48 rounded-xl bg-slate-50" />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.5fr_1fr]">
-                    <PerformancePanel range={dashChartMode} onRangeChange={setDashChartMode} dashboard={dashboard} />
-                    <CompetitorSnapshot competitors={toArray(dashboard?.competitors)} onViewAll={() => setActiveSection('competitors')} />
-                  </div>
-                )}
-                <PromptPerformanceTable loading={promptAnalysisLoading} rows={toArray(promptAnalysis?.rows)} onViewAll={() => setActiveSection('prompts')} />
 
                 {!selectedPromptId && (
                   <>
