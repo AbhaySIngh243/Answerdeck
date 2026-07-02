@@ -812,8 +812,16 @@ def _brand_matches_alias(brand: str, aliases: list[str]) -> bool:
             continue
         if brand_canonical == alias_canonical:
             return True
-        shorter = min(brand_canonical, alias_canonical, key=len)
-        longer = max(brand_canonical, alias_canonical, key=len)
+        # Prefix matching only applies to strictly different-length strings.
+        # With equal lengths, min()/max() with key=len both return the first
+        # argument, which made every same-length brand pair "match" (e.g.
+        # Trello ~ Notion) and corrupted focus-brand attribution.
+        if len(brand_canonical) == len(alias_canonical):
+            continue
+        if len(brand_canonical) < len(alias_canonical):
+            shorter, longer = brand_canonical, alias_canonical
+        else:
+            shorter, longer = alias_canonical, brand_canonical
         if len(shorter) >= 5 and longer.startswith(shorter):
             if len(shorter) / len(longer) >= 0.65:
                 return True
@@ -1472,22 +1480,42 @@ def _measured_recommendation_items(
     competitor_framings: list[dict],
     synthesis: dict,
 ) -> list[dict]:
-    """Evidence-backed recommendations from stored analysis — no LLM round-trip."""
+    """Evidence-backed recommendations from stored analysis — no LLM round-trip.
+
+    One card per unique competitor (framings often repeat the same brand across
+    engines), and the card quotes the actual claim models repeat instead of a
+    fill-in-the-blank template, so four cards never read as the same sentence.
+    """
     items: list[dict] = []
-    for cf in (competitor_framings or [])[:4]:
+    seen_competitors: set[str] = set()
+    action_templates = [
+        'Counter the claim models repeat about {comp} ("{claim}") with a {focus} vs {comp} proof page.',
+        "Publish third-party proof (reviews, benchmarks) on the angle where {comp} is beating {focus}.",
+        "Get {focus} added to the roundups and comparison pages that currently feature {comp}.",
+        "Update your positioning copy so models stop defaulting to {comp} for this use case.",
+    ]
+    for cf in competitor_framings or []:
         competitor = str(cf.get("competitor_brand") or "").strip()
-        quote = _clip_text(cf.get("verbatim_sentence"), 220)
         if not competitor:
             continue
+        comp_key = _canonical_brand(competitor)
+        if not comp_key or comp_key in seen_competitors:
+            continue
+        seen_competitors.add(comp_key)
+        quote = _clip_text(sanitize_display_response_text(cf.get("verbatim_sentence")), 220)
+        template = action_templates[min(len(items), len(action_templates) - 1)]
+        short_claim = _clip_text(quote, 110) if quote else "preferred alternative"
         items.append(
             {
-                "action": f"Publish a direct {focus_brand} vs {competitor} proof page that addresses the exact claim models repeat.",
+                "action": template.format(comp=competitor, focus=focus_brand, claim=short_claim),
                 "engine": str(cf.get("engine") or "measured engines"),
                 "priority": "high",
                 "evidence": quote or f"{competitor} displaced {focus_brand} in measured model answers.",
                 "source_type": "measured",
             }
         )
+        if len(items) >= 4:
+            break
     top_domains = (synthesis or {}).get("top_cited_domains") if isinstance(synthesis, dict) else []
     if isinstance(top_domains, list):
         for row in top_domains[: max(0, 4 - len(items))]:
@@ -1559,10 +1587,27 @@ Return ONLY valid JSON list:
     if not items:
         items = _measured_recommendation_items(focus_brand, competitor_framings, synthesis)
 
+    # Evidence quotes come from raw model answers, which frequently contain
+    # markdown link soup ("([site](https://...utm_source=openai))"). Strip it
+    # so the dashboard shows readable prose, and dedupe competitor names that
+    # repeat once per engine.
+    for item in items:
+        item["evidence"] = _clip_text(sanitize_display_response_text(item.get("evidence")), 300)
+        item["action"] = _clip_text(sanitize_display_response_text(item.get("action")), 300)
+
+    competitor_sources: list[str] = []
+    seen_sources: set[str] = set()
+    for cf in competitor_framings or []:
+        name = str(cf.get("competitor_brand") or "").strip()
+        key = _canonical_brand(name)
+        if name and key and key not in seen_sources:
+            seen_sources.add(key)
+            competitor_sources.append(name)
+
     return {
         "missing_from_prompts": [],
-        "competitor_sources": [str(cf.get("competitor_brand") or "") for cf in (competitor_framings or []) if cf.get("competitor_brand")],
-        "recommendation_text": " ".join(str(item.get("action") or "") for item in items).strip(),
+        "competitor_sources": competitor_sources,
+        "recommendation_text": " ".join(str(item.get("action") or "") for item in items[:2]).strip(),
         "recommendation_items": items[:4],
         "has_data": True,
     }
@@ -1865,17 +1910,51 @@ def _build_heuristic_strategic_action_plan(
     """
     raw: list[dict[str, Any]] = []
 
-    for row in sorted(llm_rows or [], key=lambda r: float(r.get("mention_rate") or 0)):
+    # Group engines with no coverage into ONE card — separate per-engine cards
+    # with identical boilerplate read as templated filler to the customer.
+    weak_rows = [
+        row
+        for row in sorted(llm_rows or [], key=lambda r: float(r.get("mention_rate") or 0))
+        if str(row.get("llm") or "").strip() and float(row.get("mention_rate") or 0) < 70
+    ]
+    zero_rows = [row for row in weak_rows if float(row.get("mention_rate") or 0) == 0]
+    partial_rows = [row for row in weak_rows if float(row.get("mention_rate") or 0) > 0]
+
+    if zero_rows:
+        engines_list = [str(r.get("llm") or "").strip().lower() for r in zero_rows]
+        engines_label = ", ".join(engines_list)
+        total_answers = sum(
+            int(r.get("response_count") or r.get("responses") or 0) or 1 for r in zero_rows
+        )
+        raw.append(
+            {
+                "title": _clip_text(f"{focus_brand} is invisible on {engines_label}", 220),
+                "trigger_signal": f"Zero mentions across {total_answers} answer{'s' if total_answers != 1 else ''} on {engines_label}",
+                "action_plan": [
+                    f"Get {focus_brand} added to the sources {engines_label} cite for this category.",
+                    f"Publish an entity-first {focus_brand} summary on pages models already cite.",
+                ],
+                "owner_hint": "Content + SEO",
+                "time_to_value": "this month",
+                "priority": "high",
+                "source_type": "evidence_derived",
+                "evidence_basis": f"0/{total_answers} mentions on {engines_label}",
+                "n_responses_supporting": total_answers,
+                "n_engines_supporting": len(engines_list),
+                "detail": _clip_text(f"{engines_label} never mentioned {project_name} in the latest run.", 180),
+            }
+        )
+
+    for row in partial_rows[:2]:
         mr = float(row.get("mention_rate") or 0)
         eng = str(row.get("llm") or "").strip().lower()
-        if not eng or mr >= 70:
-            continue
         avg_rank = row.get("avg_rank")
         engine_responses = int(row.get("response_count") or row.get("responses") or 0) or n_engines or 1
+        rank_note = f", avg rank {avg_rank}" if avg_rank is not None else ""
         raw.append(
             {
                 "title": _clip_text(f"Lift {focus_brand} visibility on {eng}", 220),
-                "trigger_signal": f"Engine {eng} evidence: mention rate {mr}%, avg rank {avg_rank}",
+                "trigger_signal": f"Engine {eng} evidence: mention rate {mr}%{rank_note}",
                 "action_plan": [
                     f"Publish a tighter entity-first summary for {focus_brand} on URLs your citations already reward.",
                     f"Mirror how {eng} summarizes the category; add concise comparisons plus proof snippets.",
@@ -1890,8 +1969,6 @@ def _build_heuristic_strategic_action_plan(
                 "detail": _clip_text(f"Measured coverage gap on {eng} for {project_name}.", 180),
             }
         )
-        if len(raw) >= 3:
-            break
 
     for pq in (missing_prompts or [])[:2]:
         q = str(pq).strip()
@@ -1922,6 +1999,38 @@ def _build_heuristic_strategic_action_plan(
             continue
         cnt = int(uf.get("count") or 0)
         engines_count = int(uf.get("engines") or uf.get("engine_count") or 0)
+        # Telling the customer to "earn a citation" from their own website reads
+        # as a bug. Owned domains get a strengthen-what-works card instead.
+        dom_host = dom.split("/")[0].lower().replace("www.", "")
+        is_owned = bool(dom_host) and _brand_matches_alias(
+            focus_brand,
+            [dom_host, dom_host.split(".")[0] if "." in dom_host else dom_host],
+        )
+        frequency_detail = (
+            f"Recurring citation source: {dom}."
+            if cnt >= 2
+            else f"Emerging citation source: {dom} (seen once — directional signal)."
+        )
+        if is_owned:
+            raw.append(
+                {
+                    "title": _clip_text(f"Strengthen your own cited pages on {dom}", 220),
+                    "trigger_signal": f"Models already cite {dom} directly {cnt} time{'s' if cnt != 1 else ''} — your site is part of their evidence set",
+                    "action_plan": [
+                        f"Keep the cited {dom} pages current: pricing, feature claims, and comparison sections models quote.",
+                        "Add FAQ/schema markup on those pages so answers pull precise, favorable wording.",
+                    ],
+                    "owner_hint": "Content + SEO",
+                    "time_to_value": "this week",
+                    "priority": "medium",
+                    "source_type": "evidence_derived",
+                    "evidence_basis": f"{dom} cited in {cnt} response{'s' if cnt != 1 else ''}",
+                    "n_responses_supporting": cnt,
+                    "n_engines_supporting": max(1, engines_count or 1),
+                    "detail": _clip_text(f"Models cite your own domain {dom} — protect and expand that footprint.", 160),
+                }
+            )
+            continue
         raw.append(
             {
                 "title": _clip_text(f"Earn or refresh citations from {dom}", 220),
@@ -1932,18 +2041,19 @@ def _build_heuristic_strategic_action_plan(
                 ],
                 "owner_hint": "PR + SEO",
                 "time_to_value": "this month",
-                "priority": "medium",
+                "priority": "medium" if cnt >= 2 else "low",
                 "source_type": "evidence_derived",
                 "evidence_basis": f"{dom} surfaced in {cnt} response{'s' if cnt != 1 else ''}",
                 "n_responses_supporting": cnt,
                 "n_engines_supporting": max(1, engines_count or 1),
-                "detail": _clip_text(f"High-frequency citation neighborhood: {dom}.", 160),
+                "detail": _clip_text(frequency_detail, 160),
             }
         )
 
     for cf in (competitor_framings or [])[:3]:
         brand = str(cf.get("competitor_brand") or "").strip()
-        vs = _clip_text(str(cf.get("verbatim_sentence") or ""), 220)
+        # Older rows persisted raw markdown; sanitize on read for clean display.
+        vs = _clip_text(sanitize_display_response_text(cf.get("verbatim_sentence")), 220)
         if not brand:
             continue
         framing_count = int(cf.get("count") or cf.get("appearances") or 1)

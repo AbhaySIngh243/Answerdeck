@@ -201,7 +201,11 @@ def _domain_from_url(url: str) -> str:
 
 
 def _split_sentences(text: str) -> list[str]:
-    parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+    # Split on newlines as well as sentence punctuation: model answers are full
+    # of headings and bullet lines without periods, and without the newline
+    # split a whole bullet list became one giant "sentence", producing unusable
+    # run-on evidence quotes in the UI.
+    parts = re.split(r"(?<=[.!?])\s+|\n+", str(text or "").strip())
     return [p.strip() for p in parts if p.strip()]
 
 
@@ -247,7 +251,12 @@ def _sentence_for_brand(response_text: str, brand: str, limit: int = 500) -> str
         return ""
     for sentence in _split_sentences(response_text):
         if needle in sentence.lower() and len(sentence) > 12:
-            return sentence.strip()[:limit]
+            # Stored as customer-facing evidence (Mention.verbatim_sentence,
+            # CompetitorFraming) — strip markdown link soup before persisting.
+            from engine.analyzer import sanitize_display_response_text
+
+            clean = sanitize_display_response_text(sentence.strip())
+            return (clean or sentence.strip())[:limit]
     return ""
 
 
@@ -350,17 +359,15 @@ def extract_causal_signals(
             domains.append(d)
     domains = list(dict.fromkeys(domains))
 
-    # Always enrich citation domains using web search, not just from LLM response URLs
-    if not domains:
-        try:
-            from engine.analyzer import research_prompt_sources
-            web_data = research_prompt_sources(query)
-            for source in (web_data.get("sources") or [])[:8]:
-                d = source.get("domain", "").strip()
-                if d and d not in domains:
-                    domains.append(d)
-        except Exception:
-            pass
+    # NOTE: per-engine citation domains must reflect only what THIS engine
+    # actually cited in its answer. Earlier code pulled Serper/Perplexity
+    # research domains in here when an engine returned no URLs, which made it
+    # look like (for example) ChatGPT cited siit.io when it actually returned a
+    # clean training-data answer with no sources. That contaminated per-engine
+    # citation analytics and the synthesis top-cited-domains. The engine-
+    # independent research fallback now lives only in synthesize_evidence(),
+    # applied once and flagged from_research_layer when ALL engines had no
+    # citations.
 
     events: list[DisplacementEvent] = []
     run_displacement_llm = (
@@ -390,7 +397,9 @@ RULES:
         try:
             with ThreadPoolExecutor(max_workers=1) as pool:
                 fut = pool.submit(lambda: chat("chatgpt", dprompt, temperature=0.15))
-                raw = fut.result(timeout=5.0)
+                # 5s silently dropped almost every displacement extraction —
+                # give the model realistic headroom while staying bounded.
+                raw = fut.result(timeout=25.0)
             parsed = _clean_json(raw)
             for row in _parse_displacement_events(parsed)[:5]:
                 if not _validate_displacement_event(row, response_text):
@@ -500,7 +509,7 @@ def synthesize_evidence(
     query: str,
     research_data: dict[str, Any],
 ) -> EvidenceSynthesis:
-    _ = focus_brand, query, research_data
+    _ = focus_brand, query
     mentioning: list[str] = []
     not_mentioning: list[str] = []
     ranks: list[int] = []
@@ -594,6 +603,28 @@ def synthesize_evidence(
                 "mentions_competitor": bool(domain_comp_hit.get(dom)),
             }
         )
+
+    # When no engine returned citations, fall back to the engine-independent
+    # research layer so citation analytics are never empty. Rows are flagged so
+    # downstream consumers can tell measured citations from research sources.
+    if not top_domains and isinstance(research_data, dict):
+        research_domain_counts: dict[str, int] = {}
+        for src in research_data.get("sources") or []:
+            if not isinstance(src, dict):
+                continue
+            dom = str(src.get("domain") or "").strip().lower() or _domain_from_url(str(src.get("url") or ""))
+            if dom:
+                research_domain_counts[dom] = research_domain_counts.get(dom, 0) + 1
+        for dom, cnt in sorted(research_domain_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+            top_domains.append(
+                {
+                    "domain": dom,
+                    "count": cnt,
+                    "mentions_focus": False,
+                    "mentions_competitor": False,
+                    "from_research_layer": True,
+                }
+            )
 
     total_cites = sum(domain_counts.values())
     citation_concentration = 0.0
@@ -924,13 +955,13 @@ def detect_drift(
     previous_rank = round(statistics.mean(prev_ranks), 2) if prev_ranks else None
     _dbg("H5", "engine/brain_pipeline.py:detect_drift", "prev", {"previous_rank": previous_rank, "prev_mention_rate": prev_mention_rate, "prev_total": prev_total})
 
+    # Only report a rank delta when both runs actually produced a rank —
+    # a fabricated magnitude for appear/disappear cases would distort trends.
     rank_delta: float | None = None
+    entered_rankings = previous_rank is None and current_rank is not None
+    left_rankings = previous_rank is not None and current_rank is None
     if previous_rank is not None and current_rank is not None:
         rank_delta = float(previous_rank - current_rank)
-    elif previous_rank is None and current_rank is not None:
-        rank_delta = 3.0
-    elif previous_rank is not None and current_rank is None:
-        rank_delta = -3.0
 
     mention_rate_delta = round(curr_mention_rate - prev_mention_rate, 4)
 
@@ -940,8 +971,14 @@ def detect_drift(
             velocity = "improving"
         elif rank_delta < -0.5:
             velocity = "declining"
-        else:
-            velocity = "stable"
+    elif entered_rankings:
+        velocity = "improving"
+    elif left_rankings:
+        velocity = "declining"
+    elif mention_rate_delta > 0.1:
+        velocity = "improving"
+    elif mention_rate_delta < -0.1:
+        velocity = "declining"
 
     return DriftReport(
         has_previous_run=True,

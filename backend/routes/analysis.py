@@ -795,6 +795,16 @@ def async_run_analysis(
                     for engine, text in raw_responses.items()
                 ],
                 "url_status": url_status,
+                # Engines that errored this run (e.g. provider quota exhausted).
+                # Surfaced so the UI can tell the user coverage was partial
+                # instead of silently reporting fewer engines.
+                "engines_failed": [
+                    {
+                        "engine": eng_name,
+                        "reason": reason.split(": ", 1)[1] if ": " in reason else reason,
+                    }
+                    for eng_name, reason in zip(failed_engines, failed_engine_reasons)
+                ],
                 "timestamp": _now_iso(),
                 "intent_context": {
                     "buyer_stage": intent_context.buyer_stage,

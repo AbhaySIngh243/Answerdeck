@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from engine.analyzer import _clean_json
-from engine.llm_clients import chat
+from engine.llm_clients import chat_with_fallback
 
 
 def _normalized_domain_key(domain: str) -> str:
@@ -112,7 +112,7 @@ Competitor framing context:
 Return ONLY one JSON object for domain "{domain}". No markdown fences. No extra keys."""
 
     try:
-        raw = chat("gemini", prompt, temperature=0.4)
+        raw = chat_with_fallback(prompt, temperature=0.4, json_mode=True, engines=["gemini", "chatgpt", "claude"])
         parsed = _clean_json(raw)
     except Exception:
         return {"title": "", "detail": "", "steps": []}
@@ -196,7 +196,7 @@ Additional cross-domain rules:
 Return ONLY valid JSON. No markdown fences."""
 
     try:
-        raw = chat("gemini", prompt, temperature=0.45)
+        raw = chat_with_fallback(prompt, temperature=0.45, json_mode=True, engines=["gemini", "chatgpt", "claude"])
         parsed = _clean_json(raw)
     except Exception:
         return {}

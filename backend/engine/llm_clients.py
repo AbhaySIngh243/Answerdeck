@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import urlparse
 
+import requests
 from anthropic import Anthropic
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -61,7 +62,11 @@ OPENAI_WEB_SEARCH_MODEL = os.getenv("OPENAI_WEB_SEARCH_MODEL", os.getenv("OPENAI
 OPENAI_REQUIRE_WEB_SEARCH = os.getenv("OPENAI_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
 PERPLEXITY_ENABLE_WEB_SEARCH = os.getenv("PERPLEXITY_ENABLE_WEB_SEARCH", "true").lower() in {"1", "true", "yes"}
 PERPLEXITY_REQUIRE_WEB_SEARCH = os.getenv("PERPLEXITY_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
+CLAUDE_ENABLE_WEB_SEARCH = os.getenv("CLAUDE_ENABLE_WEB_SEARCH", "true").lower() in {"1", "true", "yes"}
+CLAUDE_WEB_SEARCH_TOOL_VERSION = os.getenv("CLAUDE_WEB_SEARCH_TOOL_VERSION", "web_search_20250305")
+CLAUDE_WEB_SEARCH_MAX_USES = max(1, min(int(os.getenv("CLAUDE_WEB_SEARCH_MAX_USES", "3")), 10))
 CLAUDE_REQUIRE_WEB_SEARCH = os.getenv("CLAUDE_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
+GEMINI_ENABLE_WEB_SEARCH = os.getenv("GEMINI_ENABLE_WEB_SEARCH", "true").lower() in {"1", "true", "yes"}
 GEMINI_REQUIRE_WEB_SEARCH = os.getenv("GEMINI_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
 DEEPSEEK_REQUIRE_WEB_SEARCH = os.getenv("DEEPSEEK_REQUIRE_WEB_SEARCH", "false").lower() in {"1", "true", "yes"}
 RANKLORE_EXTERNAL_PARITY_MODE = os.getenv("RANKLORE_EXTERNAL_PARITY_MODE", "true").lower() in {"1", "true", "yes"}
@@ -460,6 +465,132 @@ def _extract_perplexity_citation_urls(response: Any) -> list[str]:
     return urls[:20]
 
 
+def _extract_gemini_grounding_urls(candidate: dict[str, Any]) -> list[str]:
+    """Pull source URLs out of Gemini groundingMetadata.
+
+    Grounding chunk ``uri`` values are opaque vertexaisearch redirect links, but
+    the ``title`` field usually carries the real source hostname. Prefer a
+    reconstructed https://<title> URL when the title looks like a domain so the
+    citation analytics see real publisher domains instead of redirect hosts.
+    """
+    urls: list[str] = []
+    seen: set[str] = set()
+    metadata = candidate.get("groundingMetadata") or candidate.get("grounding_metadata") or {}
+    chunks = metadata.get("groundingChunks") or metadata.get("grounding_chunks") or []
+    domain_re = re.compile(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$", re.IGNORECASE)
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        web = chunk.get("web") or {}
+        if not isinstance(web, dict):
+            continue
+        title = str(web.get("title") or "").strip().lower()
+        uri = str(web.get("uri") or "").strip()
+        candidate_url = ""
+        if title and domain_re.match(title):
+            candidate_url = f"https://{title}"
+        elif uri:
+            candidate_url = uri
+        normalized = _normalize_url(candidate_url)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            urls.append(normalized)
+    return urls[:20]
+
+
+def _gemini_generate_with_search(prompt: str, temperature: float) -> tuple[str, list[str]]:
+    """Call Gemini natively with the google_search grounding tool.
+
+    Uses the REST generateContent endpoint directly because the OpenAI-compat
+    endpoint the normal client uses does not expose Google Search grounding.
+    Raises on any failure so the caller can fall back to the plain path.
+    """
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY not configured")
+    last_exc: Exception | None = None
+    for model in dict.fromkeys(GEMINI_FALLBACK_MODELS):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "tools": [{"google_search": {}}],
+            "generationConfig": {"temperature": temperature},
+        }
+        try:
+            response = requests.post(
+                url,
+                headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+                json=payload,
+                timeout=min(LLM_REQUEST_TIMEOUT * 1.5, 120.0),
+            )
+            response.raise_for_status()
+            data = response.json()
+            candidates = data.get("candidates") or []
+            if not candidates:
+                raise RuntimeError("Gemini grounding returned no candidates")
+            candidate = candidates[0] if isinstance(candidates[0], dict) else {}
+            parts = ((candidate.get("content") or {}).get("parts")) or []
+            text = "\n".join(
+                str(part.get("text") or "") for part in parts if isinstance(part, dict) and part.get("text")
+            ).strip()
+            if not text:
+                raise RuntimeError("Gemini grounding returned empty text")
+            citations = _extract_gemini_grounding_urls(candidate)
+            return text, citations
+        except Exception as exc:
+            last_exc = exc
+            continue
+    raise last_exc or RuntimeError("Gemini grounding failed for all models")
+
+
+def _claude_message_with_search(client: Anthropic, cfg: dict[str, Any], prompt: str, temperature: float) -> tuple[str, list[str]]:
+    """Call Claude with the native server-side web search tool.
+
+    Returns (text, citation_urls). Raises on failure so the caller can fall
+    back to a plain (non-search) message.
+    """
+    response = client.messages.create(
+        model=cfg["model"],
+        max_tokens=1600,
+        temperature=temperature,
+        messages=[{"role": "user", "content": prompt}],
+        tools=[
+            {
+                "type": CLAUDE_WEB_SEARCH_TOOL_VERSION,
+                "name": "web_search",
+                "max_uses": CLAUDE_WEB_SEARCH_MAX_USES,
+            }
+        ],
+    )
+    text_parts: list[str] = []
+    cited_urls: list[str] = []
+    result_urls: list[str] = []
+    seen: set[str] = set()
+
+    def _add_url(raw: Any, bucket: list[str]) -> None:
+        normalized = _normalize_url(str(raw or "").strip())
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            bucket.append(normalized)
+
+    for block in response.content:
+        block_type = getattr(block, "type", "")
+        if block_type == "text":
+            text_parts.append(getattr(block, "text", "") or "")
+            for citation in getattr(block, "citations", None) or []:
+                _add_url(getattr(citation, "url", ""), cited_urls)
+        elif block_type == "web_search_tool_result":
+            for item in getattr(block, "content", None) or []:
+                if getattr(item, "type", "") == "web_search_result":
+                    _add_url(getattr(item, "url", ""), result_urls)
+
+    text = "\n".join(part for part in text_parts if part).strip()
+    if not text:
+        raise RuntimeError("Claude web search returned empty text")
+    # Prefer URLs the model actually cited; fall back to raw search results.
+    urls = cited_urls if cited_urls else result_urls
+    return text, urls[:20]
+
+
 def _prompt_expects_json(prompt: str) -> bool:
     """Detect analyzer/audit calls that want JSON-only output so we can
     switch the underlying API into strict JSON mode. Heuristic is conservative
@@ -555,14 +686,35 @@ def chat(
                 return "[Perplexity web-search required but no citations were returned]"
             return f"{text}{_format_sources_tail(citations)}"
 
-        if engine == "claude" and CLAUDE_REQUIRE_WEB_SEARCH:
-            return "[Claude web-search required but not supported by current API integration]"
+        if engine == "claude" and CLAUDE_REQUIRE_WEB_SEARCH and not CLAUDE_ENABLE_WEB_SEARCH:
+            return "[Claude web-search required but disabled via CLAUDE_ENABLE_WEB_SEARCH]"
 
-        if engine == "gemini" and GEMINI_REQUIRE_WEB_SEARCH:
-            return "[Gemini web-search required but not supported by current API integration]"
+        if engine == "gemini" and GEMINI_REQUIRE_WEB_SEARCH and not GEMINI_ENABLE_WEB_SEARCH:
+            return "[Gemini web-search required but disabled via GEMINI_ENABLE_WEB_SEARCH]"
 
         if engine == "deepseek" and DEEPSEEK_REQUIRE_WEB_SEARCH:
             return "[DeepSeek web-search required but not supported by current API integration]"
+
+        # Native Gemini web grounding (google_search tool). JSON-mode calls skip
+        # it because grounded answers are free-form prose with citations.
+        if engine == "gemini" and GEMINI_ENABLE_WEB_SEARCH and not wants_json:
+            try:
+                text, citations = _gemini_generate_with_search(prompt, effective_temperature)
+                return f"{text}{_format_sources_tail(citations)}"
+            except Exception as exc:
+                if GEMINI_REQUIRE_WEB_SEARCH:
+                    return f"[Gemini web-search required but unavailable: {exc}]"
+                # Fall through to the plain OpenAI-compat path below.
+
+        # Native Claude server-side web search tool.
+        if engine == "claude" and CLAUDE_ENABLE_WEB_SEARCH and not wants_json:
+            try:
+                text, citations = _claude_message_with_search(client, cfg, prompt, effective_temperature)
+                return f"{text}{_format_sources_tail(citations)}"
+            except Exception as exc:
+                if CLAUDE_REQUIRE_WEB_SEARCH:
+                    return f"[Claude web-search required but unavailable: {exc}]"
+                # Fall through to the plain Anthropic path below.
 
         # JSON-mode requests bypass the web-search tool because
         # responses.create does not accept response_format in the same way and
@@ -827,6 +979,16 @@ def get_available_engine_catalog() -> list[dict[str, str]]:
 def get_search_layer_status() -> dict[str, Any]:
     provider = get_search_provider_name()
     provider_available = is_perplexity_search_enabled()
+    native_engines = [
+        engine
+        for engine, enabled in (
+            ("chatgpt", OPENAI_ENABLE_WEB_SEARCH and bool(OPENAI_API_KEY)),
+            ("gemini", GEMINI_ENABLE_WEB_SEARCH and bool(GEMINI_API_KEY)),
+            ("perplexity", PERPLEXITY_ENABLE_WEB_SEARCH and bool(PERPLEXITY_API_KEY)),
+            ("claude", CLAUDE_ENABLE_WEB_SEARCH and bool(CLAUDE_API_KEY)),
+        )
+        if enabled
+    ]
     return {
         "search_augment_enabled": RANKLORE_SEARCH_AUGMENT_ENABLED,
         "measurement_variants_enabled": RANKLORE_MEASURE_PROMPT_VARIANTS,
@@ -837,10 +999,21 @@ def get_search_layer_status() -> dict[str, Any]:
         "serper_available": is_search_provider_available("serper"),
         "perplexity_search_available": is_search_provider_available("perplexity"),
         "openai_web_search_enabled": OPENAI_ENABLE_WEB_SEARCH and bool(OPENAI_API_KEY),
+        "gemini_web_search_enabled": GEMINI_ENABLE_WEB_SEARCH and bool(GEMINI_API_KEY),
+        "claude_web_search_enabled": CLAUDE_ENABLE_WEB_SEARCH and bool(CLAUDE_API_KEY),
+        "perplexity_web_search_enabled": PERPLEXITY_ENABLE_WEB_SEARCH and bool(PERPLEXITY_API_KEY),
+        "native_web_search_engines": native_engines,
+        # "native" = models fetch live sources themselves (preferred);
+        # "ready" = external augmentation layer active;
+        # "disabled"/"missing_provider" = neither path can ground answers.
         "status": (
-            "ready"
-            if RANKLORE_SEARCH_AUGMENT_ENABLED and provider_available
-            else ("disabled" if not RANKLORE_SEARCH_AUGMENT_ENABLED else "missing_provider")
+            "native"
+            if native_engines and not RANKLORE_SEARCH_AUGMENT_ENABLED
+            else (
+                "ready"
+                if RANKLORE_SEARCH_AUGMENT_ENABLED and provider_available
+                else ("disabled" if not RANKLORE_SEARCH_AUGMENT_ENABLED else "missing_provider")
+            )
         ),
     }
 

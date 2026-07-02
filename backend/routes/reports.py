@@ -1861,8 +1861,9 @@ def _build_competitor_visibility(project_id: int) -> dict:
     full (prompt x engine) cell count of the latest run — not against the number
     of cells that happened to produce a response — so brands no longer hit 100%
     just because every response happened to mention them. ``avg_rank`` is None
-    when no ranked samples exist, and ``quality_score`` is now returned with its sub-components and
-    is uncapped (callers may clamp for display if they want).
+    when no ranked samples exist, and ``quality_score`` is returned with its
+    sub-components, weighted the same way as ``calculate_visibility_score``
+    (50 mention / 30 rank / 20 sentiment) and capped at 100.
     """
     project = Project.query.get(project_id)
     if not project:
@@ -2042,10 +2043,13 @@ def _build_competitor_visibility(project_id: int) -> dict:
         if has_min_rank and avg_rank_value is not None:
             rank_bonus = max(0.0, 30 - (avg_rank_value - 1) * 5)
 
-        mention_rate_score = round(mention_rate * 60, 2)
+        # Same weighting as analyzer.calculate_visibility_score (50 mention /
+        # 30 rank / 20 sentiment) so the dashboard trend and the competitor
+        # table describe the same quantity, capped at 100.
+        mention_rate_score = round(mention_rate * 50, 2)
         rank_score = round(rank_bonus, 2)
         sentiment_score = round(max(0.0, sentiment_bonus), 2)
-        quality_score_raw = mention_rate_score + rank_score + sentiment_score
+        quality_score_raw = min(100.0, mention_rate_score + rank_score + sentiment_score)
         visibility_pct = round(mention_rate * 100, 1)
 
         is_focus = key_lower == focus_lower if focus_lower else bool(row["any_focus_mention"])
@@ -3244,10 +3248,19 @@ def _prompt_analysis_rows_from_matrix(prompt_matrix: list[dict]) -> list[dict]:
         quality_score = calculate_visibility_score(focus_mentions, analyzed)
         ranked = [item.get("rank") for _, item in engine_items if item.get("rank") is not None]
         avg_rank = round(sum(ranked) / len(ranked), 2) if ranked else None
-        sentiments = [item.get("sentiment", "not_mentioned") for _, item in engine_items]
-        primary_sentiment = "not_mentioned"
-        if sentiments:
-            primary_sentiment = max(set(sentiments), key=sentiments.count)
+        # Sentiment must describe how the brand is talked about WHEN it appears.
+        # Including "not_mentioned" from engines that skipped the brand made a
+        # rank-1 prompt display sentiment "not_mentioned" whenever coverage was
+        # 50% — misleading. Mode over mentioning engines only.
+        mention_sentiments = [
+            item.get("sentiment", "neutral")
+            for _, item in engine_items
+            if item.get("mentioned") and item.get("sentiment") not in (None, "", "not_mentioned")
+        ]
+        if mention_sentiments:
+            primary_sentiment = max(set(mention_sentiments), key=mention_sentiments.count)
+        else:
+            primary_sentiment = "not_mentioned"
 
         rows.append(
             {

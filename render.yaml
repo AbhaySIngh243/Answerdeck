@@ -17,8 +17,12 @@ services:
         value: "serper"
       - key: SERPER_API_KEY
         sync: false
+      # Native web search inside each LLM (ChatGPT web_search tool, Gemini
+      # google_search grounding, Claude web_search tool, Perplexity sonar) now
+      # provides live grounding + citations, so the external Serper prompt
+      # augmentation stays off and visibility measures raw model answers.
       - key: RANKLORE_SEARCH_AUGMENT_ENABLED
-        value: "true"
+        value: "false"
       - key: CASHFREE_PLAN_CURRENCY
         value: "USD"
       - key: CASHFREE_PLAN_STANDARD_AMOUNT

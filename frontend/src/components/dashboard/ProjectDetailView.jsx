@@ -124,7 +124,11 @@ function textMentionsBrand(text, brand) {
   const cleanedBrand = sanitizeProse(brand || '').trim();
   const cleanedText = sanitizeProse(text || '');
   if (!cleanedBrand || !cleanedText) return false;
-  return cleanedText.toLowerCase().includes(cleanedBrand.toLowerCase());
+  // Word-boundary match so short brand names don't false-positive inside
+  // unrelated words (e.g. "Arc" inside "search").
+  const escaped = cleanedBrand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}([^\\p{L}\\p{N}]|$)`, 'iu');
+  return pattern.test(cleanedText);
 }
 
 const sectionMotion = {
@@ -295,6 +299,9 @@ const ProjectDetailView = () => {
   const [newPromptModels, setNewPromptModels] = useState([]);
   const [runningPrompts, setRunningPrompts] = useState({});
   const [runError, setRunError] = useState('');
+  // Per-prompt partial-coverage notices, e.g. when Perplexity quota exhausted
+  // and only 3 of 4 engines answered. Keyed by promptId.
+  const [partialCoverage, setPartialCoverage] = useState({});
   const [selectedPromptId, setSelectedPromptId] = useState(() => location.state?.openPromptId || null);
   const [activeSection, setActiveSection] = useState(() => location.state?.openSection || 'dashboard');
   const [dashChartMode, setDashChartMode] = useState('7d');
@@ -692,6 +699,20 @@ const ProjectDetailView = () => {
       if (data.status === 'completed') {
         setRunningPrompts((prev) => ({ ...prev, [promptId]: false }));
         activePollsRef.current.delete(jobId);
+        // Surface partial engine coverage so users know why only 3 of 4
+        // engines appear (e.g. a provider quota/401) instead of assuming
+        // the missing engine just didn't mention them.
+        const failed = toArray(data?.result?.engines_failed);
+        if (failed.length > 0) {
+          setPartialCoverage((prev) => ({ ...prev, [promptId]: failed }));
+        } else {
+          setPartialCoverage((prev) => {
+            if (!prev[promptId]) return prev;
+            const next = { ...prev };
+            delete next[promptId];
+            return next;
+          });
+        }
         // Invalidate all relevant caches to ensure fresh data
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['project', id] }),
@@ -2049,6 +2070,22 @@ const ProjectDetailView = () => {
                     </div>
                     <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-500">{toArray(promptDetailData.raw_responses).length} models checked</span>
                   </div>
+                  {(() => {
+                    const failed = toArray(partialCoverage[selectedPromptId]);
+                    const expected = Math.max(toArray(promptDetailData.raw_responses).length + failed.length, toArray(projectCore?.enabledEngines).length || 0);
+                    return failed.length > 0 ? (
+                      <div className="mb-4 flex flex-wrap items-start justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                        <div className="flex items-start gap-2 text-xs leading-relaxed text-amber-800">
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                          <span>
+                            {failed.length} of {expected} AI engines couldn't be reached for this run
+                            ({failed.map((f) => modelIdToName?.[f.engine] || f.engine).join(', ')}). Visibility is measured against the engines that responded — retry to restore full coverage.
+                          </span>
+                        </div>
+                        <button type="button" onClick={() => setPartialCoverage((prev) => { const next = { ...prev }; delete next[selectedPromptId]; return next; })} className="shrink-0 text-xs font-semibold text-amber-700 hover:text-amber-900">Dismiss</button>
+                      </div>
+                    ) : null;
+                  })()}
                   {toArray(promptDetailData.raw_responses).length === 0 ? (
                     <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No model answer signals are available yet.</p>
                   ) : (

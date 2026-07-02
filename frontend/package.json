@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "vite",
+    "dev:kill": "npx --yes kill-port 5173 ",
     "build": "vite build",
     "preview": "vite preview"
   },
