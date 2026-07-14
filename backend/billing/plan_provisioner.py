@@ -12,12 +12,12 @@ log = logging.getLogger(__name__)
 PLAN_DEFINITIONS = {
     "standard": {
         "amount_env": "CASHFREE_PLAN_STANDARD_AMOUNT",
-        "recurring_amount": 79.0,
+        "recurring_amount": 7599.0,
         "name": "Answrdeck Standard Monthly",
     },
     "pro": {
         "amount_env": "CASHFREE_PLAN_PRO_AMOUNT",
-        "recurring_amount": 149.0,
+        "recurring_amount": 14299.0,
         "name": "Answrdeck Pro Monthly",
     },
 }
@@ -26,7 +26,7 @@ PLAN_ACCESS_DAYS = int(os.getenv("CASHFREE_PLAN_ACCESS_DAYS") or "30")
 
 
 def plan_currency() -> str:
-    return (os.getenv("CASHFREE_PLAN_CURRENCY") or "USD").strip().upper()
+    return (os.getenv("CASHFREE_PLAN_CURRENCY") or "INR").strip().upper()
 
 
 def plan_amount(plan_key: str) -> float:

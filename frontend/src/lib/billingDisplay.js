@@ -1,6 +1,13 @@
 /** Shared billing copy and formatting. Keep in sync with backend plan_provisioner.PLAN_DEFINITIONS. */
 
+/** Actual checkout amounts (INR) when billing health is unavailable. */
 export const DEFAULT_PLAN_AMOUNTS = {
+  standard: 7599,
+  pro: 14299,
+};
+
+/** Landing-page marketing prices only — display USD even when Cashfree charges INR. */
+export const MARKETING_PLAN_AMOUNTS_USD = {
   standard: 79,
   pro: 149,
 };

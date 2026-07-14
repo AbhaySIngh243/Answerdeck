@@ -1,30 +1,18 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
 import { PENDING_CASHFREE_PLAN_KEY } from '../lib/subscriptionCheckout';
-import {
-  billingCurrency,
-  formatPlanPrice,
-  planAmountFromHealth,
-} from '../lib/billingDisplay';
-import { api } from '../lib/api';
+import { formatPlanPrice, MARKETING_PLAN_AMOUNTS_USD } from '../lib/billingDisplay';
 import { SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 const CTASection = () => {
   const navigate = useNavigate();
   const { isSignedIn } = useAuth();
-  const { data: billingHealth } = useQuery({
-    queryKey: ['billing', 'health'],
-    queryFn: api.getBillingHealth,
-    staleTime: 120_000,
-  });
 
-  const currency = billingCurrency(billingHealth);
-  const standardAmount = planAmountFromHealth(billingHealth, 'standard');
-  const proAmount = planAmountFromHealth(billingHealth, 'pro');
-  const standardPrice = formatPlanPrice(standardAmount, currency);
-  const proPrice = formatPlanPrice(proAmount, currency);
+  // Marketing display stays in USD; Cashfree checkout uses backend INR amounts.
+  const standardPrice = formatPlanPrice(MARKETING_PLAN_AMOUNTS_USD.standard, 'USD');
+  const proPrice = formatPlanPrice(MARKETING_PLAN_AMOUNTS_USD.pro, 'USD');
+  const freePrice = formatPlanPrice(0, 'USD');
 
   const queueCheckout = (planKey) => {
     try {
@@ -82,7 +70,7 @@ const CTASection = () => {
           <div className="flex h-full flex-col rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
             <p className="text-xs font-bold uppercase tracking-wider text-[#64748b]">Free</p>
             <p className="mt-3 flex items-baseline gap-1 text-[#0f172a]">
-              <span className="text-3xl font-bold tracking-tight">{formatPlanPrice(0, currency)}</span>
+              <span className="text-3xl font-bold tracking-tight">{freePrice}</span>
               <span className="text-sm font-medium text-[#64748b]">/mo</span>
             </p>
             <p className="mt-2 text-sm text-[#64748b]">See your AI visibility on one brand. No card required.</p>
