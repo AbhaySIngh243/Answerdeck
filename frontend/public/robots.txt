@@ -5,3 +5,4 @@ Disallow: /login
 Disallow: /signup
 
 Sitemap: https://answrdeck.com/sitemap.xml
+Sitemap: https://answrdeck.com/sitemap.txt
