@@ -8,7 +8,33 @@ function toArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function SliceTooltip({ slice }) {
+function toDateKey(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  const match = String(value || '').match(/^(\d{4}-\d{2}-\d{2})/);
+  return match?.[1] || '';
+}
+
+function normalizePoints(rows, minDate, maxDate, valueKeys) {
+  const byDate = new Map();
+  toArray(rows).forEach((row) => {
+    const date = toDateKey(row?.x ?? row?.date);
+    const rawValue = valueKeys
+      .map((key) => row?.[key])
+      .find((value) => value != null);
+    const value = Number(rawValue);
+    if (!date || date < minDate || date > maxDate || !Number.isFinite(value)) {
+      return;
+    }
+    byDate.set(date, Math.max(0, Math.min(100, value)));
+  });
+  return Array.from(byDate, ([x, y]) => ({ x, y })).sort((a, b) =>
+    a.x.localeCompare(b.x)
+  );
+}
+
+function SliceTooltip({ slice, suffix = '%' }) {
   if (!slice) return null;
   const points = Array.isArray(slice.points) ? slice.points : [];
   const rawDate = slice?.points?.[0]?.data?.x;
@@ -42,7 +68,8 @@ function SliceTooltip({ slice }) {
               {p.serieId}
             </span>
             <span className="tabular-nums">
-              {Number(p.data?.yFormatted ?? p.data?.y ?? 0)}%
+              {Number(p.data?.yFormatted ?? p.data?.y ?? 0)}
+              {suffix}
             </span>
           </div>
         ))}
@@ -76,24 +103,20 @@ export default function PerformancePanel({ range, onRangeChange, dashboard }) {
       : dashboard?.quality_score_trend;
   const points = toArray(singleTrendRaw);
 
-  const allDates = [
-    ...competitorSeries.flatMap((s) => toArray(s.data).map((d) => d.x || d.date)),
-    ...points.map((d) => d.x || d.date),
-  ].filter(Boolean);
-
-  const maxDateStr =
-    allDates.length > 0
-      ? allDates.reduce((a, b) => (a > b ? a : b))
-      : new Date().toISOString().split('T')[0];
-
-  const maxDate = new Date(maxDateStr);
+  // "Last N days" is relative to today, not the most recent (possibly stale)
+  // analysis date.
+  const maxDate = new Date();
+  const maxDateStr = maxDate.toISOString().slice(0, 10);
   const minDate = new Date(maxDate);
-  minDate.setDate(maxDate.getDate() - (range === '7d' ? 6 : 29));
-  const minDateStr = minDate.toISOString().split('T')[0];
+  minDate.setUTCDate(maxDate.getUTCDate() - (range === '7d' ? 6 : 29));
+  const minDateStr = minDate.toISOString().slice(0, 10);
 
   const allCompetitors = toArray(dashboard?.competitors);
   const targetBrandName =
-    allCompetitors.find((c) => c.is_focus)?.brand || '';
+    allCompetitors.find((c) => c.is_focus)?.brand ||
+    dashboard?.project?.name ||
+    competitorSeries[0]?.id ||
+    '';
   const targetBrandLower = targetBrandName.toLowerCase();
   const seriesIds = competitorSeries.map((s) => s.id || '');
 
@@ -114,35 +137,34 @@ export default function PerformancePanel({ range, onRangeChange, dashboard }) {
       ? competitorSeries.filter((s) => idsToKeep.has(s.id))
       : competitorSeries.slice(0, 4);
 
-  const usingCompetitorTrend = filteredSeries.length >= 2;
+  const normalizedCompetitorSeries = filteredSeries.map((s) => ({
+    ...s,
+    data: normalizePoints(
+      s.data,
+      minDateStr,
+      maxDateStr,
+      ['y', 'score', 'value']
+    ),
+  }));
+  const hasVisibilitySnapshots = normalizedCompetitorSeries.length > 0;
+  const usingCompetitorTrend = normalizedCompetitorSeries.length >= 2;
+  const usingQualityFallback = !hasVisibilitySnapshots;
 
-  const visibilitySeries = usingCompetitorTrend
-    ? filteredSeries.map((s) => ({
-        ...s,
-        data: toArray(s.data)
-          .filter((d) => {
-            const dDate = d.x ?? d.date;
-            return dDate && dDate >= minDateStr && dDate <= maxDateStr;
-          })
-          .map((d) => ({
-            x: d.x ?? d.date,
-            y: Number(d.y ?? d.score ?? d.value ?? 0),
-          })),
-      }))
+  const visibilitySeries = hasVisibilitySnapshots
+    ? normalizedCompetitorSeries
     : [
         {
-          id: 'Visibility',
-          data: points
-            .filter((d) => {
-              const dDate = d.x ?? d.date;
-              return dDate && dDate >= minDateStr && dDate <= maxDateStr;
-            })
-            .map((d) => ({
-              x: d.x ?? d.date,
-              y: Number(d.score ?? d.value ?? 0),
-            })),
+          id: 'Quality score',
+          data: normalizePoints(
+            points,
+            minDateStr,
+            maxDateStr,
+            ['score', 'value', 'y']
+          ),
         },
       ];
+  const hasChartData = visibilitySeries.some((series) => series.data.length > 0);
+  const valueSuffix = usingQualityFallback ? '' : '%';
 
   return (
     <motion.div
@@ -159,10 +181,12 @@ export default function PerformancePanel({ range, onRangeChange, dashboard }) {
           </div>
           <div>
             <h3 className="text-sm font-semibold text-slate-800">
-              Visibility trend
+              {usingQualityFallback ? 'Quality score trend' : 'Visibility trend'}
             </h3>
             <p className="mt-0.5 text-[11px] text-slate-400">
-              Movement over time (not just static comparisons).
+              {usingQualityFallback
+                ? 'Overall mention, rank, and sentiment score by analysis date.'
+                : 'End-of-day share of tracked answers that mention each brand.'}
             </p>
           </div>
         </div>
@@ -188,85 +212,98 @@ export default function PerformancePanel({ range, onRangeChange, dashboard }) {
 
       {/* Chart */}
       <div className="h-80 px-2 py-3 sm:px-4">
-        <ResponsiveLine
-          data={visibilitySeries}
-          margin={{ top: 20, right: 24, bottom: 52, left: 48 }}
-          xScale={{
-            type: 'time',
-            format: '%Y-%m-%d',
-            useUTC: true,
-            precision: 'day',
-            min: minDateStr,
-            max: maxDateStr,
-          }}
-          xFormat="time:%Y-%m-%d"
-          yScale={{ type: 'linear', min: 0, max: 'auto' }}
-          axisBottom={{
-            format: range === '7d' ? '%a' : '%b %d',
-            tickValues: range === '7d' ? 'every day' : 'every 5 days',
-            tickRotation: 0,
-            tickPadding: 8,
-          }}
-          axisLeft={{
-            tickValues: 5,
-            tickPadding: 8,
-            format: (value) => `${value}%`,
-          }}
-          colors={MULTI_PALETTE}
-          enableArea={!usingCompetitorTrend}
-          areaOpacity={0.06}
-          areaBaselineValue={0}
-          pointSize={8}
-          pointColor="#ffffff"
-          pointBorderWidth={2.5}
-          pointBorderColor={{ from: 'serieColor' }}
-          enablePointLabel={false}
-          useMesh
-          crosshairType="bottom"
-          curve="monotoneX"
-          lineWidth={2.5}
-          enableGridX={false}
-          enableSlices="x"
-          sliceTooltip={SliceTooltip}
-          theme={chartTheme.nivo}
-          legends={
-            usingCompetitorTrend
-              ? [
-                  {
-                    anchor: 'bottom',
-                    direction: 'row',
-                    justify: false,
-                    translateX: 0,
-                    translateY: 46,
-                    itemsSpacing: 16,
-                    itemDirection: 'left-to-right',
-                    itemWidth: 90,
-                    itemHeight: 18,
-                    itemOpacity: 1,
-                    symbolSize: 10,
-                    symbolShape: 'circle',
-                  },
-                ]
-              : []
-          }
-          defs={
-            usingCompetitorTrend
-              ? []
-              : [
-                  {
-                    id: 'areaGradient',
-                    type: 'linearGradient',
-                    colors: [
-                      { offset: 0, color: BRAND_BLUE, opacity: 0.16 },
-                      { offset: 100, color: BRAND_BLUE, opacity: 0 },
-                    ],
-                  },
-                ]
-          }
-          fill={
-            usingCompetitorTrend ? [] : [{ match: '*', id: 'areaGradient' }]
-          }
-        />
+        {!hasChartData ? (
+          <div className="flex h-full flex-col items-center justify-center text-center">
+            <p className="text-sm font-semibold text-slate-600">
+              No {usingQualityFallback ? 'analyses' : 'visibility checks'} in this period
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              Run an analysis to add a measured point to the trend.
+            </p>
+          </div>
+        ) : (
+          <ResponsiveLine
+            data={visibilitySeries}
+            margin={{ top: 20, right: 24, bottom: 52, left: 48 }}
+            xScale={{
+              type: 'time',
+              format: '%Y-%m-%d',
+              useUTC: true,
+              precision: 'day',
+              min: minDateStr,
+              max: maxDateStr,
+            }}
+            xFormat="time:%Y-%m-%d"
+            yScale={{ type: 'linear', min: 0, max: 100 }}
+            axisBottom={{
+              format: range === '7d' ? '%a' : '%b %d',
+              tickValues: range === '7d' ? 'every day' : 'every 5 days',
+              tickRotation: 0,
+              tickPadding: 8,
+            }}
+            axisLeft={{
+              tickValues: 5,
+              tickPadding: 8,
+              format: (value) => `${value}${valueSuffix}`,
+            }}
+            colors={MULTI_PALETTE}
+            enableArea={!usingCompetitorTrend}
+            areaOpacity={0.06}
+            areaBaselineValue={0}
+            pointSize={8}
+            pointColor="#ffffff"
+            pointBorderWidth={2.5}
+            pointBorderColor={{ from: 'serieColor' }}
+            enablePointLabel={false}
+            useMesh
+            crosshairType="bottom"
+            curve="linear"
+            lineWidth={2.5}
+            enableGridX={false}
+            enableSlices="x"
+            sliceTooltip={(props) => (
+              <SliceTooltip {...props} suffix={valueSuffix} />
+            )}
+            theme={chartTheme.nivo}
+            legends={
+              usingCompetitorTrend
+                ? [
+                    {
+                      anchor: 'bottom',
+                      direction: 'row',
+                      justify: false,
+                      translateX: 0,
+                      translateY: 46,
+                      itemsSpacing: 16,
+                      itemDirection: 'left-to-right',
+                      itemWidth: 90,
+                      itemHeight: 18,
+                      itemOpacity: 1,
+                      symbolSize: 10,
+                      symbolShape: 'circle',
+                    },
+                  ]
+                : []
+            }
+            defs={
+              usingCompetitorTrend
+                ? []
+                : [
+                    {
+                      id: 'areaGradient',
+                      type: 'linearGradient',
+                      colors: [
+                        { offset: 0, color: BRAND_BLUE, opacity: 0.16 },
+                        { offset: 100, color: BRAND_BLUE, opacity: 0 },
+                      ],
+                    },
+                  ]
+            }
+            fill={
+              usingCompetitorTrend ? [] : [{ match: '*', id: 'areaGradient' }]
+            }
+          />
+        )}
       </div>
     </motion.div>
   );

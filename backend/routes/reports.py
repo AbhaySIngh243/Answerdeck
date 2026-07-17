@@ -2616,11 +2616,11 @@ def _build_competitor_visibility_trend(
     competitor_limit: int = 3,
 ) -> dict[str, Any]:
     """
-    Build a multi-series "visibility over time" chart for focus brand + top competitors.
+    Build end-of-day visibility snapshots for the focus brand and top competitors.
 
-    We derive daily visibility from visible-in-answer Mention rows:
-    - For each Response, a brand is visible only if the brand text appears in the answer.
-    - Daily visibility_pct = responses_with_brand / total_responses_that_day * 100.
+    Each point uses the latest response for every prompt/model cell as of that
+    date. This matches the dashboard's current visibility denominator and avoids
+    treating multiple re-runs on one day as extra independent observations.
     """
     project = Project.query.get(project_id)
     if not project:
@@ -2647,66 +2647,130 @@ def _build_competitor_visibility_trend(
     if not brands:
         return {"brands": [], "series": []}
 
-    # Normalize for matching; allow loose equality for "focus brand" mentions.
-    brands_lower = {b.lower(): b for b in brands}
+    onboarding = project.get_onboarding_data() if hasattr(project, "get_onboarding_data") else {}
+    steps = onboarding.get("steps", {}) if isinstance(onboarding, dict) else {}
+    step4 = steps.get("4", {}) if isinstance(steps.get("4"), dict) else {}
+    alias_map = step4.get("competitor_aliases", {}) if isinstance(step4, dict) else {}
+    alias_reverse: dict[str, str] = {}
+    if isinstance(alias_map, dict):
+        for canonical, aliases in alias_map.items():
+            canonical_name = str(canonical or "").strip()
+            if not canonical_name:
+                continue
+            alias_reverse[canonical_name.lower()] = canonical_name.lower()
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    alias_name = str(alias or "").strip()
+                    if alias_name:
+                        alias_reverse[alias_name.lower()] = canonical_name.lower()
 
-    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
-    cutoff_iso = cutoff_dt.date().isoformat()
+    focus_lower = focus_brand.lower()
+    brand_labels: dict[str, str] = {}
+    for brand in brands:
+        raw_key = brand.lower()
+        key = focus_lower if raw_key == focus_lower else alias_reverse.get(raw_key, raw_key)
+        brand_labels.setdefault(key, brand)
 
-    # Load candidate responses in the time window.
+    today = datetime.now(timezone.utc).date()
+    first_date = today - timedelta(days=max(1, int(days)) - 1)
+    first_date_iso = first_date.isoformat()
+    today_iso = today.isoformat()
+
+    selected_by_prompt = {
+        prompt.id: {
+            model.strip().lower()
+            for model in prompt.get_models()
+            if model and model.strip()
+        }
+        for prompt in prompts
+    }
+
+    # Include older responses so the first in-range snapshot can carry forward
+    # the last known value for cells that were not re-run that day.
     responses = (
-        Response.query.join(Prompt, Prompt.id == Response.prompt_id)
-        .filter(Prompt.project_id == project_id)
-        .filter(Response.timestamp >= cutoff_iso)
+        Response.query.filter(Response.prompt_id.in_(prompt_ids))
+        .order_by(Response.timestamp.asc(), Response.id.asc())
         .all()
     )
-    if not responses:
+    valid_responses: list[Response] = []
+    for response in responses:
+        if not _is_analysis_engine(response.engine):
+            continue
+        engine_key = (response.engine or "").strip().lower()
+        selected_models = selected_by_prompt.get(response.prompt_id) or set()
+        if selected_models and engine_key not in selected_models:
+            continue
+        response_date = str(response.timestamp or "")[:10]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", response_date):
+            continue
+        if response_date <= today_iso:
+            valid_responses.append(response)
+
+    if not valid_responses:
         return {"brands": brands, "series": []}
 
-    response_ids = [r.id for r in responses]
-    responses_by_id = {r.id: r for r in responses}
-    mentions = Mention.query.filter(Mention.response_id.in_(response_ids)).all()
+    latest_by_cell: dict[tuple[int, str], Response] = {}
+    responses_by_date: dict[str, list[Response]] = defaultdict(list)
+    for response in valid_responses:
+        response_date = str(response.timestamp)[:10]
+        cell = (response.prompt_id, (response.engine or "").strip().lower())
+        if response_date < first_date_iso:
+            latest_by_cell[cell] = response
+        else:
+            responses_by_date[response_date].append(response)
 
-    # response_id -> date -> set(brand_lower mentioned)
+    snapshot_dates = sorted(responses_by_date)
+    if not snapshot_dates:
+        return {"brands": brands, "series": []}
+
+    candidate_ids = {response.id for response in latest_by_cell.values()}
+    candidate_ids.update(
+        response.id
+        for daily_responses in responses_by_date.values()
+        for response in daily_responses
+    )
+    responses_by_id = {response.id: response for response in valid_responses if response.id in candidate_ids}
     mentioned_by_response: dict[int, set[str]] = defaultdict(set)
-    for m in mentions:
-        response = responses_by_id.get(m.response_id)
-        if not response or not _mention_is_visible_in_answer(response, m, focus_aliases=focus_aliases):
-            continue
-        raw = str(m.brand or "").strip()
-        if not raw:
-            continue
-        raw_lower = raw.lower()
-        if raw_lower in brands_lower:
-            mentioned_by_response[m.response_id].add(raw_lower)
-            continue
-        # fallback: treat focus brand mention as match if m.is_focus
-        if focus_brand and m.is_focus:
-            mentioned_by_response[m.response_id].add(focus_brand.lower())
+    if candidate_ids:
+        for mention in Mention.query.filter(Mention.response_id.in_(candidate_ids)).all():
+            response = responses_by_id.get(mention.response_id)
+            if not response or not _mention_is_visible_in_answer(
+                response,
+                mention,
+                focus_aliases=focus_aliases,
+            ):
+                continue
+            raw = str(mention.brand or "").strip()
+            if not raw:
+                continue
+            key = focus_lower if mention.is_focus else alias_reverse.get(raw.lower(), raw.lower())
+            if key in brand_labels:
+                mentioned_by_response[mention.response_id].add(key)
 
-    # date -> total responses and per-brand hit counts
-    totals_by_date: dict[str, int] = defaultdict(int)
-    hits_by_date_brand: dict[tuple[str, str], int] = defaultdict(int)
-    for r in responses:
-        date = str(r.timestamp or "")[:10] or "unknown"
-        totals_by_date[date] += 1
-        hits = mentioned_by_response.get(r.id, set())
-        for b_lower in hits:
-            hits_by_date_brand[(date, b_lower)] += 1
+    points_by_brand: dict[str, list[dict[str, Any]]] = {
+        key: [] for key in brand_labels
+    }
+    for snapshot_date in snapshot_dates:
+        for response in responses_by_date[snapshot_date]:
+            cell = (response.prompt_id, (response.engine or "").strip().lower())
+            latest_by_cell[cell] = response
 
-    dates_sorted = sorted(totals_by_date.keys())
+        snapshot_responses = list(latest_by_cell.values())
+        total = len(snapshot_responses)
+        for brand_key in brand_labels:
+            hits = sum(
+                1
+                for response in snapshot_responses
+                if brand_key in mentioned_by_response.get(response.id, set())
+            )
+            pct = round((hits / total) * 100, 1) if total else 0.0
+            points_by_brand[brand_key].append({"x": snapshot_date, "y": pct})
 
-    series: list[dict[str, Any]] = []
-    for b_lower, label in brands_lower.items():
-        points = []
-        for date in dates_sorted:
-            total = totals_by_date.get(date, 0) or 0
-            hit = hits_by_date_brand.get((date, b_lower), 0) or 0
-            pct = round((hit / total) * 100, 1) if total else 0.0
-            points.append({"x": date, "y": pct})
-        series.append({"id": label, "data": points})
-
-    return {"brands": brands, "series": series}
+    series = [
+        {"id": label, "data": points_by_brand[key]}
+        for key, label in brand_labels.items()
+    ]
+    return {"brands": [item["id"] for item in series], "series": series}
 
 
 def _collect_competitor_sources(project_id: int) -> list[str]:
