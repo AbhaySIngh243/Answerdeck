@@ -46,7 +46,7 @@ def create_app() -> Flask:
                         "https://localhost:5173",
                         "https://127.0.0.1:5173",
                     ]
-                }
+                },
             },
             allow_headers=["Content-Type", "Authorization"],
             expose_headers=["x-request-id", "x-render-request-id"],

@@ -90,13 +90,9 @@ export default function ImagePlaceholder({
           </span>
           {label ? (
             <span className="text-sm font-semibold text-[#334155]">{label}</span>
-          ) : null}
-          <code className="rounded-md border border-brand-primary/15 bg-white/80 px-2.5 py-1 text-[11px] font-medium tracking-tight text-brand-primary">
-            {name}
-          </code>
-          <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#94a3b8]">
-            Image placeholder
-          </span>
+          ) : (
+            <span className="text-sm font-semibold text-[#334155]">Preview coming soon</span>
+          )}
         </div>
         <div
           className="pointer-events-none absolute inset-0 opacity-50"

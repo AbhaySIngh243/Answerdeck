@@ -1,6 +1,6 @@
 import React from 'react';
 import StaticPage from './StaticPage';
-import { SUPPORT_EMAIL_DEV, SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
+import { SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 export default function PrivacyPage() {
   return (
@@ -238,20 +238,11 @@ export default function PrivacyPage() {
         <p>
           If you have questions about this Privacy Policy or our privacy practices, contact us at:
         </p>
-        <ul className="list-disc space-y-1 pl-5">
-          <li>
-            <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className="text-brand-primary hover:underline">
-              {SUPPORT_EMAIL_HELLO}
-            </a>{' '}
-            (general and privacy inquiries)
-          </li>
-          <li>
-            <a href={`mailto:${SUPPORT_EMAIL_DEV}`} className="text-brand-primary hover:underline">
-              {SUPPORT_EMAIL_DEV}
-            </a>{' '}
-            (technical support)
-          </li>
-        </ul>
+        <p>
+          <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className="text-brand-primary hover:underline">
+            {SUPPORT_EMAIL_HELLO}
+          </a>
+        </p>
       </section>
     </StaticPage>
   );

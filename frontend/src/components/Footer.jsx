@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import BrandLogo from './BrandLogo';
-import { SUPPORT_EMAIL_DEV, SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
+import { SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 const PRODUCT_LINKS = [
   { label: 'Features', href: '/#platform', external: false },
@@ -90,12 +90,6 @@ const Footer = () => {
               className="transition-colors hover:text-brand-primary"
             >
               {SUPPORT_EMAIL_HELLO}
-            </a>
-            <a
-              href={`mailto:${SUPPORT_EMAIL_DEV}`}
-              className="transition-colors hover:text-brand-primary"
-            >
-              {SUPPORT_EMAIL_DEV}
             </a>
           </div>
         </div>

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import StaticPage from './StaticPage';
-import { SUPPORT_EMAIL_DEV, SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
+import { SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 export default function AboutPage() {
   return (
@@ -34,10 +34,6 @@ export default function AboutPage() {
           Reach us at{' '}
           <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className="text-brand-primary hover:underline">
             {SUPPORT_EMAIL_HELLO}
-          </a>{' '}
-          or{' '}
-          <a href={`mailto:${SUPPORT_EMAIL_DEV}`} className="text-brand-primary hover:underline">
-            {SUPPORT_EMAIL_DEV}
           </a>
           . You can also start tracking your brand on the{' '}
           <Link to="/" className="text-brand-primary">

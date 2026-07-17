@@ -479,7 +479,7 @@ function promptQualityScore(prompt, brandName) {
   const brandLower = String(brandName || '').toLowerCase().trim();
   if (brandLower && brandLower.length >= 2 && lower.includes(brandLower)) {
     score -= 35;
-    reasons.push('Remove your brand name — test how LLMs answer without it.');
+    reasons.push('Remove your brand name — test how AI engines answer without it.');
   }
 
   if (/\b(vs|versus)\b/.test(lower)) {

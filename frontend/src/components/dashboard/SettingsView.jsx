@@ -229,21 +229,14 @@ const SettingsView = () => {
             <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-xs text-amber-900">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <div>
-                <p className="font-semibold">Sandbox billing setup</p>
-                <ul className="mt-0.5 list-disc pl-4">
-                  {!billingHealth.keys_configured ? (
-                    <li>Cashfree API keys are missing on the server.</li>
-                  ) : null}
-                  {!billingHealth.webhook_secret_configured ? (
-                    <li>
-                      Set CASHFREE_WEBHOOK_SECRET in backend env and match it in the Cashfree Dashboard
-                      webhook config before going live.
-                    </li>
-                  ) : null}
-                  {!billingHealth.webhook_url_ready ? (
-                    <li>Set API_PUBLIC_URL to the public HTTPS backend URL used by Cashfree webhooks.</li>
-                  ) : null}
-                </ul>
+                <p className="font-semibold">Payments are temporarily unavailable</p>
+                <p>
+                  We could not start secure checkout right now. Please email{' '}
+                  <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className="font-semibold underline">
+                    {SUPPORT_EMAIL_HELLO}
+                  </a>{' '}
+                  and we will help you activate the plan.
+                </p>
               </div>
             </div>
           ) : null}
@@ -319,7 +312,7 @@ const SettingsView = () => {
                     Your {pendingPlanKey === 'pro' ? 'Pro' : 'Standard'} order ({pendingPlanPrice}) is awaiting
                     payment. Continue to Cashfree&apos;s secure checkout to pay with {paymentMethods}.
                   </p>
-                  {sandbox ? (
+                  {sandbox && import.meta.env.DEV ? (
                     <p className="mt-2 leading-relaxed">
                       <span className="font-medium">Sandbox test:</span>{' '}
                       {currency === 'INR' ? (

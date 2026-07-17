@@ -86,7 +86,7 @@ const modules = [
 
 const stats = [
   { value: '4', label: 'AI engines tracked', sub: 'ChatGPT, Gemini, Perplexity, Claude' },
-  { value: '6', label: 'Connected modules', sub: 'One workspace, end to end' },
+  { value: '7', label: 'Connected modules', sub: 'One workspace, end to end' },
   { value: 'PDF + CSV', label: 'Shareable exports', sub: 'Report on your terms' },
   { value: '$0', label: 'To get started', sub: 'No card required' },
 ];
@@ -103,8 +103,7 @@ const ProductSuiteTabs = () => {
           <h2 className="heading-section mt-2">The complete workspace for AI search</h2>
           <div className="accent-heading-rule" />
           <p className="mx-auto mt-6 max-w-[600px] text-base leading-relaxed text-[#64748b] sm:text-[17px]">
-            Every module connects measurement to action. These are the same views you use after onboarding, not a
-            marketing mockup.
+            Every module connects measurement to action — the same views you use after onboarding.
           </p>
         </div>
 

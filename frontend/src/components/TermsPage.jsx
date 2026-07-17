@@ -1,6 +1,6 @@
 import React from 'react';
 import StaticPage from './StaticPage';
-import { SUPPORT_EMAIL_DEV, SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
+import { SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 export default function TermsPage() {
   return (
@@ -13,7 +13,7 @@ export default function TermsPage() {
         <p>
           Answrdeck is a brand visibility monitoring product. You agree to use it only for
           lawful market research purposes, and not to impersonate another brand, scrape other
-          users&apos; content, or abuse the LLM/search APIs we call on your behalf.
+          users&apos; content, or misuse the AI and search tools we use to run your analysis.
         </p>
       </section>
 
@@ -28,11 +28,11 @@ export default function TermsPage() {
       </section>
 
       <section>
-        <h2 className="text-xl font-semibold text-slate-900">No guarantees about LLM output</h2>
+        <h2 className="text-xl font-semibold text-slate-900">No guarantees about AI answers</h2>
         <p>
-          The analysis surfaces raw responses from third-party LLMs. While Answrdeck verifies
-          cited URLs and filters unsupported brand claims, we cannot guarantee the accuracy of any
-          statement an LLM makes. Use the outputs as market intelligence, not legal or medical
+          Answrdeck surfaces responses from third-party AI answer engines. While we verify
+          cited URLs and filter unsupported brand claims, we cannot guarantee the accuracy of any
+          statement an AI system makes. Use the outputs as market intelligence, not legal or medical
           advice.
         </p>
       </section>
@@ -41,7 +41,7 @@ export default function TermsPage() {
         <h2 className="text-xl font-semibold text-slate-900">Changes</h2>
         <p>
           We may update these terms to reflect new features or legal requirements. Material
-          changes will be emailed to the address on your Clerk account at least 14 days in
+          changes will be emailed to the address on your account at least 14 days in
           advance.
         </p>
       </section>
@@ -52,12 +52,8 @@ export default function TermsPage() {
           Questions about these terms, your account, or the service? Reach us at{' '}
           <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className="text-brand-primary hover:underline">
             {SUPPORT_EMAIL_HELLO}
-          </a>{' '}
-          for general inquiries, or{' '}
-          <a href={`mailto:${SUPPORT_EMAIL_DEV}`} className="text-brand-primary hover:underline">
-            {SUPPORT_EMAIL_DEV}
-          </a>{' '}
-          for technical support.
+          </a>
+          .
         </p>
       </section>
     </StaticPage>

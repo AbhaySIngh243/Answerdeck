@@ -1176,7 +1176,7 @@ const ProjectDetailView = () => {
                             <div className="px-6 pb-6">
                               <CoverageEmptyState
                                 coverage={summaryCoverage}
-                                title="No summary signal yet"
+                                title="No summary yet"
                                 message="Run a prompt with model answers to generate a dashboard summary from real data."
                               />
                             </div>
@@ -1583,8 +1583,8 @@ const ProjectDetailView = () => {
                     <div className="px-6 py-8">
                       <CoverageEmptyState
                         coverage={competitorIntel?.coverage}
-                        title="No competitor signal yet"
-                        message="No competitors were extracted from the measured answers yet. Run or rerun a prompt to generate real brand mentions."
+                        title="No competitors found yet"
+                        message="No competitors were found in the measured answers yet. Run or rerun a prompt to generate real brand mentions."
                       />
                     </div>
                   ) : (
@@ -1872,7 +1872,7 @@ const ProjectDetailView = () => {
                           <div className="p-6">
                             <CoverageEmptyState
                               coverage={opportunitiesCoverage}
-                              title="No action signal yet"
+                              title="No actions yet"
                               message="No evidence-backed actions were found yet. Run a prompt with model answers so recommendations can be tied to real responses."
                             />
                           </div>
@@ -1892,7 +1892,7 @@ const ProjectDetailView = () => {
                             <div className="mb-2 flex flex-wrap items-center gap-2">
                               <h3 className="text-lg font-bold text-slate-900">Pinpointed Retrieval Points</h3>
                             </div>
-                            <p className="mb-4 text-sm text-slate-500">Specific articles, threads, and videos LLMs lean on. Ranked by how many of your queries they show up in.</p>
+                            <p className="mb-4 text-sm text-slate-500">Specific articles, threads, and videos AI engines lean on. Ranked by how many of your queries they show up in.</p>
                             <div className="mb-6 space-y-3">
                               {points.length === 0 ? (
                                 <p className="px-2 text-xs text-slate-500">Run a fresh analysis to identify specific deep links.</p>
@@ -1918,10 +1918,10 @@ const ProjectDetailView = () => {
                               )}
                             </div>
                             <h3 className="mb-2 text-lg font-bold text-slate-900">High-Impact Retrieval Domains</h3>
-                            <p className="mb-4 text-sm text-slate-500">Domains frequently used by search-enabled LLMs for your niche. Ranked by cross-query reach.</p>
+                            <p className="mb-4 text-sm text-slate-500">Domains frequently used by AI answer engines for your niche. Ranked by cross-query reach.</p>
                             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
                               {domains.length === 0 && (
-                                <p className="col-span-full px-2 text-xs text-slate-500">No domain signal yet.</p>
+                                <p className="col-span-full px-2 text-xs text-slate-500">No domains found yet.</p>
                               )}
                               {domains.map((item) => {
                                 const nQueries = Number(item.n_queries || 0);
@@ -2087,7 +2087,7 @@ const ProjectDetailView = () => {
                     ) : null;
                   })()}
                   {toArray(promptDetailData.raw_responses).length === 0 ? (
-                    <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No model answer signals are available yet.</p>
+                    <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No model answers are available yet.</p>
                   ) : (
                     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                       {toArray(promptDetailData.raw_responses).map((response) => {

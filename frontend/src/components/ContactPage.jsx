@@ -1,6 +1,6 @@
 import React from 'react';
 import StaticPage from './StaticPage';
-import { SUPPORT_EMAIL_DEV, SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
+import { SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 const linkClass = 'text-brand-primary hover:underline';
 
@@ -9,16 +9,10 @@ export default function ContactPage() {
     <StaticPage title="Contact" subtitle="We reply fast — usually within one business day.">
       <section className="space-y-4">
         <p>
-          For sales, partnerships, product questions, privacy, billing, or general support, email{' '}
+          For sales, partnerships, product questions, privacy, billing, technical help, or general
+          support, email{' '}
           <a href={`mailto:${SUPPORT_EMAIL_HELLO}`} className={linkClass}>
             {SUPPORT_EMAIL_HELLO}
-          </a>
-          .
-        </p>
-        <p>
-          For technical issues, bugs, or platform help, email{' '}
-          <a href={`mailto:${SUPPORT_EMAIL_DEV}`} className={linkClass}>
-            {SUPPORT_EMAIL_DEV}
           </a>
           . Include the email on your account when relevant.
         </p>

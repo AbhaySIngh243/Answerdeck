@@ -28,7 +28,7 @@ function timeoutHintMessage(timeoutMs) {
   if (apiBaseLooksLocal()) {
     return `Request timed out after ${timeoutMs}ms. For local dev: confirm the backend is running (e.g. python app.py in backend/), then retry. Slow LLM work uses a longer limit — set VITE_API_LONG_TIMEOUT_MS in frontend/.env if needed (default ${LONG_REQUEST_TIMEOUT_MS}ms for those routes).`;
   }
-  return `Request timed out after ${timeoutMs}ms. Check VITE_API_BASE_URL, CORS on the server, and that the API host is up.`;
+  return 'This is taking longer than expected. Please try again in a moment. If it keeps happening, email hello@answrdeck.com.';
 }
 
 function sleep(ms) {
@@ -191,7 +191,9 @@ async function request(path, options = {}) {
     throw new Error(String(lastErr));
   }
   throw new Error(
-    `Request failed (${method} ${url}). If this persists, confirm the API is running and VITE_API_BASE_URL matches it.`,
+    apiBaseLooksLocal()
+      ? `Request failed (${method} ${url}). If this persists, confirm the API is running and VITE_API_BASE_URL matches it.`
+      : 'Something went wrong. Please try again. If it keeps happening, email hello@answrdeck.com.',
   );
 }
 
