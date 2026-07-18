@@ -32,7 +32,7 @@ const PlatformBento = () => {
           </p>
         </div>
 
-        <div className="group/visual overflow-hidden rounded-2xl border border-[#e2e8f0] shadow-lg shadow-slate-900/[0.06]">
+        <div className="group/visual mx-auto max-w-5xl overflow-hidden rounded-2xl border border-[#e2e8f0] shadow-lg shadow-slate-900/[0.06]">
           <img
             src="/dashboard.png"
             alt="Answrdeck project dashboard with visibility trends, KPIs, and prompt performance"

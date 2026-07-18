@@ -1,4 +1,4 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Show, SignInButton, SignUpButton, UserButton } from '@clerk/react';
@@ -12,6 +12,8 @@ import PrivacyPage from './components/PrivacyPage';
 import TermsPage from './components/TermsPage';
 import AboutPage from './components/AboutPage';
 import ContactPage from './components/ContactPage';
+import HowItWorksPage from './components/HowItWorksPage';
+import PricingPage from './components/PricingPage';
 import CookieConsentBanner from './components/CookieConsentBanner';
 
 const DashboardLayout = lazy(() => import('./components/dashboard/DashboardLayout'));
@@ -45,8 +47,28 @@ function hideFloatingClerkPath(pathname) {
     pathname.startsWith('/privacy') ||
     pathname.startsWith('/terms') ||
     pathname.startsWith('/about') ||
-    pathname.startsWith('/contact')
+    pathname.startsWith('/contact') ||
+    pathname.startsWith('/how-it-works') ||
+    pathname.startsWith('/pricing')
   );
+}
+
+function ScrollToTop() {
+  const { pathname, hash } = useLocation();
+
+  useEffect(() => {
+    if (hash) {
+      const id = hash.replace('#', '');
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+    }
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
+  }, [pathname, hash]);
+
+  return null;
 }
 
 function AppRoutes() {
@@ -55,6 +77,7 @@ function AppRoutes() {
 
   return (
     <>
+      <ScrollToTop />
       {showFloatingClerk ? (
         <div className="fixed z-50 flex items-center gap-2 pr-[max(1rem,env(safe-area-inset-right,0px))] pt-[max(1rem,env(safe-area-inset-top,0px))] right-0 top-0">
           <Show when="signed-out">
@@ -86,6 +109,8 @@ function AppRoutes() {
         <Route path="/terms" element={<TermsPage />} />
         <Route path="/about" element={<AboutPage />} />
         <Route path="/contact" element={<ContactPage />} />
+        <Route path="/how-it-works" element={<HowItWorksPage />} />
+        <Route path="/pricing" element={<PricingPage />} />
         {/* Clerk's "routing=path" may navigate to sub-routes under these paths. */}
         <Route path="/login/*" element={<LoginPage />} />
         <Route path="/signup/*" element={<SignupPage />} />

@@ -26,7 +26,7 @@ const ONBOARDING_SUGGESTIONS_TIMEOUT_MS = Number(
 
 function timeoutHintMessage(timeoutMs) {
   if (apiBaseLooksLocal()) {
-    return `Request timed out after ${timeoutMs}ms. For local dev: confirm the backend is running (e.g. python app.py in backend/), then retry. Slow LLM work uses a longer limit — set VITE_API_LONG_TIMEOUT_MS in frontend/.env if needed (default ${LONG_REQUEST_TIMEOUT_MS}ms for those routes).`;
+    return `Request timed out after ${timeoutMs}ms. For local dev: confirm the backend is running (e.g. python app.py in backend/), then retry. Slow LLM work uses a longer limit. Set VITE_API_LONG_TIMEOUT_MS in frontend/.env if needed (default ${LONG_REQUEST_TIMEOUT_MS}ms for those routes).`;
   }
   return 'This is taking longer than expected. Please try again in a moment. If it keeps happening, email hello@answrdeck.com.';
 }

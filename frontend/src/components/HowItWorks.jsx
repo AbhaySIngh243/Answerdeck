@@ -50,7 +50,7 @@ const HowItWorks = () => {
           ))}
         </ol>
 
-        <div className="group/visual mt-8 overflow-hidden rounded-2xl border border-[#e2e8f0] shadow-lg shadow-slate-900/[0.06]">
+        <div className="group/visual mx-auto mt-8 max-w-5xl overflow-hidden rounded-2xl border border-[#e2e8f0] shadow-lg shadow-slate-900/[0.06]">
           <img
             src="/onboarding.png"
             alt="Answrdeck project onboarding wizard"

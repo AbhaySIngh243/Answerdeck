@@ -6,7 +6,7 @@ const linkClass = 'text-brand-primary hover:underline';
 
 export default function ContactPage() {
   return (
-    <StaticPage title="Contact" subtitle="We reply fast — usually within one business day.">
+    <StaticPage title="Contact" subtitle="We reply fast, usually within one business day.">
       <section className="space-y-4">
         <p>
           For sales, partnerships, product questions, privacy, billing, technical help, or general

@@ -123,11 +123,11 @@ export default function PrivacyPage() {
         <h2 className="text-xl font-semibold text-slate-900">Cookies</h2>
         <p>Answrdeck uses cookies and similar technologies to:</p>
         <ul className="list-disc space-y-1 pl-5">
-          <li>Maintain user sessions (essential — required to sign in and use the product)</li>
+          <li>Maintain user sessions (essential: required to sign in and use the product)</li>
           <li>Authenticate users (essential)</li>
           <li>Remember preferences</li>
-          <li>Analyze website traffic (optional — only after consent)</li>
-          <li>Measure marketing effectiveness (optional — only after consent)</li>
+          <li>Analyze website traffic (optional: only after consent)</li>
+          <li>Measure marketing effectiveness (optional: only after consent)</li>
         </ul>
         <p>
           You can accept or decline optional cookies via the banner on our website, or control cookie

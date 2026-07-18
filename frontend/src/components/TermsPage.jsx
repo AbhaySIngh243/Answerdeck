@@ -22,7 +22,7 @@ export default function TermsPage() {
         <p>
           Plans are one-time monthly payments processed securely via Cashfree. International cards are
           supported (your bank converts the amount at checkout); customers in India can also pay by UPI or
-          net banking. Pay again each month to renew. Cancelling from Settings stops renewal — access
+          net banking. Pay again each month to renew. Cancelling from Settings stops renewal. Access
           continues until the paid period ends.
         </p>
       </section>

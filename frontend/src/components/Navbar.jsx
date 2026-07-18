@@ -1,18 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import BrandLogo from './BrandLogo';
 
 const navLinks = [
-  { href: '#platform', label: 'Product' },
-  { href: '#how-it-works', label: 'How it works' },
-  { href: '#pricing', label: 'Pricing' },
+  { to: '/#platform', label: 'Product', hash: 'platform' },
+  { to: '/how-it-works', label: 'How it works' },
+  { to: '/pricing', label: 'Pricing' },
 ];
 
 const Navbar = () => {
   const { isSignedIn, signOut } = useAuth();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
@@ -38,6 +39,12 @@ const Navbar = () => {
 
   const closeMenu = () => setMenuOpen(false);
 
+  const isActive = (link) => {
+    if (link.to === '/how-it-works') return pathname === '/how-it-works';
+    if (link.to === '/pricing') return pathname === '/pricing';
+    return false;
+  };
+
   const sheetTop = 'max(4.25rem, calc(3.5rem + env(safe-area-inset-top, 0px)))';
 
   return (
@@ -52,11 +59,31 @@ const Navbar = () => {
             <BrandLogo to="/" variant="lockup" size="nav" className="min-w-0 shrink-0" onClick={closeMenu} />
 
             <div className="hidden items-center gap-10 text-sm font-medium text-[#64748b] md:flex">
-              {navLinks.map(({ href, label }) => (
-                <a key={href} href={href} className="transition-colors hover:text-brand-primary">
-                  {label}
-                </a>
-              ))}
+              {navLinks.map((link) => {
+                const active = isActive(link);
+                if (link.hash && pathname === '/') {
+                  return (
+                    <a
+                      key={link.to}
+                      href={`#${link.hash}`}
+                      className="transition-colors hover:text-brand-primary"
+                    >
+                      {link.label}
+                    </a>
+                  );
+                }
+                return (
+                  <Link
+                    key={link.to}
+                    to={link.to}
+                    className={`transition-colors hover:text-brand-primary ${
+                      active ? 'text-brand-primary' : ''
+                    }`}
+                  >
+                    {link.label}
+                  </Link>
+                );
+              })}
             </div>
 
             <div className="flex items-center gap-2 sm:gap-3">
@@ -125,16 +152,33 @@ const Navbar = () => {
             }}
           >
             <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-y-contain px-4 py-4">
-              {navLinks.map(({ href, label }) => (
-                <a
-                  key={href}
-                  href={href}
-                  className="touch-manipulation rounded-xl px-4 py-3.5 text-base font-medium text-[#334155] active:bg-slate-100"
-                  onClick={closeMenu}
-                >
-                  {label}
-                </a>
-              ))}
+              {navLinks.map((link) => {
+                const active = isActive(link);
+                if (link.hash && pathname === '/') {
+                  return (
+                    <a
+                      key={link.to}
+                      href={`#${link.hash}`}
+                      className="touch-manipulation rounded-xl px-4 py-3.5 text-base font-medium text-[#334155] active:bg-slate-100"
+                      onClick={closeMenu}
+                    >
+                      {link.label}
+                    </a>
+                  );
+                }
+                return (
+                  <Link
+                    key={link.to}
+                    to={link.to}
+                    className={`touch-manipulation rounded-xl px-4 py-3.5 text-base font-medium active:bg-slate-100 ${
+                      active ? 'bg-slate-50 text-brand-primary' : 'text-[#334155]'
+                    }`}
+                    onClick={closeMenu}
+                  >
+                    {link.label}
+                  </Link>
+                );
+              })}
               {!isSignedIn ? (
                 <>
                   <Link

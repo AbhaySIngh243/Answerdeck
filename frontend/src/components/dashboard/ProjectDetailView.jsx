@@ -495,7 +495,7 @@ const ProjectDetailView = () => {
       queriesLine: `Listed in a ranked order in ${withRank} of ${total} prompt${total === 1 ? '' : 's'}`,
       shareLine: `Named in about ${share} of model answers we measured`,
       topCompetitorLine: prominence
-        ? `By how often you're named you rank ${topPos} — but ${prominence}`
+        ? `By how often you're named you rank ${topPos}, but ${prominence}`
         : `By how often you're named you rank ${topPos}`,
     };
   }, [projectData]);
@@ -684,7 +684,7 @@ const ProjectDetailView = () => {
     if (attempt > MAX_POLL_ATTEMPTS) {
       setRunningPrompts((prev) => ({ ...prev, [promptId]: false }));
       activePollsRef.current.delete(jobId);
-      setRunError('Analysis is taking longer than expected. It may still finish in the background — refresh in a minute, or retry.');
+      setRunError('Analysis is taking longer than expected. It may still finish in the background. Refresh in a minute, or retry.');
       return;
     }
 
@@ -829,7 +829,7 @@ const ProjectDetailView = () => {
     return (
       <div className="glass-card-v2 border-red-200/60 bg-red-50/60 p-6 text-sm">
         <p className="font-semibold text-red-700">
-          {isAuth ? 'Session expired — please refresh the page' : 'Failed to load project'}
+          {isAuth ? 'Session expired. Please refresh the page' : 'Failed to load project'}
         </p>
         <p className="mt-1 text-xs text-red-500">{msg}</p>
         <button
@@ -967,7 +967,7 @@ const ProjectDetailView = () => {
 
       {sessionExpired && (
         <div className="rounded-xl border border-red-200/70 bg-red-50/70 px-4 py-3 text-sm text-red-900">
-          <p className="font-semibold">Session expired — refresh the page to reload dashboard panels.</p>
+          <p className="font-semibold">Session expired. Refresh the page to reload dashboard panels.</p>
           <button
             type="button"
             onClick={() => window.location.reload()}
@@ -1043,7 +1043,7 @@ const ProjectDetailView = () => {
                     <div className="flex items-start gap-3 rounded-xl border border-blue-200/60 bg-blue-50/60 px-5 py-3.5">
                       <Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
                       <div>
-                        <p className="text-sm font-medium text-slate-800">Early results — directional only</p>
+                        <p className="text-sm font-medium text-slate-800">Early results, directional only</p>
                         <p className="mt-0.5 text-xs text-slate-500">Based on {nResponses} model answer{nResponses === 1 ? '' : 's'} so far. Scores and rankings will stabilize as more prompts complete across engines.</p>
                       </div>
                     </div>
@@ -1167,7 +1167,7 @@ const ProjectDetailView = () => {
                                 )}
                               </div>
                               {intelSummaryError && !intelSummary && (
-                                <p className="mt-1 text-xs text-slate-500">Using measured dashboard metrics — full summary unavailable.</p>
+                                <p className="mt-1 text-xs text-slate-500">Using measured dashboard metrics. Full summary unavailable.</p>
                               )}
                             </div>
                             <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${healthBadgeStyle}`}>{overallHealth}</span>
@@ -2079,7 +2079,7 @@ const ProjectDetailView = () => {
                           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
                           <span>
                             {failed.length} of {expected} AI engines couldn't be reached for this run
-                            ({failed.map((f) => modelIdToName?.[f.engine] || f.engine).join(', ')}). Visibility is measured against the engines that responded — retry to restore full coverage.
+                            ({failed.map((f) => modelIdToName?.[f.engine] || f.engine).join(', ')}). Visibility is measured against the engines that responded. Retry to restore full coverage.
                           </span>
                         </div>
                         <button type="button" onClick={() => setPartialCoverage((prev) => { const next = { ...prev }; delete next[selectedPromptId]; return next; })} className="shrink-0 text-xs font-semibold text-amber-700 hover:text-amber-900">Dismiss</button>

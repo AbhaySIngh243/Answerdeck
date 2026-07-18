@@ -322,7 +322,7 @@ const DashboardHome = () => {
         {/* Latest Prompts from most recent project */}
         <motion.div variants={item}>
           <DashboardCard
-            title={latestProject ? `Prompts — ${latestProject.name}` : 'Latest Prompts'}
+            title={latestProject ? `Prompts: ${latestProject.name}` : 'Latest Prompts'}
             icon={Search}
             headerAction={
               latestProject ? (

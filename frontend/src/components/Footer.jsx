@@ -4,9 +4,9 @@ import BrandLogo from './BrandLogo';
 import { SUPPORT_EMAIL_HELLO } from '../lib/supportEmails';
 
 const PRODUCT_LINKS = [
-  { label: 'Features', href: '/#platform', external: false },
-  { label: 'Pricing', href: '/#pricing', external: false },
-  { label: 'How it works', href: '/#how-it-works', external: false },
+  { label: 'Features', href: '/#platform', useAnchor: true },
+  { label: 'Pricing', to: '/pricing' },
+  { label: 'How it works', to: '/how-it-works' },
 ];
 
 const COMPANY_LINKS = [
@@ -44,12 +44,21 @@ const Footer = () => {
             <ul className="space-y-3">
               {PRODUCT_LINKS.map((l) => (
                 <li key={l.label}>
-                  <a
-                    href={l.href}
-                    className="text-[13px] text-[#64748b] transition-colors hover:text-brand-primary"
-                  >
-                    {l.label}
-                  </a>
+                  {l.useAnchor ? (
+                    <a
+                      href={l.href}
+                      className="text-[13px] text-[#64748b] transition-colors hover:text-brand-primary"
+                    >
+                      {l.label}
+                    </a>
+                  ) : (
+                    <Link
+                      to={l.to}
+                      className="text-[13px] text-[#64748b] transition-colors hover:text-brand-primary"
+                    >
+                      {l.label}
+                    </Link>
+                  )}
                 </li>
               ))}
             </ul>

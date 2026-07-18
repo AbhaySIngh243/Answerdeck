@@ -117,7 +117,7 @@ const STEP_HELP = {
     tips: [
       {
         title: 'Use the name customers say',
-        body: 'Plain-language brand name — not the legal entity or holding company.',
+        body: 'Plain-language brand name, not the legal entity or holding company.',
       },
       {
         title: 'Use your primary domain',
@@ -125,7 +125,7 @@ const STEP_HELP = {
       },
       {
         title: '4–8 head-to-head competitors',
-        body: 'Direct alternatives buyers compare against — not marketplaces or parents.',
+        body: 'Direct alternatives buyers compare against, not marketplaces or parents.',
       },
     ],
   },
@@ -143,7 +143,7 @@ const STEP_HELP = {
       },
       {
         title: 'Skip your brand name',
-        body: 'We want to see how engines answer cold — without you in the prompt.',
+        body: 'We want to see how engines answer cold, without you in the prompt.',
       },
     ],
   },
@@ -153,7 +153,7 @@ const STEP_HELP = {
     tips: [
       {
         title: 'One-sentence promise',
-        body: 'Why customers pick you over the alternatives — in plain language.',
+        body: 'Why customers pick you over the alternatives, in plain language.',
       },
       {
         title: 'Concrete differentiators',
@@ -161,7 +161,7 @@ const STEP_HELP = {
       },
       {
         title: 'Pick a few priorities',
-        body: 'The 2–3 things you care about most — not everything.',
+        body: 'The 2–3 things you care about most, not everything.',
       },
     ],
   },
@@ -179,7 +179,7 @@ const STEP_HELP = {
       },
       {
         title: 'Need a hand?',
-        body: 'Use the ask box below — we can refine prompts or priorities for you.',
+        body: 'Use the ask box below. We can refine prompts or priorities for you.',
       },
     ],
   },
@@ -301,7 +301,7 @@ function OnboardingHelpPanel({ projectId, step, context }) {
         {askMutation.isError ? (
           <p className="mt-2 text-[11px] text-red-300">
             {askMutation.error?.message ||
-              'Assistant is offline right now — you can still keep moving.'}
+              'Assistant is offline right now. You can still keep moving.'}
           </p>
         ) : null}
       </div>
@@ -467,10 +467,10 @@ function promptQualityScore(prompt, brandName) {
 
   if (words.length < 5) {
     score -= 25;
-    reasons.push('Too short — aim for 5–12 words.');
+    reasons.push('Too short. Aim for 5–12 words.');
   } else if (words.length > 14) {
     score -= 15;
-    reasons.push('Too long — trim toward ~8 words.');
+    reasons.push('Too long. Trim toward ~8 words.');
   } else {
     score += 10;
   }
@@ -479,17 +479,17 @@ function promptQualityScore(prompt, brandName) {
   const brandLower = String(brandName || '').toLowerCase().trim();
   if (brandLower && brandLower.length >= 2 && lower.includes(brandLower)) {
     score -= 35;
-    reasons.push('Remove your brand name — test how AI engines answer without it.');
+    reasons.push('Remove your brand name. Test how AI engines answer without it.');
   }
 
   if (/\b(vs|versus)\b/.test(lower)) {
     score -= 15;
-    reasons.push('Avoid "vs" / "versus" — pure comparison prompts rank poorly.');
+    reasons.push('Avoid "vs" / "versus". Pure comparison prompts rank poorly.');
   }
 
   if (/\b(deals?|discounts?|coupons?|sales?|holiday|exclusive offers?|where can i find|cheapest|bargain)\b/.test(lower)) {
     score -= 40;
-    reasons.push('Avoid deal/coupon language — track category recommendations instead.');
+    reasons.push('Avoid deal/coupon language. Track category recommendations instead.');
   }
 
   if (/\b(best|top|leading|recommended|most reliable|brands)\b/.test(lower)) {
@@ -1042,7 +1042,7 @@ export default function ProjectOnboardingWizard() {
                 suggestedCompetitors.length === 0 &&
                 !suggestionsMutation.isPending && (
                   <p className="pt-1 text-xs text-slate-500">
-                    No competitor suggestions yet — type names above or retry with AI.
+                    No competitor suggestions yet. Type names above or retry with AI.
                   </p>
                 )}
               {suggestedCompetitors.length > 0 && (

@@ -399,7 +399,7 @@ const SettingsView = () => {
                       {checkoutBusy === 'pro' ? 'Opening...' : `Upgrade - Pro (${proPrice}/mo)`}
                     </Button>
                     <Button type="button" size="sm" variant="ghost" asChild>
-                      <Link to="/#pricing">View pricing</Link>
+                      <Link to="/pricing">View pricing</Link>
                     </Button>
                   </div>
                   <p className="text-xs leading-relaxed text-slate-500">
@@ -430,7 +430,7 @@ const SettingsView = () => {
                         End after this period
                       </Button>
                       <Button type="button" size="sm" variant="ghost" asChild>
-                        <Link to="/#pricing">Compare plans</Link>
+                        <Link to="/pricing">Compare plans</Link>
                       </Button>
                     </div>
                   ) : (

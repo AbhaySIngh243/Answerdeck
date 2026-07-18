@@ -217,7 +217,7 @@ export default function OnboardingAssistant({ projectId, step, context }) {
 
                   {askMutation.isError ? (
                     <p className="text-xs text-red-500">
-                      Assistant temporarily unavailable — you can still move forward.
+                      Assistant temporarily unavailable. You can still move forward.
                     </p>
                   ) : null}
                 </>

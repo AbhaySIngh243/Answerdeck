@@ -28,7 +28,7 @@ const SignupPage = () => {
             <BrandLogo variant="lockup" size="lg" />
           </Link>
           <p className="mt-3 text-sm text-[#64748b]">
-            Create your free account — no card required.
+            Create your free account. No card required.
           </p>
         </div>
         <div className="rounded-2xl border border-[#e2e8f0] bg-white p-4 shadow-[var(--shadow-premium)]">

@@ -54,9 +54,9 @@ const CTASection = () => {
             <Link to="/signup" className="btn-primary px-7 py-3.5 text-sm">
               Start free, no card required
             </Link>
-            <a href="#how-it-works" className="btn-secondary px-7 py-3.5 text-sm">
+            <Link to="/how-it-works" className="btn-secondary px-7 py-3.5 text-sm">
               See how it works
-            </a>
+            </Link>
           </div>
 
           <p className="mt-5 text-xs text-[#64748b]">

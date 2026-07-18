@@ -43,7 +43,7 @@ export default function CookieConsentBanner() {
           </p>
           <p className="mt-1 text-sm leading-relaxed text-[#64748b]">
             We use essential cookies to keep you signed in and run the product. Optional analytics
-            cookies help us understand traffic and improve Answrdeck — only loaded if you accept.{' '}
+            cookies help us understand traffic and improve Answrdeck. They are only loaded if you accept.{' '}
             <Link to="/privacy" className="font-medium text-brand-primary hover:underline">
               Privacy Policy
             </Link>
