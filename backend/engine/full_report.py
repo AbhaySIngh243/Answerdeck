@@ -128,16 +128,18 @@ def build_full_export_payload(
 ) -> dict[str, Any]:
     """Aggregate all dashboard/report data for export (uses cached builders)."""
     from engine.analyzer import generate_project_summary
-    from models import Project, Prompt
+    from models import DisplacementRecord, Project, Prompt
     from routes.reports import (
         _build_citation_economics_payload,
         _build_competitor_visibility,
+        _build_project_synthesis_summary,
         _build_prompt_detail_payload,
         _cache_get,
         _compute_overall_health,
         _get_or_build_dashboard_payload,
         _get_or_build_deep_analysis_payload,
         _get_or_build_global_audit_payload,
+        _get_or_build_movement_feed,
         _get_or_build_prompt_analysis_payload,
         _get_or_build_sources_payload,
         _project_competitor_framings,
@@ -154,6 +156,33 @@ def build_full_export_payload(
     global_audit = _get_or_build_global_audit_payload(project_id, project)
     citation_economics = _build_citation_economics_payload(project_id, user_id)
     competitor_framings = _project_competitor_framings(project_id)
+    movements = _get_or_build_movement_feed(project_id)
+    project_synthesis = _build_project_synthesis_summary(project_id, user_id)
+
+    prompt_rows_for_ids = Prompt.query.filter_by(project_id=project_id).all()
+    prompt_ids = [p.id for p in prompt_rows_for_ids]
+    prompt_text_by_id = {p.id: p.prompt_text for p in prompt_rows_for_ids}
+    displacement_rows: list[dict] = []
+    if prompt_ids:
+        for row in (
+            DisplacementRecord.query.filter(DisplacementRecord.prompt_id.in_(prompt_ids))
+            .order_by(DisplacementRecord.timestamp.desc())
+            .limit(80)
+            .all()
+        ):
+            displacement_rows.append(
+                {
+                    "prompt_text": prompt_text_by_id.get(row.prompt_id, ""),
+                    "engine": row.engine or "",
+                    "competitor_brand": row.competitor_brand or "",
+                    "displacement_context": row.displacement_context or "",
+                    "displacement_reason": row.displacement_reason or "",
+                    "rank_of_competitor": row.rank_of_competitor,
+                    "rank_of_focus": row.rank_of_focus,
+                    "cited_url": row.cited_url or "",
+                    "timestamp": row.timestamp or "",
+                }
+            )
 
     competitor_bundle = _build_competitor_visibility(project_id)
     competitors_raw = (
@@ -260,6 +289,9 @@ def build_full_export_payload(
         "competitors": competitors,
         "competitor_framings": competitor_framings,
         "prompt_details": prompt_details,
+        "movements": movements,
+        "project_synthesis": project_synthesis,
+        "displacements": displacement_rows,
     }
 
 
@@ -439,6 +471,62 @@ def render_full_report_csv(payload: dict[str, Any]) -> str:
             writer.writerow(["Recommended Action", action.get("title", ""), action.get("detail", "")])
         writer.writerow([])
 
+    section("Movements")
+    mov = payload.get("movements") or {}
+    mov_sum = mov.get("summary") or {}
+    for key in ("gains", "drops", "net_rank_delta", "events_count", "last_checked", "previous_check", "runs_recorded"):
+        if key in mov_sum:
+            writer.writerow([key, mov_sum.get(key)])
+    writer.writerow(["Severity", "Direction", "Engine", "Headline", "Detail", "From", "To"])
+    for e in _as_list(mov.get("events")):
+        if isinstance(e, dict):
+            writer.writerow([e.get("severity", ""), e.get("direction", ""), e.get("engine", ""), e.get("headline", ""), e.get("detail", ""), e.get("from", ""), e.get("to", "")])
+
+    section("Project Synthesis")
+    synth = payload.get("project_synthesis") or {}
+    writer.writerow(["Engines Mentioning", ", ".join(_as_list(synth.get("engines_mentioning")))])
+    writer.writerow(["Engines Not Mentioning", ", ".join(_as_list(synth.get("engines_not_mentioning")))])
+    for d in _as_list(synth.get("top_displacement_competitors")):
+        if isinstance(d, dict):
+            writer.writerow(["Displacer", d.get("brand", ""), d.get("count", "")])
+    for r in _as_list(synth.get("recurring_displacement_reasons")):
+        writer.writerow(["Displacement Reason", r])
+
+    section("Displacement Log")
+    writer.writerow(["Prompt", "Engine", "Competitor", "Comp Rank", "Focus Rank", "Reason", "Context", "Cited URL", "Timestamp"])
+    for d in _as_list(payload.get("displacements")):
+        writer.writerow([
+            d.get("prompt_text", ""), d.get("engine", ""), d.get("competitor_brand", ""),
+            d.get("rank_of_competitor", ""), d.get("rank_of_focus", ""),
+            d.get("displacement_reason", ""), d.get("displacement_context", ""),
+            d.get("cited_url", ""), d.get("timestamp", ""),
+        ])
+
+    deep = payload.get("deep_analysis") or {}
+    section("Content Gaps")
+    for m in _as_list(deep.get("missing_prompts")):
+        writer.writerow(["Missing Prompt", m])
+    for u in _as_list(deep.get("upload_targets")):
+        if isinstance(u, dict):
+            writer.writerow(["Upload Target", u.get("source", ""), u.get("count", "")])
+
+    section("LLM Summary")
+    writer.writerow(["Engine", "Mention Rate", "Avg Rank", "Responses", "Positive", "Neutral", "Negative", "Not Mentioned"])
+    for r in _as_list(deep.get("llm_summary")):
+        writer.writerow([
+            r.get("llm", ""), r.get("mention_rate", ""), r.get("avg_rank", ""), r.get("response_count", ""),
+            r.get("positive", ""), r.get("neutral", ""), r.get("negative", ""), r.get("not_mentioned", ""),
+        ])
+
+    ce = payload.get("citation_economics") or {}
+    moat = ce.get("citation_moat") or {}
+    section("Citation Moat")
+    for key in ("score", "status", "summary", "focus_cited_pct", "owned_cited_pct", "competitor_cited_pct"):
+        if key in moat:
+            writer.writerow([key, moat.get(key)])
+    for r in _as_list(moat.get("recommendations")):
+        writer.writerow(["Recommendation", r])
+
     section("Appendix \u2014 Raw Model Answers")
     writer.writerow(["Prompt", "Engine", "Timestamp", "Response Text", "Sources"])
     for detail in _as_list(payload.get("prompt_details")):
@@ -457,17 +545,20 @@ def render_full_report_csv(payload: dict[str, Any]) -> str:
 
 
 def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
-    """Render a visually stunning multi-section PDF using ReportLab Platypus."""
+    """Render a visually stunning, detail-dense multi-section PDF using ReportLab."""
     try:
         from reportlab.lib import colors as rl_colors
         from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
         from reportlab.lib.pagesizes import letter
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-        from reportlab.lib.units import inch, mm
+        from reportlab.lib.units import inch
+        from reportlab.pdfbase.pdfmetrics import stringWidth
         from reportlab.platypus import (
             BaseDocTemplate,
+            CondPageBreak,
             Flowable,
             Frame,
+            KeepTogether,
             NextPageTemplate,
             PageBreak,
             PageTemplate,
@@ -480,30 +571,27 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         raise RuntimeError("reportlab is required for PDF export") from exc
 
     W, H = letter
-    MARGIN = 0.6 * inch
+    MARGIN = 0.55 * inch
     CONTENT_W = W - 2 * MARGIN
 
     project = payload.get("project") or {}
     dashboard = payload.get("dashboard") or {}
     intel = payload.get("intel") or {}
+    deep = payload.get("deep_analysis") or {}
     project_name = _safe(project.get("name") or "Project", 80)
     gen_date = (payload.get("generated_at") or "")[:19].replace("T", " ")
-
-    # ── Color helper ─────────────────────────────────────────────────────
     C = rl_colors.HexColor
 
-    # ── Styles ───────────────────────────────────────────────────────────
     styles = getSampleStyleSheet()
 
     S_COVER_TITLE = ParagraphStyle(
         "CoverTitle", parent=styles["Title"],
-        fontSize=32, leading=38, textColor=C(WHITE),
-        alignment=TA_CENTER, spaceAfter=0,
-        fontName="Helvetica-Bold",
+        fontSize=30, leading=36, textColor=C(WHITE),
+        alignment=TA_CENTER, spaceAfter=0, fontName="Helvetica-Bold",
     )
     S_COVER_SUB = ParagraphStyle(
         "CoverSub", parent=styles["Normal"],
-        fontSize=13, leading=18, textColor=C("#CBD5E1"),
+        fontSize=12, leading=17, textColor=C("#CBD5E1"),
         alignment=TA_CENTER, spaceAfter=4,
     )
     S_COVER_SMALL = ParagraphStyle(
@@ -518,67 +606,58 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     )
     S_SECTION_DESC = ParagraphStyle(
         "SectionDesc", parent=styles["Normal"],
-        fontSize=9, leading=13, textColor=C(SLATE_500),
-        spaceAfter=10,
+        fontSize=9, leading=13, textColor=C(SLATE_500), spaceAfter=10,
     )
     S_SUB = ParagraphStyle(
         "SubHead", parent=styles["Heading2"],
-        fontSize=12, leading=16, textColor=C(BRAND_BLUE),
+        fontSize=11.5, leading=15, textColor=C(BRAND_BLUE),
         spaceBefore=12, spaceAfter=4, fontName="Helvetica-Bold",
     )
     S_BODY = ParagraphStyle(
         "Body", parent=styles["Normal"],
-        fontSize=9, leading=13.5, textColor=C(SLATE_900),
-        spaceAfter=4,
+        fontSize=9, leading=13.5, textColor=C(SLATE_900), spaceAfter=4,
     )
     S_BODY_ITALIC = ParagraphStyle(
-        "BodyItalic", parent=S_BODY,
-        textColor=C(SLATE_700),
+        "BodyItalic", parent=S_BODY, textColor=C(SLATE_700), fontName="Helvetica-Oblique",
     )
     S_SMALL = ParagraphStyle(
         "Small", parent=styles["Normal"],
-        fontSize=8, leading=11, textColor=C(SLATE_500),
-        spaceAfter=2,
+        fontSize=8, leading=11, textColor=C(SLATE_500), spaceAfter=2,
     )
     S_BULLET = ParagraphStyle(
-        "Bullet", parent=S_BODY,
-        leftIndent=14, bulletIndent=0,
-        spaceBefore=1, spaceAfter=1,
-    )
-    S_KPI_VALUE = ParagraphStyle(
-        "KPIValue", parent=styles["Normal"],
-        fontSize=22, leading=26, textColor=C(BRAND_BLUE_DARK),
-        alignment=TA_CENTER, fontName="Helvetica-Bold",
-    )
-    S_KPI_LABEL = ParagraphStyle(
-        "KPILabel", parent=styles["Normal"],
-        fontSize=8, leading=10, textColor=C(SLATE_500),
-        alignment=TA_CENTER,
+        "Bullet", parent=S_BODY, leftIndent=14, bulletIndent=0, spaceBefore=1, spaceAfter=1,
     )
     S_TOC = ParagraphStyle(
         "TOC", parent=styles["Normal"],
-        fontSize=11, leading=20, textColor=C(SLATE_700),
-        leftIndent=8,
-    )
-    S_FOOTER = ParagraphStyle(
-        "Footer", parent=styles["Normal"],
-        fontSize=7.5, textColor=C(SLATE_400),
+        fontSize=10.5, leading=18, textColor=C(SLATE_700), leftIndent=8,
     )
     S_TABLE_HEAD = ParagraphStyle(
         "THead", parent=styles["Normal"],
-        fontSize=8, leading=10, textColor=C(WHITE),
-        fontName="Helvetica-Bold",
+        fontSize=7.5, leading=10, textColor=C(WHITE), fontName="Helvetica-Bold",
     )
     S_TABLE_CELL = ParagraphStyle(
         "TCell", parent=styles["Normal"],
-        fontSize=8, leading=11, textColor=C(SLATE_900),
+        fontSize=7.5, leading=10.5, textColor=C(SLATE_900),
     )
     S_TABLE_CELL_SMALL = ParagraphStyle(
         "TCellSmall", parent=styles["Normal"],
-        fontSize=7.5, leading=10, textColor=C(SLATE_700),
+        fontSize=7, leading=9.5, textColor=C(SLATE_700),
+    )
+    S_QUOTE = ParagraphStyle(
+        "Quote", parent=S_BODY_ITALIC,
+        leftIndent=10, rightIndent=6, textColor=C(SLATE_700),
+        borderPadding=4, spaceBefore=2, spaceAfter=4,
+    )
+    S_CALLOUT = ParagraphStyle(
+        "CalloutPara", parent=styles["Normal"],
+        fontSize=8, leading=11.5, textColor=C(SLATE_900),
+    )
+    S_CALLOUT_TITLE = ParagraphStyle(
+        "CalloutTitle", parent=styles["Normal"],
+        fontSize=8.5, leading=11, textColor=C(BRAND_BLUE), fontName="Helvetica-Bold",
+        spaceAfter=3,
     )
 
-    # ── XML-escape ───────────────────────────────────────────────────────
     def esc(text: str) -> str:
         return (
             str(text or "")
@@ -593,11 +672,12 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     def PB(text: str) -> Paragraph:
         return Paragraph(f"\u2022 {esc(text)}", S_BULLET)
 
+    def PH(html: str, style=S_BODY) -> Paragraph:
+        return Paragraph(html, style)
+
     # ── Custom Flowables ─────────────────────────────────────────────────
 
     class AccentLine(Flowable):
-        """Thin colored horizontal rule."""
-
         def __init__(self, color=BRAND_BLUE, width_pct=1.0, thickness=2):
             super().__init__()
             self._color = color
@@ -612,13 +692,10 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         def draw(self):
             self.canv.setStrokeColor(C(self._color))
             self.canv.setLineWidth(self._thickness)
-            w = self.width * self._width_pct
-            self.canv.line(0, 2, w, 2)
+            self.canv.line(0, 2, self.width * self._width_pct, 2)
 
     class KPIStrip(Flowable):
-        """Row of KPI cards with value + label, drawn as rounded boxes."""
-
-        def __init__(self, items: list[tuple[str, str]], height=58):
+        def __init__(self, items: list[tuple[str, str]], height=56):
             super().__init__()
             self._items = items
             self._h = height
@@ -632,67 +709,125 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             n = len(self._items)
             if n == 0:
                 return
-            gap = 8
+            gap = 7
             card_w = (self.width - gap * (n - 1)) / n
             x = 0
             for value, label in self._items:
                 self.canv.setFillColor(C(SLATE_50))
                 self.canv.setStrokeColor(C(SLATE_200))
                 self.canv.setLineWidth(0.5)
-                self.canv.roundRect(x, 0, card_w, self._h, 6, fill=1, stroke=1)
-                self.canv.setFont("Helvetica-Bold", 18)
+                self.canv.roundRect(x, 0, card_w, self._h, 5, fill=1, stroke=1)
+                self.canv.setStrokeColor(C(BRAND_BLUE))
+                self.canv.setLineWidth(2)
+                self.canv.line(x + 4, self._h - 1, x + card_w - 4, self._h - 1)
+                val = str(value)[:18]
+                fs = 16 if len(val) <= 8 else 12
+                self.canv.setFont("Helvetica-Bold", fs)
                 self.canv.setFillColor(C(BRAND_BLUE_DARK))
-                self.canv.drawCentredString(
-                    x + card_w / 2, self._h / 2 + 4, str(value)
-                )
-                self.canv.setFont("Helvetica", 7.5)
+                self.canv.drawCentredString(x + card_w / 2, self._h / 2 + 3, val)
+                self.canv.setFont("Helvetica", 6.5)
                 self.canv.setFillColor(C(SLATE_500))
-                self.canv.drawCentredString(
-                    x + card_w / 2, self._h / 2 - 14, str(label)
-                )
+                self.canv.drawCentredString(x + card_w / 2, self._h / 2 - 12, str(label)[:28])
                 x += card_w + gap
 
-    class CalloutBox(Flowable):
-        """Colored callout box wrapping a list of text lines."""
+    class ScoreBar(Flowable):
+        """Horizontal score bar 0–100 with label."""
 
-        def __init__(self, lines: list[str], bg=SLATE_50, accent=BRAND_BLUE, title=""):
+        def __init__(self, label: str, value: Any, height=18):
             super().__init__()
-            self._lines = lines
-            self._bg = bg
-            self._accent = accent
-            self._title = title
+            self._label = label
+            try:
+                self._value = max(0.0, min(100.0, float(value)))
+            except (TypeError, ValueError):
+                self._value = None
+            self._h = height
 
         def wrap(self, aW, aH):
             self.width = aW
-            line_h = 13
-            self.height = (
-                max(len(self._lines) * line_h + 16, 30)
-                + (16 if self._title else 0)
-            )
+            self.height = self._h
             return self.width, self.height
 
         def draw(self):
-            self.canv.setFillColor(C(self._bg))
-            self.canv.roundRect(0, 0, self.width, self.height, 5, fill=1, stroke=0)
-            self.canv.setStrokeColor(C(self._accent))
-            self.canv.setLineWidth(3)
-            self.canv.line(0, 0, 0, self.height)
-            y = self.height - 14
-            if self._title:
-                self.canv.setFont("Helvetica-Bold", 9)
-                self.canv.setFillColor(C(self._accent))
-                self.canv.drawString(12, y, self._title)
-                y -= 16
+            label_w = min(140, self.width * 0.32)
+            bar_x = label_w + 6
+            bar_w = self.width - bar_x - 36
             self.canv.setFont("Helvetica", 8)
-            self.canv.setFillColor(C(SLATE_900))
-            for line in self._lines:
-                text = str(line or "")[:200]
-                self.canv.drawString(12, y, text)
-                y -= 13
+            self.canv.setFillColor(C(SLATE_700))
+            self.canv.drawString(0, 4, str(self._label)[:28])
+            self.canv.setFillColor(C(SLATE_100))
+            self.canv.roundRect(bar_x, 3, bar_w, 10, 3, fill=1, stroke=0)
+            if self._value is not None:
+                fill = GREEN_600 if self._value >= 70 else (AMBER_600 if self._value >= 40 else RED_600)
+                filled = max(2, bar_w * (self._value / 100.0))
+                self.canv.setFillColor(C(fill))
+                self.canv.roundRect(bar_x, 3, filled, 10, 3, fill=1, stroke=0)
+                self.canv.setFont("Helvetica-Bold", 8)
+                self.canv.setFillColor(C(SLATE_900))
+                self.canv.drawRightString(self.width, 4, f"{self._value:.0f}")
+            else:
+                self.canv.setFont("Helvetica", 8)
+                self.canv.setFillColor(C(SLATE_400))
+                self.canv.drawRightString(self.width, 4, "\u2014")
+
+    class Sparkline(Flowable):
+        """Simple line chart for visibility trend."""
+
+        def __init__(self, points: list[float], height=72, color=BRAND_BLUE):
+            super().__init__()
+            self._points = [float(p) for p in points if p is not None]
+            self._h = height
+            self._color = color
+
+        def wrap(self, aW, aH):
+            self.width = aW
+            self.height = self._h
+            return self.width, self.height
+
+        def draw(self):
+            if len(self._points) < 2:
+                self.canv.setFont("Helvetica", 8)
+                self.canv.setFillColor(C(SLATE_400))
+                self.canv.drawCentredString(self.width / 2, self._h / 2, "Not enough trend points yet")
+                return
+            pad_l, pad_r, pad_t, pad_b = 28, 8, 10, 16
+            plot_w = self.width - pad_l - pad_r
+            plot_h = self._h - pad_t - pad_b
+            lo = min(self._points)
+            hi = max(self._points)
+            if hi <= lo:
+                hi = lo + 1
+            self.canv.setStrokeColor(C(SLATE_200))
+            self.canv.setLineWidth(0.4)
+            for i in range(5):
+                y = pad_b + plot_h * i / 4
+                self.canv.line(pad_l, y, pad_l + plot_w, y)
+                val = lo + (hi - lo) * i / 4
+                self.canv.setFont("Helvetica", 6)
+                self.canv.setFillColor(C(SLATE_400))
+                self.canv.drawRightString(pad_l - 3, y - 2, f"{val:.0f}")
+            xs, ys = [], []
+            n = len(self._points)
+            for i, v in enumerate(self._points):
+                x = pad_l + (plot_w * i / (n - 1))
+                y = pad_b + plot_h * ((v - lo) / (hi - lo))
+                xs.append(x)
+                ys.append(y)
+            self.canv.setStrokeColor(C(self._color))
+            self.canv.setLineWidth(2)
+            p = self.canv.beginPath()
+            p.moveTo(xs[0], ys[0])
+            for x, y in zip(xs[1:], ys[1:]):
+                p.lineTo(x, y)
+            self.canv.drawPath(p, stroke=1, fill=0)
+            self.canv.setFillColor(C(self._color))
+            for x, y in zip(xs, ys):
+                self.canv.circle(x, y, 2.2, fill=1, stroke=0)
+            self.canv.setFont("Helvetica", 6.5)
+            self.canv.setFillColor(C(SLATE_500))
+            self.canv.drawString(pad_l, 2, f"Start {self._points[0]:.1f}")
+            self.canv.drawRightString(pad_l + plot_w, 2, f"Latest {self._points[-1]:.1f}")
 
     class SectionNumber(Flowable):
-        """Section number badge + title on one line with accent underline."""
-
         def __init__(self, number: int, title: str):
             super().__init__()
             self._num = number
@@ -700,48 +835,102 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
 
         def wrap(self, aW, aH):
             self.width = aW
-            self.height = 36
+            self.height = 34
             return self.width, self.height
 
         def draw(self):
-            badge_size = 22
+            badge = 22
             self.canv.setFillColor(C(BRAND_BLUE))
-            self.canv.roundRect(0, self.height - badge_size - 2, badge_size, badge_size, 4, fill=1, stroke=0)
-            self.canv.setFont("Helvetica-Bold", 11)
+            self.canv.roundRect(0, self.height - badge - 2, badge, badge, 4, fill=1, stroke=0)
+            self.canv.setFont("Helvetica-Bold", 10)
             self.canv.setFillColor(C(WHITE))
-            self.canv.drawCentredString(badge_size / 2, self.height - badge_size + 4, str(self._num))
-            self.canv.setFont("Helvetica-Bold", 16)
+            self.canv.drawCentredString(badge / 2, self.height - badge + 4, f"{self._num:02d}")
+            self.canv.setFont("Helvetica-Bold", 14)
             self.canv.setFillColor(C(BRAND_BLUE_DARK))
-            self.canv.drawString(badge_size + 10, self.height - badge_size + 2, self._title[:80])
+            self.canv.drawString(badge + 10, self.height - badge + 3, self._title[:78])
             self.canv.setStrokeColor(C(SLATE_200))
             self.canv.setLineWidth(0.5)
             self.canv.line(0, 0, self.width, 0)
 
     class HealthBadge(Flowable):
-        """Pill-shaped health status badge."""
-
-        def __init__(self, label: str, size="large"):
+        def __init__(self, label: str):
             super().__init__()
             self._label = label or "\u2014"
-            self._size = size
 
         def wrap(self, aW, aH):
             self.width = aW
-            self.height = 28 if self._size == "large" else 18
+            self.height = 28
             return self.width, self.height
 
         def draw(self):
             bg, fg = _health_color(self._label)
-            pill_w = min(160, self.width)
+            pill_w = min(170, self.width)
             x = (self.width - pill_w) / 2
             self.canv.setFillColor(C(bg))
-            self.canv.roundRect(x, 2, pill_w, self.height - 4, (self.height - 4) / 2, fill=1, stroke=0)
-            fs = 11 if self._size == "large" else 8
-            self.canv.setFont("Helvetica-Bold", fs)
+            self.canv.roundRect(x, 2, pill_w, 24, 12, fill=1, stroke=0)
+            self.canv.setFont("Helvetica-Bold", 11)
             self.canv.setFillColor(C(fg))
-            self.canv.drawCentredString(self.width / 2, (self.height - fs) / 2 + 1, self._label.upper())
+            self.canv.drawCentredString(self.width / 2, 9, self._label.upper())
 
-    # ── Table builder ────────────────────────────────────────────────────
+    class HBarChart(Flowable):
+        """Horizontal bar comparison chart."""
+
+        def __init__(self, rows: list[tuple[str, float]], height=None, max_val=100.0):
+            super().__init__()
+            self._rows = rows[:12]
+            self._max = max_val if max_val > 0 else 100.0
+            self._row_h = 16
+            self._h = height or max(40, len(self._rows) * self._row_h + 8)
+
+        def wrap(self, aW, aH):
+            self.width = aW
+            self.height = self._h
+            return self.width, self.height
+
+        def draw(self):
+            if not self._rows:
+                return
+            label_w = min(120, self.width * 0.28)
+            bar_area = self.width - label_w - 40
+            y = self.height - 14
+            for name, val in self._rows:
+                self.canv.setFont("Helvetica", 7.5)
+                self.canv.setFillColor(C(SLATE_700))
+                self.canv.drawString(0, y, str(name)[:22])
+                self.canv.setFillColor(C(SLATE_100))
+                self.canv.roundRect(label_w, y - 1, bar_area, 9, 2, fill=1, stroke=0)
+                filled = max(1.5, bar_area * (float(val) / self._max))
+                color = BRAND_BLUE if "focus" not in str(name).lower() else BRAND_BLUE_DARK
+                self.canv.setFillColor(C(color))
+                self.canv.roundRect(label_w, y - 1, filled, 9, 2, fill=1, stroke=0)
+                self.canv.setFont("Helvetica-Bold", 7)
+                self.canv.setFillColor(C(SLATE_900))
+                self.canv.drawRightString(self.width, y, f"{float(val):.1f}%")
+                y -= self._row_h
+
+    def make_callout(lines: list[str], bg=SLATE_50, accent=BRAND_BLUE, title="") -> Table:
+        """Wrapped callout using a Paragraph table (no truncation)."""
+        parts = []
+        if title:
+            parts.append(Paragraph(esc(title), ParagraphStyle(
+                "CT", parent=S_CALLOUT_TITLE, textColor=C(accent),
+            )))
+        for line in lines:
+            parts.append(Paragraph(esc(str(line)), S_CALLOUT))
+        if not parts:
+            parts = [Paragraph("\u2014", S_CALLOUT)]
+        inner = Table([[parts]], colWidths=[CONTENT_W - 12])
+        inner.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), C(bg)),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("BOX", (0, 0), (-1, -1), 0, C(bg)),
+            ("LINEBEFORE", (0, 0), (0, -1), 3.5, C(accent)),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        return inner
 
     def make_table(
         headers: list[str],
@@ -751,31 +940,29 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     ) -> Table:
         header_cells = [Paragraph(esc(h), S_TABLE_HEAD) for h in headers]
         data = [header_cells]
-        for i, row in enumerate(rows):
-            style_to_use = S_TABLE_CELL if len(str(row[0] if row else "")) < 60 else S_TABLE_CELL_SMALL
+        for row in rows:
+            style_to_use = S_TABLE_CELL if len(str(row[0] if row else "")) < 70 else S_TABLE_CELL_SMALL
             data.append([Paragraph(esc(str(c)), style_to_use) for c in row])
-
         tbl = Table(data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
         cmds: list = [
             ("BACKGROUND", (0, 0), (-1, 0), C(BRAND_BLUE_DARK)),
             ("TEXTCOLOR", (0, 0), (-1, 0), C(WHITE)),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C(WHITE), C(SLATE_50)]),
-            ("GRID", (0, 0), (-1, 0), 0, C(BRAND_BLUE_DARK)),
             ("LINEBELOW", (0, 0), (-1, 0), 1.5, C(BRAND_BLUE)),
             ("LINEBELOW", (0, 1), (-1, -1), 0.25, C(SLATE_200)),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-            ("TOPPADDING", (0, 0), (-1, 0), 7),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 7),
-            ("TOPPADDING", (0, 1), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, 0), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+            ("TOPPADDING", (0, 1), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
         ]
         if highlight_focus:
             for i, row in enumerate(rows, start=1):
-                if len(row) >= 6 and str(row[-1]).strip().lower() == "yes":
+                if row and str(row[-1]).strip().lower() == "yes":
                     cmds.append(("BACKGROUND", (0, i), (-1, i), C("#EFF6FF")))
                     cmds.append(("FONTNAME", (0, i), (0, i), "Helvetica-Bold"))
         tbl.setStyle(TableStyle(cmds))
@@ -787,170 +974,218 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     vis = dashboard.get("visibility_pct_current")
     score = dashboard.get("quality_score_current", dashboard.get("current_visibility_score"))
     health = intel.get("overall_health", "\u2014")
-
-    # ── PAGE TEMPLATES ───────────────────────────────────────────────────
+    site_pct = dashboard.get("official_site_cited_pct")
+    movements = payload.get("movements") or {}
+    synthesis = payload.get("project_synthesis") or {}
+    displacements = _as_list(payload.get("displacements"))
+    ce = payload.get("citation_economics") or {}
+    moat = ce.get("citation_moat") or {}
 
     def _cover_page(canvas_obj, doc_obj):
         canvas_obj.saveState()
         canvas_obj.setFillColor(C(COVER_BG))
         canvas_obj.rect(0, 0, W, H, fill=1, stroke=0)
+        # subtle accent band
+        canvas_obj.setFillColor(C("#1E293B"))
+        canvas_obj.rect(0, H - 120, W, 120, fill=1, stroke=0)
         canvas_obj.setStrokeColor(C(COVER_ACCENT))
-        canvas_obj.setLineWidth(4)
-        canvas_obj.line(MARGIN, H - 50, W - MARGIN, H - 50)
+        canvas_obj.setLineWidth(3)
+        canvas_obj.line(MARGIN, H - 48, W - MARGIN, H - 48)
+        canvas_obj.setFillColor(C(COVER_ACCENT))
+        canvas_obj.rect(0, 0, W, 6, fill=1, stroke=0)
         canvas_obj.setFont("Helvetica", 8)
         canvas_obj.setFillColor(C(SLATE_400))
-        canvas_obj.drawCentredString(W / 2, 30, FOOTER_TEXT)
+        canvas_obj.drawCentredString(W / 2, 22, FOOTER_TEXT)
         canvas_obj.restoreState()
 
     def _normal_page(canvas_obj, doc_obj):
         canvas_obj.saveState()
+        canvas_obj.setFillColor(C(SLATE_50))
+        canvas_obj.rect(0, H - 40, W, 40, fill=1, stroke=0)
         canvas_obj.setStrokeColor(C(BRAND_BLUE))
         canvas_obj.setLineWidth(2)
-        canvas_obj.line(MARGIN, H - 36, W - MARGIN, H - 36)
+        canvas_obj.line(0, H - 40, W, H - 40)
         canvas_obj.setFont("Helvetica-Bold", 7.5)
         canvas_obj.setFillColor(C(BRAND_BLUE))
-        canvas_obj.drawString(MARGIN, H - 30, "ANSWRDECK")
-        canvas_obj.setFont("Helvetica", 7.5)
+        canvas_obj.drawString(MARGIN, H - 26, "ANSWRDECK")
+        canvas_obj.setFont("Helvetica", 7)
         canvas_obj.setFillColor(C(SLATE_400))
-        canvas_obj.drawRightString(W - MARGIN, H - 30, f"{project_name}  |  AI Visibility Report")
+        canvas_obj.drawRightString(W - MARGIN, H - 26, f"{project_name}  |  AI Visibility Intelligence Report")
         canvas_obj.setStrokeColor(C(SLATE_200))
         canvas_obj.setLineWidth(0.5)
-        canvas_obj.line(MARGIN, 38, W - MARGIN, 38)
-        canvas_obj.setFont("Helvetica", 7.5)
+        canvas_obj.line(MARGIN, 36, W - MARGIN, 36)
+        canvas_obj.setFont("Helvetica", 7)
         canvas_obj.setFillColor(C(SLATE_400))
-        canvas_obj.drawString(MARGIN, 24, FOOTER_TEXT)
-        canvas_obj.drawRightString(W - MARGIN, 24, f"Page {doc_obj.page}")
+        canvas_obj.drawString(MARGIN, 22, FOOTER_TEXT)
+        canvas_obj.drawRightString(W - MARGIN, 22, f"Page {doc_obj.page}")
         canvas_obj.restoreState()
 
     buffer = io.BytesIO()
     frame_cover = Frame(MARGIN, MARGIN, CONTENT_W, H - 2 * MARGIN, id="cover")
-    frame_body = Frame(MARGIN, 52, CONTENT_W, H - 52 - 44, id="body")
-
-    doc = BaseDocTemplate(
-        buffer, pagesize=letter,
-        title=f"Answrdeck Report \u2014 {project_name}",
-    )
+    frame_body = Frame(MARGIN, 48, CONTENT_W, H - 48 - 44, id="body")
+    doc = BaseDocTemplate(buffer, pagesize=letter, title=f"Answrdeck Report \u2014 {project_name}")
     doc.addPageTemplates([
         PageTemplate(id="cover_tpl", frames=[frame_cover], onPage=_cover_page),
         PageTemplate(id="normal_tpl", frames=[frame_body], onPage=_normal_page),
     ])
 
-    # ─────────────────────────────────────────────────────────────────────
-    # COVER PAGE
-    # ─────────────────────────────────────────────────────────────────────
-    story.append(Spacer(1, 1.8 * inch))
-    story.append(P("ANSWRDECK", ParagraphStyle("BrandMark", parent=S_COVER_SUB, fontSize=11, textColor=C(COVER_ACCENT), fontName="Helvetica-Bold", letterSpacing=4)))
-    story.append(Spacer(1, 6))
+    # ── COVER ────────────────────────────────────────────────────────────
+    story.append(Spacer(1, 1.4 * inch))
+    story.append(P("ANSWRDECK", ParagraphStyle(
+        "BrandMark", parent=S_COVER_SUB, fontSize=11, textColor=C(COVER_ACCENT),
+        fontName="Helvetica-Bold",
+    )))
+    story.append(Spacer(1, 4))
     story.append(P("AI Visibility Intelligence Report", S_COVER_SUB))
-    story.append(Spacer(1, 0.5 * inch))
+    story.append(P("Board-ready competitive analysis across ChatGPT, Gemini, Claude & Perplexity",
+                    ParagraphStyle("CoverTag", parent=S_COVER_SMALL, fontSize=9)))
+    story.append(Spacer(1, 0.4 * inch))
     story.append(P(project_name, S_COVER_TITLE))
     story.append(Spacer(1, 6))
     meta_parts = [_safe(project.get("category") or "Uncategorized")]
     if project.get("region"):
-        meta_parts.append(project["region"])
+        meta_parts.append(str(project["region"]))
     if project.get("website_url"):
-        meta_parts.append(project["website_url"])
+        meta_parts.append(str(project["website_url"]))
     story.append(P("  \u2022  ".join(meta_parts), S_COVER_SUB))
-    story.append(Spacer(1, 0.6 * inch))
-    kpi_items = [
-        (_pct(vis), "VISIBILITY SCORE"),
-        (str(score) if score else "\u2014", "QUALITY SCORE"),
-        (health.upper(), "HEALTH STATUS"),
-        (str(cov.get("tier", "\u2014")).upper(), "CONFIDENCE TIER"),
-    ]
-    story.append(KPIStrip(kpi_items, height=60))
-    story.append(Spacer(1, 0.25 * inch))
-    site_pct = dashboard.get("official_site_cited_pct")
-    n_prompts = cov.get("n_prompts", 0)
-    n_engines = cov.get("n_engines", 0)
-    n_responses = cov.get("n_responses", 0)
+    story.append(Spacer(1, 0.45 * inch))
     story.append(KPIStrip([
-        (_pct(site_pct), "SITE CITED RATE"),
-        (_num(n_prompts), "PROMPTS TRACKED"),
-        (_num(n_engines), "ENGINES MEASURED"),
-        (_num(n_responses), "TOTAL RESPONSES"),
-    ], height=48))
-    story.append(Spacer(1, 0.6 * inch))
+        (_pct(vis), "VISIBILITY SCORE"),
+        (str(score) if score is not None else "\u2014", "QUALITY SCORE"),
+        (str(health).upper(), "HEALTH STATUS"),
+        (str(cov.get("tier", "\u2014")).upper(), "CONFIDENCE TIER"),
+    ], height=58))
+    story.append(Spacer(1, 0.18 * inch))
+    story.append(KPIStrip([
+        (_pct(site_pct), "OWNED SITE CITED"),
+        (_num(cov.get("n_prompts")), "PROMPTS TRACKED"),
+        (_num(cov.get("n_engines")), "ENGINES MEASURED"),
+        (_num(cov.get("n_responses")), "RESPONSES SAMPLED"),
+    ], height=46))
+    if moat.get("score") is not None:
+        story.append(Spacer(1, 0.15 * inch))
+        story.append(KPIStrip([
+            (str(moat.get("score")), "CITATION MOAT"),
+            (str(moat.get("status", "\u2014")).upper(), "MOAT STATUS"),
+            (_pct(moat.get("owned_cited_pct")), "OWNED CITE RATE"),
+            (_pct(moat.get("competitor_cited_pct")), "COMPETITOR CITE"),
+        ], height=46))
+    story.append(Spacer(1, 0.45 * inch))
     story.append(P(f"Generated {gen_date} UTC", S_COVER_SMALL))
     if payload.get("date_from") or payload.get("date_to"):
-        story.append(P(f"Trend range: {payload.get('date_from') or 'start'} to {payload.get('date_to') or 'now'}", S_COVER_SMALL))
+        story.append(P(
+            f"Trend window: {payload.get('date_from') or 'start'} \u2192 {payload.get('date_to') or 'now'}",
+            S_COVER_SMALL,
+        ))
+    story.append(P("Confidential  \u2022  For internal strategy use", S_COVER_SMALL))
 
     story.append(NextPageTemplate("normal_tpl"))
     story.append(PageBreak())
 
-    # ─────────────────────────────────────────────────────────────────────
-    # TABLE OF CONTENTS
-    # ─────────────────────────────────────────────────────────────────────
+    # ── TOC ──────────────────────────────────────────────────────────────
     story.append(P("Report Contents", S_SECTION))
-    story.append(AccentLine(BRAND_BLUE, 0.3))
-    story.append(Spacer(1, 12))
+    story.append(AccentLine(BRAND_BLUE, 0.28))
+    story.append(Spacer(1, 10))
     toc_items = [
-        ("01", "Executive Summary & Health Assessment"),
+        ("01", "Executive Summary & Scorecard"),
         ("02", "Brand Profile & Methodology"),
         ("03", "Visibility Trends & Trajectory"),
-        ("04", "AI Engine Performance"),
-        ("05", "Prompt Performance Analysis"),
-        ("06", "Competitive Intelligence"),
-        ("07", "Source & Citation Intelligence"),
-        ("08", "Visibility Audit \u2014 What's Lacking"),
-        ("09", "Strategic Recommendations"),
-        ("10", "Per-Prompt Deep Dives"),
-        ("11", "Prompt \u00d7 Engine Matrix"),
-        ("12", "Appendix: Raw AI Model Responses"),
+        ("04", "Momentum & Run-over-Run Movements"),
+        ("05", "AI Engine Performance"),
+        ("06", "Prompt Performance Analysis"),
+        ("07", "Content Gaps & Opportunity Surface"),
+        ("08", "Competitive Intelligence"),
+        ("09", "Displacement Intelligence"),
+        ("10", "Source, Citation & Moat Analysis"),
+        ("11", "Visibility Audit \u2014 What\u2019s Lacking"),
+        ("12", "Strategic Recommendations & Action Plan"),
+        ("13", "Per-Prompt Deep Dives"),
+        ("14", "Prompt \u00d7 Engine Matrix"),
+        ("15", "Appendix: Raw AI Model Responses"),
     ]
     for num, title in toc_items:
-        story.append(
-            Paragraph(
-                f'<font name="Helvetica-Bold" color="{BRAND_BLUE}">{num}</font>'
-                f'&#160;&#160;&#160;{esc(title)}',
-                S_TOC,
-            )
-        )
+        story.append(PH(
+            f'<font name="Helvetica-Bold" color="{BRAND_BLUE}">{num}</font>'
+            f'&#160;&#160;&#160;{esc(title)}',
+            S_TOC,
+        ))
+    story.append(Spacer(1, 16))
+    story.append(make_callout(
+        [
+            "How to read this report: Visibility = share of measured answers naming your brand. "
+            "Quality blends mention rate, average rank, and sentiment. Citation moat measures whether "
+            "mentions are backed by owned-domain sources versus competitor or third-party URLs.",
+        ],
+        bg=SLATE_50,
+        accent=BRAND_BLUE,
+        title="READING GUIDE",
+    ))
     story.append(PageBreak())
 
-    # ── Helper: section start ────────────────────────────────────────────
     sec_counter = [0]
 
-    def start_section(title: str, description: str = ""):
+    def start_section(title: str, description: str = "", *, force_page: bool = False):
+        """Flow sections onto the same page; only force_page starts fresh."""
         sec_counter[0] += 1
-        story.append(Spacer(1, 6))
-        story.append(SectionNumber(sec_counter[0], title))
-        story.append(Spacer(1, 8))
-        if description:
-            story.append(P(description, S_SECTION_DESC))
+        if force_page:
+            story.append(PageBreak())
+        elif sec_counter[0] > 1:
+            story.append(Spacer(1, 8))
+            story.append(AccentLine(SLATE_200, 1.0, 0.5))
+            story.append(Spacer(1, 4))
+            # Break only when there isn't even room for the header (~0.9")
+            story.append(CondPageBreak(0.9 * inch))
+        # Keep header + blurb together so a title never sits alone at page bottom
+        story.append(KeepTogether([
+            SectionNumber(sec_counter[0], title),
+            Spacer(1, 4),
+            *([P(description, S_SECTION_DESC)] if description else []),
+        ]))
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
     # 01 — EXECUTIVE SUMMARY
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
-        "Executive Summary & Health Assessment",
-        "A high-level overview of your brand's AI visibility posture, synthesized from all tracked prompts and engines.",
+        "Executive Summary & Scorecard",
+        "Board-level posture of your brand across every tracked buyer prompt and AI engine.",
     )
-    story.append(HealthBadge(health))
+    story.append(HealthBadge(str(health)))
     story.append(Spacer(1, 10))
+
+    # Scorecard bars
+    story.append(P("Visibility Scorecard", S_SUB))
+    try:
+        story.append(ScoreBar("Visibility %", vis))
+    except Exception:
+        pass
+    try:
+        story.append(ScoreBar("Quality score", score))
+    except Exception:
+        pass
+    if moat.get("score") is not None:
+        story.append(ScoreBar("Citation moat", moat.get("score")))
+    if site_pct is not None:
+        story.append(ScoreBar("Owned site cited %", site_pct))
+    story.append(Spacer(1, 8))
+
     exec_summary = intel.get("executive_summary", "")
     if exec_summary:
-        story.append(P(exec_summary, S_BODY))
-        story.append(Spacer(1, 6))
+        story.append(make_callout([exec_summary], bg=SLATE_50, accent=BRAND_BLUE, title="EXECUTIVE NARRATIVE"))
+        story.append(Spacer(1, 8))
 
     bullets = _as_list(intel.get("executive_bullets"))
     if bullets:
         story.append(P("Key Findings", S_SUB))
         for b in bullets:
-            story.append(PB(b))
-        story.append(Spacer(1, 6))
+            story.append(PB(str(b)))
 
     threats = _as_list(intel.get("competitive_threats"))
     if threats:
-        story.append(
-            CalloutBox(
-                threats[:6],
-                bg=RED_50,
-                accent=RED_600,
-                title="COMPETITIVE THREATS",
-            )
-        )
-        story.append(Spacer(1, 8))
+        story.append(Spacer(1, 6))
+        story.append(make_callout(
+            [str(t) for t in threats[:8]],
+            bg=RED_50, accent=RED_600, title="COMPETITIVE THREATS",
+        ))
 
     roadmap = _as_list(intel.get("strategic_roadmap"))
     if roadmap:
@@ -960,87 +1195,145 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                 story.append(PB(f"{item.get('phase', '')}: {item.get('action', '')}"))
             else:
                 story.append(PB(str(item)))
-        story.append(Spacer(1, 6))
 
     priority_prompts = _as_list(intel.get("top_priority_prompts"))
     if priority_prompts:
-        story.append(
-            CalloutBox(
-                priority_prompts[:5],
-                bg=AMBER_50,
-                accent=AMBER_600,
-                title="TOP PRIORITY PROMPTS",
-            )
-        )
-        story.append(Spacer(1, 8))
+        story.append(Spacer(1, 6))
+        story.append(make_callout(
+            [str(p) for p in priority_prompts[:6]],
+            bg=AMBER_50, accent=AMBER_600, title="TOP PRIORITY PROMPTS",
+        ))
 
     insight = dashboard.get("project_insight") or {}
-    if insight.get("insight_text"):
+    if insight.get("insight_text") or insight.get("consistent_competitors"):
         story.append(P("Cross-Prompt Intelligence", S_SUB))
-        story.append(P(insight["insight_text"], S_BODY_ITALIC))
+        if insight.get("insight_text"):
+            story.append(P(insight["insight_text"], S_BODY_ITALIC))
         if insight.get("framing_pattern"):
             story.append(P(f"Dominant framing pattern: {insight['framing_pattern']}", S_SMALL))
         adjs = _as_list(insight.get("recurring_adjectives"))
         if adjs:
-            story.append(P(f"Recurring adjectives: {', '.join(adjs[:12])}", S_SMALL))
+            story.append(P(f"Recurring adjectives: {', '.join(str(a) for a in adjs[:14])}", S_SMALL))
+        cons = _as_list(insight.get("consistent_competitors"))
+        if cons:
+            story.append(P(f"Competitors consistently named alongside you: {', '.join(str(c) for c in cons[:10])}", S_BODY))
 
-    story.append(PageBreak())
+    # Synthesis snapshot
+    if synthesis.get("top_displacement_competitors") or synthesis.get("recurring_displacement_reasons"):
+        story.append(P("Displacement Snapshot", S_SUB))
+        top_disp = _as_list(synthesis.get("top_displacement_competitors"))
+        if top_disp:
+            story.append(P(
+                "Top displacing brands: "
+                + ", ".join(
+                    f"{d.get('brand')} ({d.get('count')})"
+                    for d in top_disp[:6]
+                    if isinstance(d, dict)
+                ),
+                S_BODY,
+            ))
+        reasons = _as_list(synthesis.get("recurring_displacement_reasons"))
+        if reasons:
+            for r in reasons[:5]:
+                story.append(PB(str(r)))
 
-    # ─────────────────────────────────────────────────────────────────────
+
+    # ═════════════════════════════════════════════════════════════════════
     # 02 — METHODOLOGY
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
         "Brand Profile & Methodology",
-        "Configuration details, data coverage, and confidence assessment for this report.",
+        "Configuration, sample coverage, and how scores in this report are calculated.",
     )
     meta_rows = [
-        ["Brand Name", project.get("name", "")],
+        ["Brand name", project.get("name", "")],
         ["Category", project.get("category", "")],
         ["Region", project.get("region", "")],
         ["Website", project.get("website_url", "")],
-        ["Configured Competitors", ", ".join(_as_list(project.get("competitors"))[:12]) or "\u2014"],
-        ["Onboarding Status", "Complete" if project.get("context_ready") else "Incomplete"],
+        ["Configured competitors", ", ".join(_as_list(project.get("competitors"))[:14]) or "\u2014"],
+        ["Onboarding / ICP context", "Complete" if project.get("context_ready") else "Incomplete"],
+        ["Report generated (UTC)", gen_date],
     ]
-    story.append(make_table(
-        ["Parameter", "Value"],
-        meta_rows,
-        [2.0 * inch, CONTENT_W - 2.0 * inch],
-    ))
-    story.append(Spacer(1, 14))
+    if payload.get("date_from") or payload.get("date_to"):
+        meta_rows.append([
+            "Trend filter",
+            f"{payload.get('date_from') or 'start'} \u2192 {payload.get('date_to') or 'now'}",
+        ])
+    story.append(make_table(["Parameter", "Value"], meta_rows, [2.1 * inch, CONTENT_W - 2.1 * inch]))
+    story.append(Spacer(1, 12))
+
     story.append(P("Data Coverage", S_SUB))
     coverage_rows = [
-        ["Prompts Tracked", _num(cov.get("n_prompts"))],
-        ["AI Engines Measured", _num(cov.get("n_engines"))],
-        ["Responses Sampled", _num(cov.get("n_responses"))],
-        ["Queries With Responses", _num(cov.get("n_queries_with_responses"))],
-        ["Confidence Tier", str(cov.get("tier", "\u2014")).upper()],
-        ["Official Site Cited", f"{_pct(site_pct)} ({_num(dashboard.get('official_site_cited_count'))}/{_num(dashboard.get('official_site_responses_total'))})"],
+        ["Prompts tracked", _num(cov.get("n_prompts"))],
+        ["AI engines measured", _num(cov.get("n_engines"))],
+        ["Responses sampled", _num(cov.get("n_responses"))],
+        ["Queries with responses", _num(cov.get("n_queries_with_responses"))],
+        ["Confidence tier", str(cov.get("tier", "\u2014")).upper()],
+        [
+            "Official site cited",
+            f"{_pct(site_pct)} ({_num(dashboard.get('official_site_cited_count'))}/"
+            f"{_num(dashboard.get('official_site_responses_total'))})",
+        ],
     ]
-    story.append(make_table(
-        ["Metric", "Value"],
-        coverage_rows,
-        [2.0 * inch, CONTENT_W - 2.0 * inch],
+    story.append(make_table(["Metric", "Value"], coverage_rows, [2.1 * inch, CONTENT_W - 2.1 * inch]))
+    story.append(Spacer(1, 10))
+    story.append(make_callout(
+        [
+            "Visibility % = answers naming your brand \u00f7 total measured answers.",
+            "Quality score = mention-rate component + rank component + sentiment component (capped at 100).",
+            "Avg rank = mean position when mentioned (lower is better).",
+            "Citation moat = whether brand mentions are backed by owned URLs vs competitor/third-party sources.",
+            "Scope = latest response per prompt per engine unless a trend window is applied.",
+            "Engines covered typically include ChatGPT, Gemini, Claude, and Perplexity (based on prompt config).",
+        ],
+        bg=SLATE_50, accent=BRAND_BLUE, title="SCORING METHODOLOGY",
     ))
-    story.append(PageBreak())
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 03 — VISIBILITY TRENDS
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # 03 — TRENDS
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
         "Visibility Trends & Trajectory",
         "Historical visibility scores and competitive positioning over time.",
     )
     vis_trend = _as_list(dashboard.get("visibility_trend"))
+    spark_vals = []
+    for r in vis_trend:
+        try:
+            spark_vals.append(float(r.get("score", r.get("y"))))
+        except (TypeError, ValueError):
+            continue
+    if spark_vals:
+        story.append(P("Visibility Trajectory", S_SUB))
+        story.append(Sparkline(spark_vals, height=78))
+        story.append(Spacer(1, 8))
+        if len(spark_vals) >= 2:
+            delta = spark_vals[-1] - spark_vals[0]
+            direction = "improved" if delta > 0 else ("declined" if delta < 0 else "held flat")
+            story.append(P(
+                f"Over this window, visibility {direction} by {abs(delta):.1f} points "
+                f"({spark_vals[0]:.1f} \u2192 {spark_vals[-1]:.1f}).",
+                S_BODY,
+            ))
+
     if vis_trend:
-        trend_rows = [[str(r.get("date", r.get("x", ""))), str(r.get("score", r.get("y", "")))] for r in vis_trend]
-        story.append(make_table(["Date", "Visibility Score"], trend_rows, [2.0 * inch, 1.5 * inch]))
-        story.append(Spacer(1, 12))
+        story.append(P("Daily / Run Scores", S_SUB))
+        trend_rows = [
+            [str(r.get("date", r.get("x", ""))), str(r.get("score", r.get("y", "")))]
+            for r in vis_trend[-40:]
+        ]
+        story.append(make_table(["Date", "Visibility Score"], trend_rows, [2.2 * inch, 1.6 * inch]))
+        story.append(Spacer(1, 10))
 
     comp_trend = dashboard.get("competitor_visibility_trend") or {}
     if isinstance(comp_trend, dict) and comp_trend.get("series"):
-        story.append(P("30-Day Competitor Visibility Comparison", S_SUB))
+        story.append(P("Competitor Visibility Comparison", S_SUB))
         brands = _as_list(comp_trend.get("brands"))
-        series_map = {s.get("id"): s.get("data") or [] for s in _as_list(comp_trend.get("series")) if isinstance(s, dict)}
+        series_map = {
+            s.get("id"): s.get("data") or []
+            for s in _as_list(comp_trend.get("series"))
+            if isinstance(s, dict)
+        }
         max_len = max((len(series_map.get(b, [])) for b in brands), default=0)
         ct_rows = []
         for i in range(min(max_len, 30)):
@@ -1055,35 +1348,34 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                 else:
                     row_vals.append("")
             ct_rows.append([date_val] + row_vals)
-        if ct_rows:
-            widths = [1.2 * inch] + [max(0.7 * inch, (CONTENT_W - 1.2 * inch) / max(len(brands), 1))] * len(brands)
-            story.append(make_table(["Date"] + brands, ct_rows, widths))
-        story.append(Spacer(1, 12))
+        if ct_rows and brands:
+            widths = [1.1 * inch] + [max(0.65 * inch, (CONTENT_W - 1.1 * inch) / max(len(brands), 1))] * len(brands)
+            story.append(make_table(["Date"] + [str(b) for b in brands], ct_rows, widths))
+        story.append(Spacer(1, 10))
 
     trajectory = dashboard.get("trajectory") or {}
     if trajectory.get("summary_sentence"):
-        story.append(
-            CalloutBox(
-                [trajectory["summary_sentence"]],
-                bg=SLATE_50,
-                accent=BRAND_BLUE,
-                title="TRAJECTORY SUMMARY",
-            )
-        )
+        story.append(make_callout(
+            [trajectory["summary_sentence"]],
+            bg=SLATE_50, accent=BRAND_BLUE, title="TRAJECTORY SUMMARY",
+        ))
         story.append(Spacer(1, 8))
 
     new_displacers = _as_list(trajectory.get("new_displacers"))
     if new_displacers:
         story.append(P("New Displacing Competitors", S_SUB))
         for d in new_displacers:
-            story.append(PB(d))
+            story.append(PB(str(d)))
 
     framing_shifts = _as_list(trajectory.get("framing_shifts"))
     if framing_shifts:
         story.append(P("Framing Shifts by Engine", S_SUB))
         for shift in framing_shifts:
             if isinstance(shift, dict):
-                story.append(PB(f"{shift.get('engine', '')}: \"{shift.get('old_framing', '')}\" \u2192 \"{shift.get('new_framing', '')}\""))
+                story.append(PB(
+                    f"{shift.get('engine', '')}: \"{shift.get('old_framing', '')}\" "
+                    f"\u2192 \"{shift.get('new_framing', '')}\""
+                ))
 
     engine_trends = trajectory.get("engine_trends") or {}
     if engine_trends:
@@ -1092,22 +1384,87 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         for engine, t in engine_trends.items():
             if isinstance(t, dict):
                 delta = t.get("rank_delta")
-                direction = t.get("direction", "")
-                et_rows.append([engine, direction, str(delta) if delta is not None else "\u2014"])
+                et_rows.append([
+                    engine,
+                    str(t.get("direction", "")),
+                    str(delta) if delta is not None else "\u2014",
+                ])
         if et_rows:
             story.append(make_table(["Engine", "Direction", "Rank Delta"], et_rows))
 
-    story.append(PageBreak())
+    # ═════════════════════════════════════════════════════════════════════
+    # 04 — MOVEMENTS
+    # ═════════════════════════════════════════════════════════════════════
+    start_section(
+        "Momentum & Run-over-Run Movements",
+        "What changed since the previous measured run: gains, losses, rank moves, and new out-rankers.",
+    )
+    mov_summary = movements.get("summary") or {}
+    if movements.get("has_data"):
+        story.append(KPIStrip([
+            (_num(mov_summary.get("gains")), "GAINS"),
+            (_num(mov_summary.get("drops")), "DROPS"),
+            (str(mov_summary.get("net_rank_delta", "\u2014")), "NET RANK DELTA"),
+            (_num(mov_summary.get("events_count")), "EVENTS"),
+        ], height=48))
+        story.append(Spacer(1, 6))
+        story.append(P(
+            f"Compared {mov_summary.get('previous_check') or '\u2014'} \u2192 "
+            f"{mov_summary.get('last_checked') or '\u2014'} across "
+            f"{_num(mov_summary.get('runs_recorded'))} recorded runs.",
+            S_SMALL,
+        ))
+        events = _as_list(movements.get("events"))
+        if events:
+            story.append(P("Movement Feed", S_SUB))
+            ev_rows = [
+                [
+                    str(e.get("severity", "")).upper(),
+                    str(e.get("direction", "")),
+                    str(e.get("engine", "")),
+                    _safe(e.get("headline", ""), 70),
+                    _safe(e.get("detail", ""), 90),
+                    f"{e.get('from', '')} \u2192 {e.get('to', '')}",
+                ]
+                for e in events[:25]
+                if isinstance(e, dict)
+            ]
+            if ev_rows:
+                story.append(make_table(
+                    ["Severity", "Dir", "Engine", "Headline", "Detail", "Change"],
+                    ev_rows,
+                    [0.55 * inch, 0.45 * inch, 0.7 * inch, 1.5 * inch, 1.7 * inch, 1.1 * inch],
+                ))
+        elif not movements.get("has_history"):
+            story.append(make_callout(
+                ["Only one run is on record. Re-run analysis to unlock movement detection."],
+                bg=AMBER_50, accent=AMBER_600, title="NEEDS HISTORY",
+            ))
+    else:
+        story.append(make_callout(
+            ["No run-over-run metrics yet. Complete at least two analysis runs to populate momentum."],
+            bg=SLATE_50, accent=SLATE_400, title="NO MOVEMENT DATA",
+        ))
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 04 — ENGINE BREAKDOWN
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # 05 — ENGINE PERFORMANCE
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
         "AI Engine Performance",
-        "How each AI model (ChatGPT, Gemini, Claude, Perplexity) surfaces your brand.",
+        "How each model surfaces your brand — mention rate, rank, sentiment mix, and top sources.",
     )
     eng_data = _as_list(dashboard.get("engine_visibility"))
     if eng_data:
+        bar_rows = []
+        for r in eng_data:
+            try:
+                bar_rows.append((str(r.get("engine", "")), float(r.get("visibility_pct") or 0)))
+            except (TypeError, ValueError):
+                continue
+        if bar_rows:
+            story.append(P("Visibility by Engine", S_SUB))
+            story.append(HBarChart(bar_rows, max_val=max(100.0, max(v for _, v in bar_rows) or 100)))
+            story.append(Spacer(1, 8))
         eng_rows = [
             [
                 r.get("engine", ""),
@@ -1124,210 +1481,547 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         ))
     else:
         story.append(P("No engine data available yet. Run prompt analysis to populate.", S_BODY_ITALIC))
-    story.append(PageBreak())
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 05 — PROMPT PERFORMANCE
-    # ─────────────────────────────────────────────────────────────────────
+    llm_summary = _as_list(deep.get("llm_summary"))
+    if llm_summary:
+        story.append(P("Deep Engine Sentiment & Sources", S_SUB))
+        story.append(P(
+            "Per-engine mention rate with positive / neutral / negative / not-mentioned counts "
+            "and the domains most often cited in that engine\u2019s answers.",
+            S_SECTION_DESC,
+        ))
+        llm_rows = []
+        for r in llm_summary:
+            tops = _as_list(r.get("top_sources"))
+            top_str = ", ".join(
+                f"{t.get('source')} ({t.get('count')})"
+                for t in tops[:3]
+                if isinstance(t, dict)
+            )
+            llm_rows.append([
+                r.get("llm", ""),
+                _pct(r.get("mention_rate")),
+                _rank(r.get("avg_rank")),
+                _num(r.get("response_count")),
+                f"+{_num(r.get('positive'))} / ~{_num(r.get('neutral'))} / -{_num(r.get('negative'))}",
+                _num(r.get("not_mentioned")),
+                _safe(top_str, 70),
+            ])
+        story.append(make_table(
+            ["Engine", "Mention %", "Avg Rank", "N", "Sentiment +/~/-", "Absent", "Top Sources"],
+            llm_rows,
+            [0.85 * inch, 0.65 * inch, 0.55 * inch, 0.4 * inch, 1.15 * inch, 0.5 * inch, CONTENT_W - 4.1 * inch],
+        ))
+
+    # ═════════════════════════════════════════════════════════════════════
+    # 06 — PROMPT PERFORMANCE
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
         "Prompt Performance Analysis",
-        "Visibility, rank, and sentiment for each tracked buyer query across all measured engines.",
+        "Visibility, quality, rank, and sentiment for every tracked buyer query.",
     )
     pa_data = _as_list((payload.get("prompt_analysis") or {}).get("rows"))
     if pa_data:
+        # Rank prompts by quality / visibility for a quick leaderboard
+        ranked = sorted(
+            pa_data,
+            key=lambda r: float(r.get("quality_score") or r.get("visibility_pct") or r.get("visibility") or 0),
+            reverse=True,
+        )
+        story.append(P("Prompt Leaderboard", S_SUB))
+        lead_rows = [
+            [
+                f"#{i}",
+                _safe(r.get("prompt_text", ""), 90),
+                _pct(r.get("visibility_pct", r.get("visibility"))),
+                str(r.get("quality_score", "\u2014")),
+                _rank(r.get("avg_rank")),
+                str(r.get("sentiment", "")),
+            ]
+            for i, r in enumerate(ranked[:15], start=1)
+        ]
+        story.append(make_table(
+            ["#", "Prompt", "Visibility", "Quality", "Avg Rank", "Sentiment"],
+            lead_rows,
+            [0.35 * inch, 3.0 * inch, 0.7 * inch, 0.6 * inch, 0.65 * inch, 0.7 * inch],
+        ))
+        story.append(Spacer(1, 10))
+        story.append(P("Full Prompt Table", S_SUB))
         pa_rows = [
             [
-                _safe(r.get("prompt_text", ""), 100),
+                _safe(r.get("prompt_text", ""), 85),
                 _pct(r.get("visibility_pct", r.get("visibility"))),
+                str(r.get("quality_score", "\u2014")),
                 _rank(r.get("avg_rank")),
                 str(r.get("sentiment", "")),
                 _num(r.get("engines_analyzed")),
+                str(r.get("prompt_type", "") or "\u2014"),
+                "Yes" if r.get("is_active") else "No",
             ]
             for r in pa_data
         ]
         story.append(make_table(
-            ["Prompt", "Visibility", "Avg Rank", "Sentiment", "Engines"],
+            ["Prompt", "Vis %", "Quality", "Rank", "Sentiment", "Engines", "Type", "Active"],
             pa_rows,
-            [3.0 * inch, 0.7 * inch, 0.6 * inch, 0.8 * inch, 0.6 * inch],
+            [2.3 * inch, 0.5 * inch, 0.55 * inch, 0.5 * inch, 0.7 * inch, 0.55 * inch, 0.55 * inch, 0.45 * inch],
         ))
+        weak = [r for r in pa_data if float(r.get("visibility_pct") or r.get("visibility") or 0) < 25]
+        if weak:
+            story.append(Spacer(1, 8))
+            story.append(make_callout(
+                [
+                    f"{len(weak)} prompt(s) sit below 25% visibility \u2014 prioritize content and citations for these queries."
+                ]
+                + [_safe(r.get("prompt_text", ""), 120) for r in weak[:6]],
+                bg=AMBER_50, accent=AMBER_600, title="LOW-VISIBILITY PROMPTS",
+            ))
     else:
         story.append(P("No prompt analysis data yet.", S_BODY_ITALIC))
-    story.append(PageBreak())
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 06 — COMPETITOR INTELLIGENCE
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # 07 — CONTENT GAPS
+    # ═════════════════════════════════════════════════════════════════════
+    start_section(
+        "Content Gaps & Opportunity Surface",
+        "Prompts where you never appear, domains worth winning, and retrieval points AI models lean on.",
+    )
+    missing = _as_list(deep.get("missing_prompts"))
+    if missing:
+        story.append(P("Zero-Mention Prompts (Content Gaps)", S_SUB))
+        story.append(P(
+            "These buyer queries returned measured answers with no brand mention across any engine. "
+            "They are the highest-leverage content opportunities.",
+            S_SECTION_DESC,
+        ))
+        for m in missing[:20]:
+            story.append(PB(str(m)))
+        story.append(Spacer(1, 8))
+    else:
+        story.append(make_callout(
+            ["No zero-mention prompts in the current sample \u2014 brand appears in at least one engine for every tracked query."],
+            bg=GREEN_50, accent=GREEN_600, title="NO HARD GAPS",
+        ))
+        story.append(Spacer(1, 8))
+
+    upload_targets = _as_list(deep.get("upload_targets"))
+    if upload_targets:
+        story.append(P("High-Value Domains to Win", S_SUB))
+        story.append(P(
+            "Domains most frequently cited across answers. Prioritize earning coverage, pages, or placements here.",
+            S_SECTION_DESC,
+        ))
+        ut_rows = [
+            [str(u.get("source", "")), _num(u.get("count"))]
+            for u in upload_targets[:15]
+            if isinstance(u, dict)
+        ]
+        if ut_rows:
+            story.append(make_table(["Domain / Source", "Citation Count"], ut_rows, [4.5 * inch, 1.2 * inch]))
+        story.append(Spacer(1, 10))
+
+    search_intel = deep.get("search_intel") or {}
+    if isinstance(search_intel, dict):
+        story.append(P("Search & Retrieval Intelligence", S_SUB))
+        if search_intel.get("enabled"):
+            story.append(P("Live search supplementation is enabled for this project.", S_SMALL))
+        retrieval = _as_list(search_intel.get("retrieval_points"))
+        if retrieval:
+            story.append(P("Retrieval Points", S_SUB))
+            for pt in retrieval[:15]:
+                if isinstance(pt, dict):
+                    story.append(PB(
+                        f"{pt.get('title') or pt.get('query') or pt.get('point') or pt}: "
+                        f"{_safe(pt.get('detail') or pt.get('summary') or pt.get('why') or '', 140)}"
+                    ))
+                else:
+                    story.append(PB(str(pt)))
+        domains_si = _as_list(search_intel.get("domains"))
+        if domains_si:
+            story.append(P("Research Domains", S_SUB))
+            for d in domains_si[:12]:
+                if isinstance(d, dict):
+                    story.append(PB(f"{d.get('domain', d.get('source', ''))}: {_safe(d.get('note') or d.get('why') or '', 120)}"))
+                else:
+                    story.append(PB(str(d)))
+        if not retrieval and not domains_si:
+            story.append(P("No retrieval-point enrichment available for this export window.", S_BODY_ITALIC))
+
+    # ═════════════════════════════════════════════════════════════════════
+    # 08 — COMPETITIVE INTELLIGENCE
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
         "Competitive Intelligence",
-        "How AI models rank and describe your brand relative to competitors across all tracked prompts.",
+        "Share of voice, quality scores, and how models frame each brand in their own words.",
     )
     comp_data = _as_list(payload.get("competitors"))
     if comp_data:
+        bar_comp = []
+        for r in comp_data[:10]:
+            try:
+                bar_comp.append((
+                    str(r.get("brand", "")),
+                    float(r.get("share_of_voice") or r.get("visibility_pct") or r.get("visibility_score") or 0),
+                ))
+            except (TypeError, ValueError):
+                continue
+        if bar_comp:
+            story.append(P("Share of Voice", S_SUB))
+            story.append(HBarChart(bar_comp, max_val=max(100.0, max(v for _, v in bar_comp) or 100)))
+            story.append(Spacer(1, 8))
+
         comp_rows = [
             [
                 r.get("brand", ""),
                 _pct(r.get("visibility_pct", r.get("visibility_score"))),
                 _pct(r.get("share_of_voice")),
+                str(r.get("quality_score", "\u2014")),
                 _num(r.get("mentions")),
                 _rank(r.get("avg_rank")),
+                "Yes" if r.get("is_target_competitor") else "",
                 "Yes" if r.get("is_focus") else "",
             ]
             for r in comp_data
         ]
         story.append(make_table(
-            ["Brand", "Visibility", "Share of Voice", "Mentions", "Avg Rank", "Focus"],
+            ["Brand", "Visibility", "SOV", "Quality", "Mentions", "Avg Rank", "Target", "Focus"],
             comp_rows,
             highlight_focus=True,
         ))
-        story.append(Spacer(1, 14))
+        # Quality component breakdown for top competitors
+        story.append(Spacer(1, 10))
+        story.append(P("Quality Score Components (Top Brands)", S_SUB))
+        qc_rows = []
+        for r in comp_data[:8]:
+            qc = r.get("quality_components") or {}
+            if not isinstance(qc, dict):
+                qc = {}
+            qc_rows.append([
+                r.get("brand", ""),
+                str(r.get("quality_score", "\u2014")),
+                str(qc.get("mention_rate_score", qc.get("mention_score", "\u2014"))),
+                str(qc.get("rank_score", "\u2014")),
+                str(qc.get("sentiment_score", "\u2014")),
+            ])
+        if qc_rows:
+            story.append(make_table(
+                ["Brand", "Quality", "Mention Comp.", "Rank Comp.", "Sentiment Comp."],
+                qc_rows,
+            ))
+            story.append(P(
+                "Quality = mention-rate score + rank score + sentiment score (capped at 100). "
+                "Use gaps in components to choose tactics (coverage vs ranking vs narrative).",
+                S_SMALL,
+            ))
+        story.append(Spacer(1, 10))
 
     framings = _as_list(payload.get("competitor_framings"))
     if framings:
         story.append(P("How AI Models Frame Competitors", S_SUB))
         story.append(P(
-            "Verbatim sentences extracted from AI model responses showing how competitors are positioned.",
+            "Verbatim sentences and framing adjectives extracted from model answers.",
             S_SECTION_DESC,
         ))
         framing_rows = [
             [
                 f.get("competitor_brand", ""),
                 f.get("engine", ""),
-                _safe(f.get("verbatim_sentence", ""), 180),
+                _safe(f.get("verbatim_sentence", ""), 160),
+                ", ".join(_as_list(f.get("framing_adjectives"))[:6]) or "\u2014",
             ]
-            for f in framings[:20]
+            for f in framings[:30]
         ]
         story.append(make_table(
-            ["Competitor", "Engine", "Verbatim Quote"],
+            ["Competitor", "Engine", "Verbatim Quote", "Adjectives"],
             framing_rows,
-            [1.2 * inch, 0.8 * inch, CONTENT_W - 2.0 * inch],
+            [1.1 * inch, 0.7 * inch, CONTENT_W - 2.9 * inch, 1.1 * inch],
         ))
-    story.append(PageBreak())
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 07 — SOURCES & CITATIONS
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # 09 — DISPLACEMENT
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
-        "Source & Citation Intelligence",
-        "Domains cited by AI models when answering your tracked prompts, classified by ownership type.",
+        "Displacement Intelligence",
+        "Moments where a competitor is preferred or ranked above your brand — with reasons and cited URLs.",
     )
+    top_disp = _as_list(synthesis.get("top_displacement_competitors"))
+    if top_disp:
+        story.append(P("Top Displacing Competitors", S_SUB))
+        disp_sum = [
+            [d.get("brand", ""), _num(d.get("count"))]
+            for d in top_disp
+            if isinstance(d, dict)
+        ]
+        story.append(make_table(["Competitor", "Displacement Events"], disp_sum, [3.0 * inch, 1.5 * inch]))
+        story.append(Spacer(1, 8))
+
+    reasons = _as_list(synthesis.get("recurring_displacement_reasons"))
+    if reasons:
+        story.append(P("Recurring Displacement Reasons", S_SUB))
+        for r in reasons[:10]:
+            story.append(PB(str(r)))
+        story.append(Spacer(1, 8))
+
+    eng_mention = _as_list(synthesis.get("engines_mentioning"))
+    eng_miss = _as_list(synthesis.get("engines_not_mentioning"))
+    if eng_mention or eng_miss:
+        story.append(P("Engine Mention Coverage (Synthesis)", S_SUB))
+        story.append(P(f"Engines mentioning focus: {', '.join(str(e) for e in eng_mention) or '\u2014'}", S_BODY))
+        story.append(P(f"Engines not mentioning focus: {', '.join(str(e) for e in eng_miss) or '\u2014'}", S_BODY))
+        story.append(Spacer(1, 8))
+
+    if displacements:
+        story.append(P("Displacement Event Log", S_SUB))
+        d_rows = [
+            [
+                _safe(d.get("prompt_text", ""), 55),
+                d.get("engine", ""),
+                d.get("competitor_brand", ""),
+                _rank(d.get("rank_of_competitor")),
+                _rank(d.get("rank_of_focus")),
+                _safe(d.get("displacement_reason", ""), 70),
+                _safe(d.get("cited_url", ""), 50),
+            ]
+            for d in displacements[:40]
+        ]
+        story.append(make_table(
+            ["Prompt", "Engine", "Competitor", "Comp Rank", "Your Rank", "Reason", "Cited URL"],
+            d_rows,
+            [1.4 * inch, 0.65 * inch, 0.9 * inch, 0.55 * inch, 0.55 * inch, 1.3 * inch, CONTENT_W - 5.35 * inch],
+        ))
+        # Context snippets
+        with_context = [d for d in displacements if d.get("displacement_context")][:8]
+        if with_context:
+            story.append(P("Displacement Context Snippets", S_SUB))
+            for d in with_context:
+                story.append(P(
+                    f"{d.get('competitor_brand')} on {d.get('engine')} \u2014 {_safe(d.get('prompt_text'), 60)}",
+                    S_SMALL,
+                ))
+                story.append(P(f"\u201c{_safe(d.get('displacement_context'), 280)}\u201d", S_QUOTE))
+    else:
+        story.append(make_callout(
+            ["No displacement records stored yet for this project."],
+            bg=SLATE_50, accent=SLATE_400, title="NO DISPLACEMENT LOG",
+        ))
+
+    disp_domains = _as_list(ce.get("displacement_citation_domains"))
+    if disp_domains:
+        story.append(P("Domains Cited in Displacement Events", S_SUB))
+        dd_rows = [
+            [
+                d.get("domain", ""),
+                _num(d.get("count")),
+                d.get("top_competitor", d.get("competitor", "")),
+            ]
+            for d in disp_domains[:15]
+            if isinstance(d, dict)
+        ]
+        if dd_rows:
+            story.append(make_table(["Domain", "Events", "Top Competitor"], dd_rows))
+
+    # ═════════════════════════════════════════════════════════════════════
+    # 10 — SOURCES & CITATION MOAT
+    # ═════════════════════════════════════════════════════════════════════
+    start_section(
+        "Source, Citation & Moat Analysis",
+        "Which domains AI models cite, how your owned site performs, and whether citations form a durable moat.",
+    )
+    if moat:
+        story.append(P("Citation Moat", S_SUB))
+        story.append(KPIStrip([
+            (str(moat.get("score", "\u2014")), "MOAT SCORE"),
+            (str(moat.get("status", "\u2014")).upper(), "STATUS"),
+            (_pct(moat.get("focus_cited_pct")), "FOCUS CITED %"),
+            (_pct(moat.get("owned_cited_pct")), "OWNED CITE %"),
+        ], height=48))
+        story.append(Spacer(1, 6))
+        if moat.get("summary"):
+            story.append(make_callout([moat["summary"]], bg=SLATE_50, accent=BRAND_BLUE, title="MOAT SUMMARY"))
+        moat_recs = _as_list(moat.get("recommendations"))
+        if moat_recs:
+            story.append(P("Moat Recommendations", S_SUB))
+            for r in moat_recs[:6]:
+                story.append(PB(str(r)))
+        story.append(Spacer(1, 8))
+
+    rollup = ce.get("rollup_focus_mentions") or ce.get("rollup") or {}
+    if rollup and (rollup.get("focus_mentions") or rollup.get("responses_measured")):
+        story.append(P("Citation Economics Rollup", S_SUB))
+        labels = {
+            "responses_measured": "Responses measured",
+            "focus_mentions": "Brand mentions (total)",
+            "focus_with_any_source_url": "Mentions with any source URL",
+            "focus_without_source_url": "Mentions without sources",
+            "focus_with_brand_domain_citation": "Mentions citing your domain",
+            "focus_with_competitor_named_domain": "Mentions citing competitor domain",
+        }
+        ce_rows = [[label, _num(rollup[key])] for key, label in labels.items() if key in rollup]
+        if ce_rows:
+            story.append(make_table(["Metric", "Count"], ce_rows, [3.8 * inch, 1.4 * inch]))
+        story.append(Spacer(1, 8))
+
+    by_engine = _as_list(ce.get("by_engine"))
+    if by_engine:
+        story.append(P("Citation Economics by Engine", S_SUB))
+        be_rows = []
+        for r in by_engine:
+            if not isinstance(r, dict):
+                continue
+            be_rows.append([
+                r.get("engine", r.get("llm", "")),
+                _num(r.get("focus_mentions", r.get("mentions"))),
+                _num(r.get("with_source", r.get("focus_with_any_source_url"))),
+                _num(r.get("with_owned", r.get("focus_with_brand_domain_citation"))),
+                _num(r.get("with_competitor", r.get("focus_with_competitor_named_domain"))),
+                _pct(r.get("owned_cited_pct", r.get("owned_pct"))),
+            ])
+        if be_rows:
+            story.append(make_table(
+                ["Engine", "Mentions", "With Source", "Owned Cite", "Comp Cite", "Owned %"],
+                be_rows,
+            ))
+        story.append(Spacer(1, 8))
+
+    domain_kpis = ce.get("domain_kpis") or {}
+    if domain_kpis:
+        story.append(P("Domain Concentration KPIs", S_SUB))
+        story.append(P(
+            f"Unique domains: {_num(domain_kpis.get('measured_unique_domains'))}  |  "
+            f"Source URL occurrences: {_num(domain_kpis.get('measured_source_url_occurrences'))}  |  "
+            f"HHI (top 25): {domain_kpis.get('hhi_top25', '\u2014')}",
+            S_BODY,
+        ))
+        signals = domain_kpis.get("signal_counts") or {}
+        if isinstance(signals, dict) and signals:
+            story.append(P(
+                "Signal mix: " + ", ".join(f"{k}={v}" for k, v in list(signals.items())[:8]),
+                S_SMALL,
+            ))
+        top_dom_kpi = _as_list(domain_kpis.get("top_domains"))
+        if top_dom_kpi:
+            td_rows = [
+                [
+                    d.get("domain", ""),
+                    _num(d.get("count", d.get("occurrences"))),
+                    str(d.get("signal", d.get("class", ""))),
+                ]
+                for d in top_dom_kpi[:15]
+                if isinstance(d, dict)
+            ]
+            if td_rows:
+                story.append(make_table(["Domain", "Count", "Signal"], td_rows))
+        story.append(Spacer(1, 8))
+
     src = payload.get("sources") or {}
     domains = _as_list(src.get("domains"))
     if domains:
         story.append(P("Top Cited Domains", S_SUB))
         dom_rows = [
-            [r.get("domain", ""), _num(r.get("source_mentions")), _num(r.get("brand_mentions"))]
-            for r in domains[:20]
+            [r.get("domain", ""), _num(r.get("source_mentions")), _num(r.get("brand_mentions")), _safe(r.get("query", ""), 40)]
+            for r in domains[:25]
         ]
         story.append(make_table(
-            ["Domain", "Citations", "Brand Mentions"],
+            ["Domain", "Citations", "Brand Mentions", "Sample Query"],
             dom_rows,
-            [2.5 * inch, 1.0 * inch, 1.0 * inch],
+            [2.0 * inch, 0.8 * inch, 1.0 * inch, CONTENT_W - 3.8 * inch],
         ))
-        story.append(Spacer(1, 14))
+        story.append(Spacer(1, 10))
 
     classified = _as_list(src.get("sources"))
     if classified:
         story.append(P("Classified Source Analysis", S_SUB))
         story.append(P(
-            "Each cited source classified as Owned, Competitor, Editorial, Social, or UGC with strategic recommendation.",
+            "Each cited source classified as Owned, Competitor, Editorial, Social, or UGC with a recommended action.",
             S_SECTION_DESC,
         ))
         cls_rows = [
             [
                 r.get("source_class", ""),
                 r.get("domain", r.get("source", "")),
-                _safe(r.get("why_it_matters", ""), 120),
-                _safe(r.get("action", ""), 100),
+                _safe(r.get("why_it_matters", ""), 110),
+                _safe(r.get("action", ""), 90),
                 r.get("priority", ""),
             ]
-            for r in classified[:15]
+            for r in classified[:25]
         ]
         story.append(make_table(
             ["Class", "Domain", "Why It Matters", "Action", "Priority"],
             cls_rows,
-            [0.7 * inch, 1.3 * inch, 1.8 * inch, 1.6 * inch, 0.6 * inch],
+            [0.7 * inch, 1.2 * inch, 1.9 * inch, 1.7 * inch, 0.55 * inch],
         ))
-        story.append(Spacer(1, 14))
 
-    ce = payload.get("citation_economics") or {}
-    rollup = ce.get("rollup_focus_mentions") or ce.get("rollup") or ce
-    if rollup and rollup.get("focus_mentions"):
-        story.append(P("Citation Economics", S_SUB))
-        ce_rows = []
-        labels = {
-            "focus_mentions": "Brand Mentions (total)",
-            "focus_with_any_source_url": "Mentions with source URLs",
-            "focus_without_source_url": "Mentions without sources",
-            "focus_with_brand_domain_citation": "Mentions citing your domain",
-            "focus_with_competitor_named_domain": "Mentions citing competitor domain",
-        }
-        for key, label in labels.items():
-            if key in rollup:
-                ce_rows.append([label, _num(rollup[key])])
-        if ce_rows:
-            story.append(make_table(["Metric", "Count"], ce_rows, [3.5 * inch, 1.5 * inch]))
-    story.append(PageBreak())
+    official = ce.get("official_site_alignment") or {}
+    if isinstance(official, dict) and official:
+        story.append(P("Official Site Alignment", S_SUB))
+        off_rows = [[str(k), str(v)] for k, v in list(official.items())[:12]]
+        if off_rows:
+            story.append(make_table(["Field", "Value"], off_rows, [2.4 * inch, CONTENT_W - 2.4 * inch]))
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 08 — VISIBILITY AUDIT
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # 11 — AUDIT
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
-        "Visibility Audit \u2014 What's Lacking",
-        "Measured gaps and vulnerabilities in your AI visibility, with root-cause analysis and fix recommendations.",
+        "Visibility Audit \u2014 What\u2019s Lacking",
+        "Measured gaps and vulnerabilities with root-cause analysis and fix recommendations.",
     )
     audit_items = _as_list((payload.get("global_audit") or {}).get("items"))
     if not audit_items:
-        story.append(
-            CalloutBox(
-                ["No audit findings yet. Run analysis on your tracked prompts to generate measured audit items."],
-                bg=SLATE_50,
-                accent=SLATE_400,
-                title="NO AUDIT DATA",
-            )
-        )
+        story.append(make_callout(
+            ["No audit findings yet. Run analysis on your tracked prompts to generate measured audit items."],
+            bg=SLATE_50, accent=SLATE_400, title="NO AUDIT DATA",
+        ))
+    else:
+        # Priority breakdown
+        high = sum(1 for a in audit_items if str(a.get("priority", "")).lower() == "high")
+        med = sum(1 for a in audit_items if str(a.get("priority", "")).lower() == "medium")
+        low = sum(1 for a in audit_items if str(a.get("priority", "")).lower() == "low")
+        story.append(KPIStrip([
+            (_num(len(audit_items)), "FINDINGS"),
+            (_num(high), "HIGH"),
+            (_num(med), "MEDIUM"),
+            (_num(low), "LOW"),
+        ], height=44))
+        story.append(Spacer(1, 10))
+
     for item in audit_items:
         priority = item.get("priority", "medium")
-        p_bg, p_fg = _priority_color(priority)
+        _, p_fg = _priority_color(priority)
         title_text = item.get("title", "Audit finding")
-
-        story.append(Spacer(1, 6))
-        story.append(Paragraph(
-            f'<font name="Helvetica-Bold">{esc(title_text)}</font>'
-            f'&#160;&#160;<font name="Helvetica-Bold" size="7" color="{p_fg}">[{priority.upper()}]</font>',
-            ParagraphStyle("AuditTitle", parent=S_BODY, fontSize=10, leading=14, textColor=C(SLATE_900)),
-        ))
+        block = [
+            PH(
+                f'<font name="Helvetica-Bold">{esc(title_text)}</font>'
+                f'&#160;&#160;<font name="Helvetica-Bold" size="7" color="{p_fg}">[{str(priority).upper()}]</font>',
+                ParagraphStyle("AuditTitle", parent=S_BODY, fontSize=10, leading=14, textColor=C(SLATE_900)),
+            )
+        ]
         if item.get("root_cause"):
-            story.append(P(f"Root cause: {item['root_cause']}", S_BODY))
+            block.append(P(f"Root cause: {item['root_cause']}", S_BODY))
         if item.get("solution"):
-            story.append(P(f"Solution: {item['solution']}", S_BODY))
+            block.append(P(f"Solution: {item['solution']}", S_BODY))
         if item.get("avoid"):
-            story.append(P(f"Avoid: {item['avoid']}", S_SMALL))
+            block.append(P(f"Avoid: {item['avoid']}", S_SMALL))
         if item.get("evidence_quote"):
-            story.append(P(f"\u201c{item['evidence_quote']}\u201d", S_BODY_ITALIC))
+            block.append(P(f"\u201c{item['evidence_quote']}\u201d", S_QUOTE))
         queries = _as_list(item.get("queries_supporting"))
         if queries:
-            story.append(P(f"Supporting queries: {', '.join(queries[:4])}", S_SMALL))
-        story.append(AccentLine(SLATE_200, 1.0, 0.5))
+            block.append(P(f"Supporting queries: {', '.join(str(q) for q in queries[:5])}", S_SMALL))
+        block.append(AccentLine(SLATE_200, 1.0, 0.5))
+        block.append(Spacer(1, 4))
+        story.append(KeepTogether(block))
 
-    story.append(PageBreak())
-
-    # ─────────────────────────────────────────────────────────────────────
-    # 09 — RECOMMENDATIONS
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # 12 — RECOMMENDATIONS
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
-        "Strategic Recommendations",
-        "Actionable steps to improve AI visibility, derived from measured analysis data.",
+        "Strategic Recommendations & Action Plan",
+        "Prioritized moves to improve AI visibility, grounded in measured evidence.",
     )
     recs = dashboard.get("recommendations") or {}
     if recs.get("recommendation_text"):
-        story.append(
-            CalloutBox(
-                [recs["recommendation_text"]],
-                bg=GREEN_50,
-                accent=GREEN_600,
-                title="OVERALL RECOMMENDATION",
-            )
-        )
+        story.append(make_callout(
+            [recs["recommendation_text"]],
+            bg=GREEN_50, accent=GREEN_600, title="OVERALL RECOMMENDATION",
+        ))
         story.append(Spacer(1, 10))
 
     rec_items = _as_list(recs.get("recommendation_items"))
@@ -1337,178 +2031,252 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             [
                 r.get("priority", ""),
                 r.get("engine", ""),
-                _safe(r.get("action", ""), 140),
-                _safe(r.get("evidence", ""), 100),
+                _safe(r.get("action", ""), 150),
+                _safe(r.get("evidence", ""), 110),
             ]
-            for r in rec_items[:15]
+            for r in rec_items[:20]
             if isinstance(r, dict)
         ]
         if ri_rows:
             story.append(make_table(
                 ["Priority", "Engine", "Action", "Evidence"],
                 ri_rows,
-                [0.6 * inch, 0.8 * inch, 2.6 * inch, 2.0 * inch],
+                [0.6 * inch, 0.75 * inch, 2.7 * inch, CONTENT_W - 4.05 * inch],
             ))
-        story.append(Spacer(1, 12))
+        story.append(Spacer(1, 10))
 
-    deep = payload.get("deep_analysis") or {}
     action_plan = _as_list(deep.get("action_plan"))
     if action_plan:
         story.append(P("Opportunity Action Plan", S_SUB))
-        for item in action_plan[:12]:
-            story.append(Paragraph(
-                f'<font name="Helvetica-Bold">{esc(item.get("title", ""))}</font>',
-                ParagraphStyle("ActionTitle", parent=S_BODY, fontSize=10, leading=14),
-            ))
+        for item in action_plan[:16]:
+            if not isinstance(item, dict):
+                continue
+            block = [
+                PH(
+                    f'<font name="Helvetica-Bold">{esc(item.get("title", ""))}</font>'
+                    f'&#160;&#160;<font size="7" color="{AMBER_600}">'
+                    f'[{esc(str(item.get("priority", "")).upper())}]</font>',
+                    ParagraphStyle("ActionTitle", parent=S_BODY, fontSize=10, leading=14),
+                )
+            ]
             if item.get("trigger_signal"):
-                story.append(P(f"Trigger: {item['trigger_signal']}", S_SMALL))
-            steps = _as_list(item.get("action_plan"))
-            for step in steps[:6]:
-                story.append(P(f"  \u2192 {step}", S_BODY))
+                block.append(P(f"Trigger: {item['trigger_signal']}", S_SMALL))
+            if item.get("confidence") is not None:
+                block.append(P(f"Confidence: {item.get('confidence')}", S_SMALL))
+            for step in _as_list(item.get("action_plan"))[:8]:
+                block.append(P(f"  \u2192 {step}", S_BODY))
             if item.get("evidence_quote"):
-                story.append(P(f"\u201c{_safe(item['evidence_quote'], 180)}\u201d", S_BODY_ITALIC))
-            story.append(Spacer(1, 8))
-    story.append(PageBreak())
+                block.append(P(f"\u201c{_safe(item['evidence_quote'], 220)}\u201d", S_QUOTE))
+            block.append(Spacer(1, 6))
+            story.append(KeepTogether(block))
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 10 — PER-PROMPT DEEP DIVES
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # 13 — PER-PROMPT DEEP DIVES
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
         "Per-Prompt Deep Dives",
-        "Detailed visibility analysis for each tracked buyer query: what happened, why, and what to do next.",
+        "What happened, why it matters, sentiment mix, ranking, audits, and next moves for each prompt.",
+        force_page=bool(_as_list(payload.get("prompt_details"))),
     )
     for detail in _as_list(payload.get("prompt_details")):
         prompt_text = detail.get("prompt_text", "")
         brief = detail.get("analysis_brief") or {}
+        sentiment = detail.get("sentiment") or {}
 
-        story.append(Paragraph(
-            f'<font name="Helvetica-Bold" color="{BRAND_BLUE}">\u25B6</font>&#160;&#160;'
-            f'<font name="Helvetica-Bold">{esc(_safe(prompt_text, 180))}</font>',
-            ParagraphStyle("PromptTitle", parent=S_BODY, fontSize=10, leading=14, spaceBefore=12),
-        ))
-        story.append(AccentLine(BRAND_BLUE, 0.15, 1.5))
-        story.append(Spacer(1, 4))
+        header_bits = [
+            PH(
+                f'<font name="Helvetica-Bold" color="{BRAND_BLUE}">\u25B6</font>&#160;&#160;'
+                f'<font name="Helvetica-Bold">{esc(_safe(prompt_text, 200))}</font>',
+                ParagraphStyle("PromptTitle", parent=S_BODY, fontSize=10, leading=14, spaceBefore=10),
+            ),
+            AccentLine(BRAND_BLUE, 0.18, 1.5),
+            Spacer(1, 4),
+        ]
 
-        vis_pct = brief.get("visibility_pct")
+        vis_pct = brief.get("visibility_pct", detail.get("visibility_pct"))
         avg_rank = brief.get("avg_rank")
-        if vis_pct is not None or avg_rank is not None:
-            mini_kpis = []
-            if vis_pct is not None:
-                mini_kpis.append((_pct(vis_pct), "VISIBILITY"))
-            if avg_rank is not None:
-                mini_kpis.append((_rank(avg_rank), "AVG RANK"))
-            engines_mentioned = _as_list(brief.get("engines_mentioned"))
-            engines_missing = _as_list(brief.get("engines_missing"))
-            if engines_mentioned:
-                mini_kpis.append((_num(len(engines_mentioned)), "ENGINES MENTIONING"))
-            if engines_missing:
-                mini_kpis.append((_num(len(engines_missing)), "ENGINES MISSING"))
-            story.append(KPIStrip(mini_kpis, height=38))
-            story.append(Spacer(1, 8))
+        mini_kpis = []
+        if vis_pct is not None:
+            mini_kpis.append((_pct(vis_pct), "VISIBILITY"))
+        if avg_rank is not None:
+            mini_kpis.append((_rank(avg_rank), "AVG RANK"))
+        engines_mentioned = _as_list(brief.get("engines_mentioned"))
+        engines_missing = _as_list(brief.get("engines_missing"))
+        if engines_mentioned:
+            mini_kpis.append((_num(len(engines_mentioned)), "ENGINES HIT"))
+        if engines_missing:
+            mini_kpis.append((_num(len(engines_missing)), "ENGINES MISS"))
+        if mini_kpis:
+            header_bits.append(KPIStrip(mini_kpis, height=36))
+            header_bits.append(Spacer(1, 6))
+
+        body_bits = []
+        if isinstance(sentiment, dict) and any(sentiment.values()):
+            body_bits.append(P(
+                "Sentiment mix: "
+                + "  |  ".join(
+                    f"{k}: {v}" for k, v in sentiment.items() if v
+                ),
+                S_SMALL,
+            ))
+        if engines_mentioned:
+            body_bits.append(P(f"Mentioned on: {', '.join(str(e) for e in engines_mentioned)}", S_SMALL))
+        if engines_missing:
+            body_bits.append(P(f"Missing on: {', '.join(str(e) for e in engines_missing)}", S_SMALL))
 
         if brief.get("what_happened"):
-            story.append(P(f"What happened: {brief['what_happened']}", S_BODY))
+            body_bits.append(P(f"What happened: {brief['what_happened']}", S_BODY))
         if brief.get("why_it_matters"):
-            story.append(P(f"Why it matters: {brief['why_it_matters']}", S_BODY))
+            body_bits.append(P(f"Why it matters: {brief['why_it_matters']}", S_BODY))
         if brief.get("next_move"):
-            story.append(P(f"Next move: {brief['next_move']}", S_BODY))
+            body_bits.append(P(f"Next move: {brief['next_move']}", S_BODY))
 
-        evidence = _as_list(brief.get("evidence_points"))
-        if evidence:
-            for pt in evidence[:5]:
-                story.append(PB(pt))
+        for pt in _as_list(brief.get("evidence_points"))[:6]:
+            body_bits.append(PB(str(pt)))
 
-        ranking = _as_list(detail.get("brand_ranking"))
+        ranking = _as_list(detail.get("brand_ranking")) or _as_list(detail.get("competitors"))
         if ranking:
             rk_rows = [
-                [r.get("name", ""), _num(r.get("mentions")), _rank(r.get("avg_rank")), "Yes" if r.get("is_focus") else ""]
-                for r in ranking[:10]
+                [
+                    r.get("name", r.get("brand", "")),
+                    _num(r.get("mentions")),
+                    _rank(r.get("avg_rank")),
+                    "Yes" if r.get("is_focus") else "",
+                ]
+                for r in ranking[:12]
             ]
-            story.append(Spacer(1, 4))
-            story.append(make_table(
+            body_bits.append(Spacer(1, 4))
+            body_bits.append(make_table(
                 ["Brand", "Mentions", "Avg Rank", "Focus"],
                 rk_rows,
-                [2.0 * inch, 0.8 * inch, 0.8 * inch, 0.5 * inch],
+                [2.2 * inch, 0.8 * inch, 0.8 * inch, 0.5 * inch],
                 highlight_focus=True,
             ))
 
+        trend = _as_list(detail.get("trend"))
+        if trend:
+            body_bits.append(P("Mention Trend", S_SUB))
+            t_rows = [
+                [str(t.get("date", t.get("x", ""))), str(t.get("mentions", t.get("y", t.get("score", ""))))]
+                for t in trend[-12:]
+                if isinstance(t, dict)
+            ]
+            if t_rows:
+                body_bits.append(make_table(["Date", "Mentions / Score"], t_rows, [1.8 * inch, 1.2 * inch]))
+
         audits = _as_list(detail.get("audit"))
         if audits:
-            story.append(P("Audit Findings", S_SUB))
-            for a in audits[:5]:
-                story.append(P(
-                    f"\u2022 {_safe(a.get('title', a.get('issue', '')), 150)} \u2014 {_safe(a.get('root_cause', ''), 100)}",
+            body_bits.append(P("Audit Findings", S_SUB))
+            for a in audits[:6]:
+                body_bits.append(P(
+                    f"\u2022 {_safe(a.get('title', a.get('issue', '')), 140)} \u2014 "
+                    f"{_safe(a.get('root_cause', ''), 110)}",
                     S_SMALL,
                 ))
+                if a.get("solution") or a.get("fix_steps"):
+                    body_bits.append(P(
+                        f"  Fix: {_safe(a.get('solution', a.get('fix_steps')), 160)}",
+                        S_SMALL,
+                    ))
 
         actions = _as_list(detail.get("recommended_actions"))
         if actions:
-            story.append(P("Recommended Actions", S_SUB))
-            for a in actions[:4]:
-                story.append(P(f"\u2192 {a.get('title', '')}:  {_safe(a.get('detail', ''), 120)}", S_BODY))
+            body_bits.append(P("Recommended Actions", S_SUB))
+            for a in actions[:5]:
+                body_bits.append(P(
+                    f"\u2192 {a.get('title', '')}: {_safe(a.get('detail', ''), 140)}",
+                    S_BODY,
+                ))
 
-        sources = _as_list(detail.get("sources"))
-        if sources:
-            story.append(P("Top Cited Sources", S_SUB))
+        sources_d = _as_list(detail.get("sources"))
+        if sources_d:
+            body_bits.append(P("Top Cited Sources", S_SUB))
             src_rows = [
                 [s.get("domain", ""), _num(s.get("mentions", s.get("source_mentions")))]
-                for s in sources[:8]
+                for s in sources_d[:10]
             ]
-            story.append(make_table(["Domain", "Citations"], src_rows, [3.0 * inch, 1.0 * inch]))
+            body_bits.append(make_table(["Domain", "Citations"], src_rows, [3.2 * inch, 1.0 * inch]))
 
-        story.append(Spacer(1, 16))
+        body_bits.append(Spacer(1, 14))
+        story.extend(header_bits)
+        story.extend(body_bits)
 
-    story.append(PageBreak())
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 11 — PROMPT × ENGINE MATRIX
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # 14 — MATRIX
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
         "Prompt \u00d7 Engine Matrix",
-        "Complete cross-reference: which engines mention your brand for which prompts, with rank and sentiment.",
+        "Complete cross-reference: mention, rank, sentiment, and top competitors per cell.",
     )
     pm_data = _as_list(deep.get("prompt_matrix"))
     if pm_data:
         matrix_rows = []
         for prompt_row in pm_data:
-            pt = _safe(prompt_row.get("prompt_text", ""), 70)
+            pt = _safe(prompt_row.get("prompt_text", ""), 60)
             engines = prompt_row.get("engines") or {}
             if isinstance(engines, dict):
                 for engine, cell in engines.items():
-                    if isinstance(cell, dict):
-                        mentioned = "\u2705" if cell.get("mentioned") else "\u274c"
-                        matrix_rows.append([
-                            pt, engine, mentioned,
-                            _rank(cell.get("rank")),
-                            str(cell.get("sentiment", "")),
-                        ])
+                    if not isinstance(cell, dict):
+                        continue
+                    mentioned = "Yes" if cell.get("mentioned") else "No"
+                    comps = _as_list(cell.get("top_competitors"))
+                    comp_str = ", ".join(
+                        f"{c.get('brand')}{(' #' + str(c.get('rank'))) if c.get('rank') else ''}"
+                        for c in comps[:3]
+                        if isinstance(c, dict)
+                    )
+                    srcs = ", ".join(str(s) for s in _as_list(cell.get("sources"))[:3])
+                    matrix_rows.append([
+                        pt,
+                        engine,
+                        mentioned,
+                        _rank(cell.get("rank")),
+                        str(cell.get("sentiment", "")),
+                        _safe(comp_str, 55),
+                        _safe(srcs, 45),
+                    ])
         if matrix_rows:
             story.append(make_table(
-                ["Prompt", "Engine", "Mentioned", "Rank", "Sentiment"],
+                ["Prompt", "Engine", "Mentioned", "Rank", "Sentiment", "Top Competitors", "Sources"],
                 matrix_rows,
-                [2.4 * inch, 0.9 * inch, 0.7 * inch, 0.5 * inch, 0.7 * inch],
+                [1.5 * inch, 0.7 * inch, 0.6 * inch, 0.45 * inch, 0.65 * inch, 1.3 * inch, CONTENT_W - 5.2 * inch],
             ))
     else:
         story.append(P("No matrix data available yet.", S_BODY_ITALIC))
-    story.append(PageBreak())
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 12 — APPENDIX: RAW RESPONSES
-    # ─────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # 15 — APPENDIX
+    # ═════════════════════════════════════════════════════════════════════
     start_section(
         "Appendix: Raw AI Model Responses",
-        "Complete, unedited responses from each AI model for every tracked prompt. "
-        "This is the evidence base for all findings in this report.",
+        "Unedited model answers and cited sources — the evidence base for every finding above.",
+        force_page=any(
+            _as_list(d.get("raw_responses"))
+            for d in _as_list(payload.get("prompt_details"))
+            if isinstance(d, dict)
+        ),
     )
+    story.append(make_callout(
+        [
+            "Responses may be lightly truncated for print length. Full text remains available in the product and CSV export.",
+        ],
+        bg=SLATE_50, accent=SLATE_400, title="NOTE",
+    ))
+    story.append(Spacer(1, 8))
+
     for detail in _as_list(payload.get("prompt_details")):
         prompt_text = detail.get("prompt_text", "")
         responses = _as_list(detail.get("raw_responses"))
         if not responses:
             continue
 
-        story.append(Paragraph(
-            f'<font name="Helvetica-Bold">{esc(_safe(prompt_text, 160))}</font>',
-            ParagraphStyle("AppendixPrompt", parent=S_BODY, fontSize=10, leading=14, spaceBefore=14, textColor=C(BRAND_BLUE_DARK)),
+        story.append(PH(
+            f'<font name="Helvetica-Bold">{esc(_safe(prompt_text, 170))}</font>',
+            ParagraphStyle(
+                "AppendixPrompt", parent=S_BODY, fontSize=10, leading=14,
+                spaceBefore=12, textColor=C(BRAND_BLUE_DARK),
+            ),
         ))
         story.append(AccentLine(SLATE_200, 0.5, 0.5))
 
@@ -1516,35 +2284,36 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             engine = resp.get("engine", "Unknown")
             ts = resp.get("timestamp", "")
             text = resp.get("display_response_text") or resp.get("response_text") or ""
+            text = _safe(text, 3200)
             resp_sources = resp.get("sources") or []
 
-            story.append(Paragraph(
+            story.append(PH(
                 f'<font name="Helvetica-Bold">{esc(engine)}</font>'
                 f'&#160;&#160;<font size="7" color="{SLATE_400}">{esc(str(ts)[:19])}</font>',
                 ParagraphStyle("EngineLabel", parent=S_BODY, fontSize=9, spaceBefore=8),
             ))
-
             story.append(P(text, ParagraphStyle(
                 "ResponseText", parent=S_BODY,
-                fontSize=8, leading=11.5, textColor=C(SLATE_700),
-                leftIndent=8, rightIndent=8,
-                spaceBefore=2, spaceAfter=2,
-                borderWidth=0, borderPadding=0,
+                fontSize=7.5, leading=11, textColor=C(SLATE_700),
+                leftIndent=6, rightIndent=4, spaceBefore=2, spaceAfter=2,
             )))
-
             if resp_sources:
-                src_text = "Sources: " + " | ".join(str(s) for s in resp_sources[:8])
+                src_text = "Sources: " + " | ".join(str(s) for s in resp_sources[:10])
                 story.append(P(src_text, ParagraphStyle(
-                    "SourceList", parent=S_SMALL,
-                    leftIndent=8, textColor=C(BRAND_BLUE),
+                    "SourceList", parent=S_SMALL, leftIndent=6, textColor=C(BRAND_BLUE),
                 )))
-            story.append(Spacer(1, 6))
+            story.append(Spacer(1, 5))
+        story.append(Spacer(1, 8))
 
-        story.append(Spacer(1, 10))
+    story.append(Spacer(1, 20))
+    story.append(AccentLine(BRAND_BLUE, 0.2, 2))
+    story.append(Spacer(1, 8))
+    story.append(P(
+        f"End of report \u2014 {project_name}. Generated by Answrdeck on {gen_date} UTC. "
+        "Re-run analysis and re-export after content changes to track movement.",
+        S_SMALL,
+    ))
 
-    # ─────────────────────────────────────────────────────────────────────
-    # BUILD
-    # ─────────────────────────────────────────────────────────────────────
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
