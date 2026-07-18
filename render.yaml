@@ -29,3 +29,10 @@ services:
         value: "7599"
       - key: CASHFREE_PLAN_PRO_AMOUNT
         value: "14299"
+      # Demo request emails (Resend → hello@answrdeck.com)
+      - key: DEMO_REQUEST_TO_EMAIL
+        value: "hello@answrdeck.com"
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        value: "Answrdeck <onboarding@resend.dev>"
