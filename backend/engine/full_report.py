@@ -6,8 +6,10 @@ to look like output from a premium $150/mo AI visibility platform.
 
 from __future__ import annotations
 
+import ast
 import csv
 import io
+import json
 import math
 from datetime import datetime, timezone
 from typing import Any
@@ -51,6 +53,36 @@ def _as_list(value: Any) -> list:
     return value if isinstance(value, list) else []
 
 
+def _as_labels(value: Any) -> list[str]:
+    """Normalize list / JSON / CSV / python-repr adjective fields into labels."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(x).strip() for x in value if str(x).strip()]
+    text = str(value).strip()
+    if not text or text in {"[]", "None", "null"}:
+        return []
+    if text.startswith("["):
+        parsed: Any = None
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            try:
+                parsed = ast.literal_eval(text)
+            except (ValueError, SyntaxError, TypeError):
+                parsed = None
+        if isinstance(parsed, (list, tuple, set)):
+            return [str(x).strip() for x in parsed if str(x).strip()]
+    # comma / pipe / semicolon separated
+    parts = [p.strip(" \t\r\n\"'") for p in text.replace("|", ",").replace(";", ",").split(",")]
+    return [p for p in parts if p]
+
+
+def _fmt_labels(value: Any, limit: int = 8) -> str:
+    labels = _as_labels(value)[:limit]
+    return ", ".join(labels) if labels else "\u2014"
+
+
 def _pct(value: Any) -> str:
     if value is None:
         return "\u2014"
@@ -70,13 +102,25 @@ def _rank(value: Any) -> str:
 
 
 def _num(value: Any) -> str:
-    if value is None:
+    if value is None or value == "":
         return "\u2014"
     try:
         n = int(value)
         return f"{n:,}"
     except (ValueError, TypeError):
-        return str(value)
+        try:
+            return f"{float(value):.1f}"
+        except (ValueError, TypeError):
+            return str(value)
+
+
+def _pick_num(*values: Any) -> str:
+    """First non-empty numeric-looking value among alternate payload keys."""
+    for value in values:
+        if value is None or value == "":
+            continue
+        return _num(value)
+    return "\u2014"
 
 
 def _health_color(label: str) -> tuple[str, str]:
@@ -346,8 +390,8 @@ def render_full_report_csv(payload: dict[str, Any]) -> str:
     section("Cross-Prompt Insight")
     writer.writerow(["Insight", insight.get("insight_text", "")])
     writer.writerow(["Framing Pattern", insight.get("framing_pattern", "")])
-    writer.writerow(["Recurring Adjectives", ", ".join(_as_list(insight.get("recurring_adjectives")))])
-    writer.writerow(["Consistent Competitors", ", ".join(_as_list(insight.get("consistent_competitors")))])
+    writer.writerow(["Recurring Adjectives", _fmt_labels(insight.get("recurring_adjectives"), 20)])
+    writer.writerow(["Consistent Competitors", _fmt_labels(insight.get("consistent_competitors"), 20)])
 
     section("Visibility Trend")
     writer.writerow(["Date", "Score"])
@@ -389,7 +433,7 @@ def render_full_report_csv(payload: dict[str, Any]) -> str:
     section("Competitor Framing Quotes")
     writer.writerow(["Competitor", "Engine", "Quote", "Adjectives"])
     for row in _as_list(payload.get("competitor_framings")):
-        writer.writerow([row.get("competitor_brand", ""), row.get("engine", ""), row.get("verbatim_sentence", ""), ", ".join(_as_list(row.get("framing_adjectives")))])
+        writer.writerow([row.get("competitor_brand", ""), row.get("engine", ""), row.get("verbatim_sentence", ""), _fmt_labels(row.get("framing_adjectives"), 12)])
 
     trajectory = dashboard.get("trajectory") or {}
     section("Trajectory and Displacement")
@@ -1211,12 +1255,12 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             story.append(P(insight["insight_text"], S_BODY_ITALIC))
         if insight.get("framing_pattern"):
             story.append(P(f"Dominant framing pattern: {insight['framing_pattern']}", S_SMALL))
-        adjs = _as_list(insight.get("recurring_adjectives"))
+        adjs = _as_labels(insight.get("recurring_adjectives"))
         if adjs:
-            story.append(P(f"Recurring adjectives: {', '.join(str(a) for a in adjs[:14])}", S_SMALL))
-        cons = _as_list(insight.get("consistent_competitors"))
+            story.append(P(f"Recurring adjectives: {', '.join(adjs[:14])}", S_SMALL))
+        cons = _as_labels(insight.get("consistent_competitors"))
         if cons:
-            story.append(P(f"Competitors consistently named alongside you: {', '.join(str(c) for c in cons[:10])}", S_BODY))
+            story.append(P(f"Competitors consistently named alongside you: {', '.join(cons[:10])}", S_BODY))
 
     # Synthesis snapshot
     if synthesis.get("top_displacement_competitors") or synthesis.get("recurring_displacement_reasons"):
@@ -1726,7 +1770,7 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                 f.get("competitor_brand", ""),
                 f.get("engine", ""),
                 _safe(f.get("verbatim_sentence", ""), 160),
-                ", ".join(_as_list(f.get("framing_adjectives"))[:6]) or "\u2014",
+                _fmt_labels(f.get("framing_adjectives"), 8),
             ]
             for f in framings[:30]
         ]
@@ -1810,14 +1854,17 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         dd_rows = [
             [
                 d.get("domain", ""),
-                _num(d.get("count")),
-                d.get("top_competitor", d.get("competitor", "")),
+                _pick_num(d.get("displacement_links"), d.get("count"), d.get("events")),
+                d.get("top_competitor_on_domain")
+                or d.get("top_competitor")
+                or d.get("competitor")
+                or "\u2014",
             ]
             for d in disp_domains[:15]
             if isinstance(d, dict)
         ]
         if dd_rows:
-            story.append(make_table(["Domain", "Events", "Top Competitor"], dd_rows))
+            story.append(make_table(["Domain", "Cite Events", "Top Competitor"], dd_rows))
 
     # ═════════════════════════════════════════════════════════════════════
     # 10 — SOURCES & CITATION MOAT
@@ -1841,7 +1888,12 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         if moat_recs:
             story.append(P("Moat Recommendations", S_SUB))
             for r in moat_recs[:6]:
-                story.append(PB(str(r)))
+                if isinstance(r, dict):
+                    title = str(r.get("title") or "").strip()
+                    detail = str(r.get("detail") or "").strip()
+                    story.append(PB(f"{title}: {detail}" if title and detail else (title or detail or "\u2014")))
+                else:
+                    story.append(PB(str(r)))
         story.append(Spacer(1, 8))
 
     rollup = ce.get("rollup_focus_mentions") or ce.get("rollup") or {}
@@ -1867,13 +1919,21 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         for r in by_engine:
             if not isinstance(r, dict):
                 continue
+            mentions = r.get("focus_mentions", r.get("mentions"))
+            owned = r.get("focus_with_brand_domain_citation", r.get("with_owned"))
+            owned_pct = r.get("owned_cited_pct", r.get("owned_pct"))
+            if owned_pct is None and mentions not in (None, "", 0) and owned is not None:
+                try:
+                    owned_pct = round((float(owned) / float(mentions)) * 100, 1)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    owned_pct = None
             be_rows.append([
                 r.get("engine", r.get("llm", "")),
-                _num(r.get("focus_mentions", r.get("mentions"))),
-                _num(r.get("with_source", r.get("focus_with_any_source_url"))),
-                _num(r.get("with_owned", r.get("focus_with_brand_domain_citation"))),
-                _num(r.get("with_competitor", r.get("focus_with_competitor_named_domain"))),
-                _pct(r.get("owned_cited_pct", r.get("owned_pct"))),
+                _pick_num(mentions),
+                _pick_num(r.get("focus_with_any_source_url"), r.get("with_source")),
+                _pick_num(owned),
+                _pick_num(r.get("focus_with_competitor_named_domain"), r.get("with_competitor")),
+                _pct(owned_pct if owned_pct is not None else r.get("focus_cited_pct")),
             ])
         if be_rows:
             story.append(make_table(
@@ -1902,14 +1962,24 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             td_rows = [
                 [
                     d.get("domain", ""),
-                    _num(d.get("count", d.get("occurrences"))),
-                    str(d.get("signal", d.get("class", ""))),
+                    _pick_num(
+                        d.get("citation_occurrences"),
+                        d.get("count"),
+                        d.get("occurrences"),
+                        d.get("source_mentions"),
+                    ),
+                    _pct(d.get("share_of_measured_urls")),
+                    str(d.get("signal", d.get("class", "")) or "\u2014"),
                 ]
                 for d in top_dom_kpi[:15]
                 if isinstance(d, dict)
             ]
             if td_rows:
-                story.append(make_table(["Domain", "Count", "Signal"], td_rows))
+                story.append(make_table(
+                    ["Domain", "Cite Count", "Share", "Signal"],
+                    td_rows,
+                    [2.2 * inch, 0.9 * inch, 0.8 * inch, 1.2 * inch],
+                ))
         story.append(Spacer(1, 8))
 
     src = payload.get("sources") or {}
@@ -1917,13 +1987,18 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     if domains:
         story.append(P("Top Cited Domains", S_SUB))
         dom_rows = [
-            [r.get("domain", ""), _num(r.get("source_mentions")), _num(r.get("brand_mentions")), _safe(r.get("query", ""), 40)]
+            [
+                r.get("domain", ""),
+                _pick_num(r.get("source_mentions"), r.get("mentions"), r.get("count"), r.get("source_count")),
+                _pick_num(r.get("brand_mentions"), r.get("brand_count")),
+                _safe(r.get("query", ""), 40),
+            ]
             for r in domains[:25]
         ]
         story.append(make_table(
-            ["Domain", "Citations", "Brand Mentions", "Sample Query"],
+            ["Domain", "Cite Count", "Brand Mentions", "Sample Query"],
             dom_rows,
-            [2.0 * inch, 0.8 * inch, 1.0 * inch, CONTENT_W - 3.8 * inch],
+            [2.0 * inch, 0.85 * inch, 1.0 * inch, CONTENT_W - 3.85 * inch],
         ))
         story.append(Spacer(1, 10))
 
@@ -1931,23 +2006,25 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     if classified:
         story.append(P("Classified Source Analysis", S_SUB))
         story.append(P(
-            "Each cited source classified as Owned, Competitor, Editorial, Social, or UGC with a recommended action.",
+            "Each cited source classified as Owned, Competitor, Editorial, Social, or UGC — "
+            "with cite count, why it matters, and a recommended action.",
             S_SECTION_DESC,
         ))
         cls_rows = [
             [
                 r.get("source_class", ""),
                 r.get("domain", r.get("source", "")),
-                _safe(r.get("why_it_matters", ""), 110),
-                _safe(r.get("action", ""), 90),
+                _pick_num(r.get("source_count"), r.get("source_mentions"), r.get("mentions"), r.get("count")),
+                _safe(r.get("evidence") or r.get("why_it_matters", ""), 100),
+                _safe(r.get("action", ""), 80),
                 r.get("priority", ""),
             ]
             for r in classified[:25]
         ]
         story.append(make_table(
-            ["Class", "Domain", "Why It Matters", "Action", "Priority"],
+            ["Class", "Domain", "Cite Count", "Evidence / Why", "Action", "Priority"],
             cls_rows,
-            [0.7 * inch, 1.2 * inch, 1.9 * inch, 1.7 * inch, 0.55 * inch],
+            [0.65 * inch, 1.1 * inch, 0.7 * inch, 1.7 * inch, 1.5 * inch, 0.55 * inch],
         ))
 
     official = ce.get("official_site_alignment") or {}
@@ -2192,10 +2269,13 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         if sources_d:
             body_bits.append(P("Top Cited Sources", S_SUB))
             src_rows = [
-                [s.get("domain", ""), _num(s.get("mentions", s.get("source_mentions")))]
+                [
+                    s.get("domain", ""),
+                    _pick_num(s.get("mentions"), s.get("source_mentions"), s.get("source_count"), s.get("count")),
+                ]
                 for s in sources_d[:10]
             ]
-            body_bits.append(make_table(["Domain", "Citations"], src_rows, [3.2 * inch, 1.0 * inch]))
+            body_bits.append(make_table(["Domain", "Cite Count"], src_rows, [3.2 * inch, 1.0 * inch]))
 
         body_bits.append(Spacer(1, 14))
         story.extend(header_bits)
