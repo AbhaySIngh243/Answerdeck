@@ -10,7 +10,7 @@ import ast
 import csv
 import io
 import json
-import math
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -47,6 +47,33 @@ def _safe(value: Any, limit: int = 500) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "\u2026"
+
+
+def _pdf_safe(value: Any) -> str:
+    """Normalize text to glyphs ReportLab's built-in fonts render cleanly."""
+    text = str(value or "")
+    replacements = {
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2022": "-",
+        "\u2192": "->",
+        "\u25b6": ">",
+        "\u00d7": "x",
+        "\u00a0": " ",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    text = "".join(
+        ch if ch in "\n\r\t" or (ord(ch) >= 32 and ord(ch) != 127) else " "
+        for ch in text
+    )
+    text = text.encode("cp1252", "replace").decode("cp1252")
+    text = re.sub(r"\?{3,}", "[non-Latin text]", text)
+    return text
 
 
 def _as_list(value: Any) -> list:
@@ -93,12 +120,72 @@ def _pct(value: Any) -> str:
 
 
 def _rank(value: Any) -> str:
-    if value is None:
+    if value is None or value == "":
         return "\u2014"
     try:
-        return f"#{float(value):.1f}"
+        n = float(value)
+        if n == int(n):
+            return f"#{int(n)}"
+        return f"#{n:.1f}"
     except (ValueError, TypeError):
         return str(value)
+
+
+def _pick_rank(*values: Any) -> str:
+    for value in values:
+        if value is None or value == "":
+            continue
+        return _rank(value)
+    return "\u2014"
+
+
+def _trend_rows(trend: list) -> list[list[str]]:
+    """Normalize prompt-detail trend points into printable table rows.
+
+    Prompt detail trends are stored as
+    ``{timestamp, engine, mentioned, rank}`` — not date/mentions charts.
+    """
+    rows: list[list[str]] = []
+    for t in trend:
+        if not isinstance(t, dict):
+            continue
+        ts = str(t.get("timestamp") or t.get("date") or t.get("x") or "")[:19].replace("T", " ")
+        engine = str(t.get("engine") or "\u2014")
+        if "mentioned" in t or "rank" in t:
+            mentioned = "Yes" if t.get("mentioned") else "No"
+            rows.append([ts or "\u2014", engine, mentioned, _pick_rank(t.get("rank"))])
+        else:
+            # Fallback for aggregated {date, mentions/score} series
+            metric = t.get("mentions", t.get("y", t.get("score", t.get("visibility"))))
+            rows.append([ts or "\u2014", engine, str(metric if metric is not None else "\u2014"), _pick_rank(t.get("rank"))])
+    return rows
+
+
+def _aggregate_mention_trend(trend: list) -> list[list[str]]:
+    """Roll per-response trend points into per-day mention rate + avg rank."""
+    buckets: dict[str, dict[str, Any]] = {}
+    for t in trend:
+        if not isinstance(t, dict):
+            continue
+        day = str(t.get("timestamp") or t.get("date") or t.get("x") or "")[:10]
+        if not day:
+            continue
+        bucket = buckets.setdefault(day, {"total": 0, "mentioned": 0, "ranks": []})
+        bucket["total"] += 1
+        if t.get("mentioned"):
+            bucket["mentioned"] += 1
+        if t.get("rank") is not None and t.get("rank") != "":
+            try:
+                bucket["ranks"].append(float(t.get("rank")))
+            except (TypeError, ValueError):
+                pass
+    rows: list[list[str]] = []
+    for day in sorted(buckets.keys()):
+        b = buckets[day]
+        rate = round((b["mentioned"] / b["total"]) * 100, 1) if b["total"] else 0.0
+        avg = round(sum(b["ranks"]) / len(b["ranks"]), 1) if b["ranks"] else None
+        rows.append([day, _num(b["mentioned"]), _num(b["total"]), _pct(rate), _pick_rank(avg)])
+    return rows
 
 
 def _num(value: Any) -> str:
@@ -114,6 +201,13 @@ def _num(value: Any) -> str:
             return str(value)
 
 
+def _float_or(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _pick_num(*values: Any) -> str:
     """First non-empty numeric-looking value among alternate payload keys."""
     for value in values:
@@ -123,23 +217,33 @@ def _pick_num(*values: Any) -> str:
     return "\u2014"
 
 
+def _prompt_analysis_rows(payload: dict[str, Any]) -> list:
+    """Normalize prompt_analysis whether export stored rows or a bare list."""
+    raw = payload.get("prompt_analysis")
+    if isinstance(raw, list):
+        return [r for r in raw if isinstance(r, dict)]
+    if isinstance(raw, dict):
+        return [r for r in _as_list(raw.get("rows")) if isinstance(r, dict)]
+    return []
+
+
 def _health_color(label: str) -> tuple[str, str]:
     """Return (bg, fg) hex for health label."""
     lbl = (label or "").strip().lower()
     if lbl == "strong":
-        return GREEN_50, GREEN_600
+        return "#EFF6FF", BRAND_BLUE_DARK
     if lbl == "critical":
-        return RED_50, RED_600
-    return AMBER_50, AMBER_600
+        return AMBER_50, AMBER_600
+    return SLATE_50, SLATE_700
 
 
 def _priority_color(label: str) -> tuple[str, str]:
     lbl = (label or "").strip().lower()
     if lbl == "high":
-        return RED_100, RED_600
+        return AMBER_100, AMBER_600
     if lbl == "low":
-        return GREEN_100, GREEN_600
-    return AMBER_100, AMBER_600
+        return SLATE_100, SLATE_700
+    return "#EFF6FF", BRAND_BLUE
 
 
 def _filter_by_date(
@@ -252,7 +356,7 @@ def build_full_export_payload(
         if analyzed == 0:
             intel = {
                 "overall_health": "No data",
-                "executive_summary": "No prompt runs yet.",
+                "executive_summary": "Awaiting the first measured prompt run. Once answers are collected, this section will summarize visibility, rank, competitors, citations, and next moves from real model evidence.",
                 "executive_bullets": [],
                 "strategic_roadmap": [],
                 "competitive_threats": [],
@@ -398,6 +502,20 @@ def render_full_report_csv(payload: dict[str, Any]) -> str:
     for row in _as_list(dashboard.get("visibility_trend")):
         writer.writerow([row.get("date", row.get("x", "")), row.get("score", row.get("y", ""))])
 
+    section("Prompt Mentions & Rank Trends")
+    writer.writerow(["Prompt", "Timestamp", "Engine", "Mentioned", "Rank"])
+    for detail in _as_list(payload.get("prompt_details")):
+        prompt_text = detail.get("prompt_text", "")
+        for t in _as_list(detail.get("trend")):
+            if isinstance(t, dict):
+                writer.writerow([
+                    prompt_text,
+                    t.get("timestamp", t.get("date", "")),
+                    t.get("engine", ""),
+                    "Yes" if t.get("mentioned") else "No",
+                    t.get("rank", ""),
+                ])
+
     trend = dashboard.get("competitor_visibility_trend") or {}
     if isinstance(trend, dict) and trend.get("series"):
         section("Competitor Visibility Trend")
@@ -422,7 +540,7 @@ def render_full_report_csv(payload: dict[str, Any]) -> str:
 
     section("Prompt Performance")
     writer.writerow(["Prompt", "Visibility %", "Quality Score", "Avg Rank", "Sentiment", "Engines", "Type", "Active"])
-    for row in _as_list((payload.get("prompt_analysis") or {}).get("rows")):
+    for row in _prompt_analysis_rows(payload):
         writer.writerow([row.get("prompt_text", ""), row.get("visibility_pct", row.get("visibility", "")), row.get("quality_score", ""), row.get("avg_rank", ""), row.get("sentiment", ""), row.get("engines_analyzed", ""), row.get("prompt_type", ""), row.get("is_active", "")])
 
     section("Competitor Intelligence")
@@ -592,11 +710,10 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     """Render a visually stunning, detail-dense multi-section PDF using ReportLab."""
     try:
         from reportlab.lib import colors as rl_colors
-        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+        from reportlab.lib.enums import TA_CENTER
         from reportlab.lib.pagesizes import letter
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import inch
-        from reportlab.pdfbase.pdfmetrics import stringWidth
         from reportlab.platypus import (
             BaseDocTemplate,
             CondPageBreak,
@@ -704,7 +821,7 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
 
     def esc(text: str) -> str:
         return (
-            str(text or "")
+            _pdf_safe(text)
             .replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
@@ -801,9 +918,8 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             self.canv.setFillColor(C(SLATE_100))
             self.canv.roundRect(bar_x, 3, bar_w, 10, 3, fill=1, stroke=0)
             if self._value is not None:
-                fill = GREEN_600 if self._value >= 70 else (AMBER_600 if self._value >= 40 else RED_600)
                 filled = max(2, bar_w * (self._value / 100.0))
-                self.canv.setFillColor(C(fill))
+                self.canv.setFillColor(C(BRAND_BLUE))
                 self.canv.roundRect(bar_x, 3, filled, 10, 3, fill=1, stroke=0)
                 self.canv.setFont("Helvetica-Bold", 8)
                 self.canv.setFillColor(C(SLATE_900))
@@ -1012,6 +1128,12 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         tbl.setStyle(TableStyle(cmds))
         return tbl
 
+    def advisory_panel(title: str, lines: list[str], *, accent=BRAND_BLUE, bg=SLATE_50) -> Table:
+        clean = [str(line).strip() for line in lines if str(line or "").strip()]
+        if not clean:
+            clean = ["This signal is not populated yet. Use the measured sections above as the current source of truth."]
+        return make_callout(clean, bg=bg, accent=accent, title=title)
+
     # ── Story assembly ───────────────────────────────────────────────────
     story: list = []
     cov = dashboard.get("coverage") or {}
@@ -1024,6 +1146,19 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     displacements = _as_list(payload.get("displacements"))
     ce = payload.get("citation_economics") or {}
     moat = ce.get("citation_moat") or {}
+    prompt_rankings_for_readout = _as_list(dashboard.get("prompt_rankings"))
+    engine_rows_for_readout = _as_list(dashboard.get("engine_visibility"))
+    low_visibility_rows = prompt_rankings_for_readout or _prompt_analysis_rows(payload)
+    low_visibility_count = sum(
+        1
+        for row in low_visibility_rows
+        if isinstance(row, dict) and _float_or(row.get("visibility_pct", row.get("visibility")), 0.0) < 25
+    )
+    weak_engine_names = [
+        str(row.get("engine"))
+        for row in engine_rows_for_readout
+        if isinstance(row, dict) and _float_or(row.get("visibility_pct"), 0.0) < 50 and row.get("engine")
+    ][:4]
 
     def _cover_page(canvas_obj, doc_obj):
         canvas_obj.saveState()
@@ -1212,6 +1347,51 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         story.append(ScoreBar("Owned site cited %", site_pct))
     story.append(Spacer(1, 8))
 
+    tier_label = str(cov.get("tier") or "\u2014").upper()
+    readout_lines = [
+        f"Current measured answer visibility is {_pct(vis)} across {_num(cov.get('n_responses'))} sampled answers.",
+        f"The report is based on {_num(cov.get('n_prompts'))} tracked prompt(s) across {_num(cov.get('n_engines'))} engine(s), with confidence tier {tier_label}.",
+    ]
+    if low_visibility_count:
+        readout_lines.append(
+            f"{low_visibility_count} tracked prompt(s) are below 25% answer visibility and should be treated as near-term content gaps."
+        )
+    if weak_engine_names:
+        readout_lines.append(
+            "Weakest engine coverage: " + ", ".join(weak_engine_names) + "."
+        )
+    if site_pct is not None:
+        readout_lines.append(
+            f"Owned-site citation rate is {_pct(site_pct)}, which indicates how often model answers lean on the brand's own domain as evidence."
+        )
+    story.append(advisory_panel("MANAGEMENT READOUT", readout_lines, accent=BRAND_BLUE, bg="#EFF6FF"))
+    story.append(Spacer(1, 8))
+
+    # Focus brand ranking snapshot from competitors + engines
+    focus_comp = next(
+        (c for c in _as_list(payload.get("competitors")) if isinstance(c, dict) and c.get("is_focus")),
+        None,
+    )
+    eng_data_early = _as_list(dashboard.get("engine_visibility"))
+    rank_bits = []
+    if focus_comp:
+        rank_bits.append(
+            f"Brand avg rank {_pick_rank(focus_comp.get('avg_rank'), focus_comp.get('rank'))} "
+            f"across {_num(focus_comp.get('mentions'))} mentions "
+            f"({_pct(focus_comp.get('share_of_voice'))} SOV)."
+        )
+    if eng_data_early:
+        eng_rank_bits = [
+            f"{r.get('engine')}: {_pick_rank(r.get('avg_rank'), r.get('rank'))}"
+            for r in eng_data_early
+            if isinstance(r, dict)
+        ]
+        if eng_rank_bits:
+            rank_bits.append("Engine ranks — " + "  |  ".join(eng_rank_bits[:6]))
+    if rank_bits:
+        story.append(make_callout(rank_bits, bg=SLATE_50, accent=BRAND_BLUE, title="RANKING SNAPSHOT"))
+        story.append(Spacer(1, 8))
+
     exec_summary = intel.get("executive_summary", "")
     if exec_summary:
         story.append(make_callout([exec_summary], bg=SLATE_50, accent=BRAND_BLUE, title="EXECUTIVE NARRATIVE"))
@@ -1228,7 +1408,7 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         story.append(Spacer(1, 6))
         story.append(make_callout(
             [str(t) for t in threats[:8]],
-            bg=RED_50, accent=RED_600, title="COMPETITIVE THREATS",
+            bg=AMBER_50, accent=AMBER_600, title="COMPETITIVE THREATS",
         ))
 
     roadmap = _as_list(intel.get("strategic_roadmap"))
@@ -1435,6 +1615,17 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                 ])
         if et_rows:
             story.append(make_table(["Engine", "Direction", "Rank Delta"], et_rows))
+    if not vis_trend:
+        story.append(advisory_panel(
+            "BASELINE SNAPSHOT",
+            [
+                f"This export has the current scorecard but no historical visibility series yet.",
+                f"Current measured visibility is {_pct(vis)} across {_num(cov.get('n_responses'))} answer(s).",
+                "Run the same tracked prompts again after content or citation changes to unlock trajectory, rank delta, and competitor movement charts.",
+            ],
+            accent=BRAND_BLUE,
+            bg=SLATE_50,
+        ))
 
     # ═════════════════════════════════════════════════════════════════════
     # 04 — MOVEMENTS
@@ -1485,9 +1676,19 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                 bg=AMBER_50, accent=AMBER_600, title="NEEDS HISTORY",
             ))
     else:
-        story.append(make_callout(
-            ["No run-over-run metrics yet. Complete at least two analysis runs to populate momentum."],
-            bg=SLATE_50, accent=SLATE_400, title="NO MOVEMENT DATA",
+        history_line = (
+            "Only one measured run is available, so Answrdeck cannot compare gains, drops, or rank movement yet."
+            if not movements.get("has_history")
+            else "No movement events were detected in the current comparison window."
+        )
+        story.append(advisory_panel(
+            "MOMENTUM INTERPRETATION",
+            [
+                history_line,
+                "Use this export as the baseline. After the next analysis run, this section will show gains, losses, new out-rankers, and rank-delta evidence.",
+                "Manager takeaway: do not judge campaign movement from a single snapshot; judge it after one repeat run using the same prompt set.",
+            ],
+            bg=SLATE_50, accent=BRAND_BLUE,
         ))
 
     # ═════════════════════════════════════════════════════════════════════
@@ -1513,7 +1714,7 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             [
                 r.get("engine", ""),
                 _pct(r.get("visibility_pct")),
-                _rank(r.get("avg_rank")),
+                _pick_rank(r.get("avg_rank"), r.get("rank")),
                 _num(r.get("responses")),
                 _num(r.get("mentions")),
             ]
@@ -1524,7 +1725,15 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             eng_rows,
         ))
     else:
-        story.append(P("No engine data available yet. Run prompt analysis to populate.", S_BODY_ITALIC))
+        story.append(advisory_panel(
+            "ENGINE COVERAGE STATUS",
+            [
+                "Per-engine visibility rows are not available in this export payload yet.",
+                f"The project still reports {_num(cov.get('n_engines'))} configured engine(s) and {_num(cov.get('n_responses'))} sampled answer(s).",
+                "Run or refresh prompt analysis to populate model-by-model visibility, average rank, sentiment, and source behavior.",
+            ],
+            bg=SLATE_50, accent=BRAND_BLUE,
+        ))
 
     llm_summary = _as_list(deep.get("llm_summary"))
     if llm_summary:
@@ -1545,7 +1754,7 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             llm_rows.append([
                 r.get("llm", ""),
                 _pct(r.get("mention_rate")),
-                _rank(r.get("avg_rank")),
+                _pick_rank(r.get("avg_rank"), r.get("rank")),
                 _num(r.get("response_count")),
                 f"+{_num(r.get('positive'))} / ~{_num(r.get('neutral'))} / -{_num(r.get('negative'))}",
                 _num(r.get("not_mentioned")),
@@ -1564,22 +1773,65 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         "Prompt Performance Analysis",
         "Visibility, quality, rank, and sentiment for every tracked buyer query.",
     )
-    pa_data = _as_list((payload.get("prompt_analysis") or {}).get("rows"))
+    pa_data = _prompt_analysis_rows(payload)
+    # Merge dashboard prompt_rankings avg_rank when prompt_analysis is thin
+    prompt_rank_by_text = {
+        str(r.get("prompt_text") or "").strip(): r
+        for r in _as_list(dashboard.get("prompt_rankings"))
+        if isinstance(r, dict) and r.get("prompt_text")
+    }
     if pa_data:
-        # Rank prompts by quality / visibility for a quick leaderboard
+        # Best position first (lower avg_rank wins); unranked last
+        def _rank_sort_key(r: dict) -> tuple:
+            raw = r.get("avg_rank")
+            if raw is None and prompt_rank_by_text.get(str(r.get("prompt_text") or "").strip()):
+                raw = prompt_rank_by_text[str(r.get("prompt_text") or "").strip()].get("avg_rank")
+            try:
+                return (0, float(raw))
+            except (TypeError, ValueError):
+                return (1, 999.0)
+
+        by_rank = sorted(pa_data, key=_rank_sort_key)
+        story.append(P("Prompt Ranking (by average position)", S_SUB))
+        story.append(P(
+            "Lower average rank is better. Position reflects how high your brand appears when mentioned.",
+            S_SECTION_DESC,
+        ))
+        rank_board = []
+        for i, r in enumerate(by_rank[:20], start=1):
+            pt = str(r.get("prompt_text") or "").strip()
+            dash = prompt_rank_by_text.get(pt) or {}
+            rank_board.append([
+                f"#{i}",
+                _safe(pt, 85),
+                _pick_rank(r.get("avg_rank"), dash.get("avg_rank"), r.get("rank")),
+                _pct(r.get("visibility_pct", r.get("visibility"))),
+                str(r.get("quality_score", "\u2014")),
+                str(r.get("sentiment", "") or "\u2014"),
+            ])
+        story.append(make_table(
+            ["Pos", "Prompt", "Avg Rank", "Visibility", "Quality", "Sentiment"],
+            rank_board,
+            [0.4 * inch, 2.8 * inch, 0.7 * inch, 0.75 * inch, 0.65 * inch, 0.75 * inch],
+        ))
+        story.append(Spacer(1, 10))
+
         ranked = sorted(
             pa_data,
-            key=lambda r: float(r.get("quality_score") or r.get("visibility_pct") or r.get("visibility") or 0),
+            key=lambda r: _float_or(
+                r.get("quality_score"),
+                _float_or(r.get("visibility_pct", r.get("visibility")), 0.0),
+            ),
             reverse=True,
         )
-        story.append(P("Prompt Leaderboard", S_SUB))
+        story.append(P("Prompt Leaderboard (by quality)", S_SUB))
         lead_rows = [
             [
                 f"#{i}",
                 _safe(r.get("prompt_text", ""), 90),
                 _pct(r.get("visibility_pct", r.get("visibility"))),
                 str(r.get("quality_score", "\u2014")),
-                _rank(r.get("avg_rank")),
+                _pick_rank(r.get("avg_rank"), r.get("rank")),
                 str(r.get("sentiment", "")),
             ]
             for i, r in enumerate(ranked[:15], start=1)
@@ -1596,7 +1848,11 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                 _safe(r.get("prompt_text", ""), 85),
                 _pct(r.get("visibility_pct", r.get("visibility"))),
                 str(r.get("quality_score", "\u2014")),
-                _rank(r.get("avg_rank")),
+                _pick_rank(
+                    r.get("avg_rank"),
+                    (prompt_rank_by_text.get(str(r.get("prompt_text") or "").strip()) or {}).get("avg_rank"),
+                    r.get("rank"),
+                ),
                 str(r.get("sentiment", "")),
                 _num(r.get("engines_analyzed")),
                 str(r.get("prompt_type", "") or "\u2014"),
@@ -1605,11 +1861,14 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             for r in pa_data
         ]
         story.append(make_table(
-            ["Prompt", "Vis %", "Quality", "Rank", "Sentiment", "Engines", "Type", "Active"],
+            ["Prompt", "Vis %", "Quality", "Avg Rank", "Sentiment", "Engines", "Type", "Active"],
             pa_rows,
-            [2.3 * inch, 0.5 * inch, 0.55 * inch, 0.5 * inch, 0.7 * inch, 0.55 * inch, 0.55 * inch, 0.45 * inch],
+            [2.2 * inch, 0.5 * inch, 0.55 * inch, 0.6 * inch, 0.7 * inch, 0.55 * inch, 0.5 * inch, 0.45 * inch],
         ))
-        weak = [r for r in pa_data if float(r.get("visibility_pct") or r.get("visibility") or 0) < 25]
+        weak = [
+            r for r in pa_data
+            if _float_or(r.get("visibility_pct", r.get("visibility")), 0.0) < 25
+        ]
         if weak:
             story.append(Spacer(1, 8))
             story.append(make_callout(
@@ -1620,7 +1879,66 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                 bg=AMBER_50, accent=AMBER_600, title="LOW-VISIBILITY PROMPTS",
             ))
     else:
-        story.append(P("No prompt analysis data yet.", S_BODY_ITALIC))
+        brief_rows = []
+        for detail in _as_list(payload.get("prompt_details")):
+            if not isinstance(detail, dict):
+                continue
+            brief = detail.get("analysis_brief") or {}
+            brief_rows.append([
+                _safe(detail.get("prompt_text", ""), 110),
+                _pct(brief.get("visibility_pct", detail.get("visibility_pct"))),
+                _pick_rank(brief.get("avg_rank"), detail.get("avg_rank")),
+                _safe(brief.get("next_move") or "Run analysis to generate prompt-level recommendations.", 130),
+            ])
+        if brief_rows:
+            story.append(P("Prompt Readiness Snapshot", S_SUB))
+            story.append(P(
+                "The full prompt-analysis table is not populated, so this snapshot uses the per-prompt evidence briefs available in the export.",
+                S_SECTION_DESC,
+            ))
+            story.append(make_table(
+                ["Prompt", "Visibility", "Avg Rank", "Next Move"],
+                brief_rows[:20],
+                [2.4 * inch, 0.7 * inch, 0.7 * inch, CONTENT_W - 3.8 * inch],
+            ))
+        else:
+            story.append(advisory_panel(
+                "PROMPT ANALYSIS STATUS",
+                [
+                    "No prompt-level rows are available yet.",
+                    "Add or run tracked buyer prompts to unlock visibility, average rank, sentiment, engine coverage, and action priorities for each query.",
+                    "A client-ready report should include at least one answered run for every prompt you plan to discuss.",
+                ],
+                bg=SLATE_50, accent=BRAND_BLUE,
+            ))
+
+    # Project-level mention/rank trend rollup across all prompts
+    all_trend_points: list[dict] = []
+    for detail in _as_list(payload.get("prompt_details")):
+        all_trend_points.extend(
+            t for t in _as_list(detail.get("trend")) if isinstance(t, dict)
+        )
+    if all_trend_points:
+        story.append(P("Project Mention Trend (daily)", S_SUB))
+        story.append(P(
+            "Across all tracked prompts: how often your brand was named and at what average rank.",
+            S_SECTION_DESC,
+        ))
+        agg = _aggregate_mention_trend(all_trend_points)
+        if agg:
+            story.append(make_table(
+                ["Date", "Mentions", "Answers", "Mention Rate", "Avg Rank"],
+                agg[-30:],
+                [1.2 * inch, 0.8 * inch, 0.8 * inch, 1.0 * inch, 0.8 * inch],
+            ))
+            # Sparkline of mention rate
+            try:
+                rates = [float(str(row[3]).rstrip("%")) for row in agg if row[3] not in ("\u2014", "")]
+                if len(rates) >= 2:
+                    story.append(Spacer(1, 6))
+                    story.append(Sparkline(rates, height=60, color=BRAND_BLUE))
+            except (TypeError, ValueError):
+                pass
 
     # ═════════════════════════════════════════════════════════════════════
     # 07 — CONTENT GAPS
@@ -1643,7 +1961,7 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     else:
         story.append(make_callout(
             ["No zero-mention prompts in the current sample \u2014 brand appears in at least one engine for every tracked query."],
-            bg=GREEN_50, accent=GREEN_600, title="NO HARD GAPS",
+            bg="#EFF6FF", accent=BRAND_BLUE, title="GAP STATUS",
         ))
         story.append(Spacer(1, 8))
 
@@ -1664,11 +1982,14 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         story.append(Spacer(1, 10))
 
     search_intel = deep.get("search_intel") or {}
-    if isinstance(search_intel, dict):
+    retrieval = _as_list(search_intel.get("retrieval_points")) if isinstance(search_intel, dict) else []
+    domains_si = _as_list(search_intel.get("domains")) if isinstance(search_intel, dict) else []
+    if isinstance(search_intel, dict) and (
+        search_intel.get("enabled") or retrieval or domains_si
+    ):
         story.append(P("Search & Retrieval Intelligence", S_SUB))
         if search_intel.get("enabled"):
             story.append(P("Live search supplementation is enabled for this project.", S_SMALL))
-        retrieval = _as_list(search_intel.get("retrieval_points"))
         if retrieval:
             story.append(P("Retrieval Points", S_SUB))
             for pt in retrieval[:15]:
@@ -1679,7 +2000,6 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                     ))
                 else:
                     story.append(PB(str(pt)))
-        domains_si = _as_list(search_intel.get("domains"))
         if domains_si:
             story.append(P("Research Domains", S_SUB))
             for d in domains_si[:12]:
@@ -1687,8 +2007,16 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                     story.append(PB(f"{d.get('domain', d.get('source', ''))}: {_safe(d.get('note') or d.get('why') or '', 120)}"))
                 else:
                     story.append(PB(str(d)))
-        if not retrieval and not domains_si:
-            story.append(P("No retrieval-point enrichment available for this export window.", S_BODY_ITALIC))
+        if search_intel.get("enabled") and not retrieval and not domains_si:
+            story.append(advisory_panel(
+                "RETRIEVAL ENRICHMENT STATUS",
+                [
+                    "Search enrichment is enabled, but this export does not include retrieval-point rows for the selected window.",
+                    "Use the cited-domain and raw-response sections as the evidence base for now.",
+                    "Refresh analysis with research enrichment enabled to populate retrieval points and external domain rationale.",
+                ],
+                bg=SLATE_50, accent=BRAND_BLUE,
+            ))
 
     # ═════════════════════════════════════════════════════════════════════
     # 08 — COMPETITIVE INTELLIGENCE
@@ -1713,6 +2041,37 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             story.append(HBarChart(bar_comp, max_val=max(100.0, max(v for _, v in bar_comp) or 100)))
             story.append(Spacer(1, 8))
 
+        # Position leaderboard — sorted by avg rank (lower better), then mentions
+        def _comp_rank_key(r: dict) -> tuple:
+            try:
+                return (0, float(r.get("avg_rank")))
+            except (TypeError, ValueError):
+                return (1, 999.0)
+
+        sorted_comps = sorted(comp_data, key=_comp_rank_key)
+        story.append(P("Brand Ranking Leaderboard", S_SUB))
+        story.append(P(
+            "Position is ordered by average rank when mentioned (lower is better). Ties fall back to mention volume.",
+            S_SECTION_DESC,
+        ))
+        board_rows = []
+        for i, r in enumerate(sorted_comps[:15], start=1):
+            board_rows.append([
+                f"#{i}",
+                r.get("brand", ""),
+                _pick_rank(r.get("avg_rank"), r.get("rank")),
+                _num(r.get("mentions")),
+                _pct(r.get("visibility_pct", r.get("visibility_score"))),
+                _pct(r.get("share_of_voice")),
+                "Yes" if r.get("is_focus") else "",
+            ])
+        story.append(make_table(
+            ["Pos", "Brand", "Avg Rank", "Mentions", "Visibility", "SOV", "Focus"],
+            board_rows,
+            highlight_focus=True,
+        ))
+        story.append(Spacer(1, 10))
+
         comp_rows = [
             [
                 r.get("brand", ""),
@@ -1720,12 +2079,13 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                 _pct(r.get("share_of_voice")),
                 str(r.get("quality_score", "\u2014")),
                 _num(r.get("mentions")),
-                _rank(r.get("avg_rank")),
+                _pick_rank(r.get("avg_rank"), r.get("rank")),
                 "Yes" if r.get("is_target_competitor") else "",
                 "Yes" if r.get("is_focus") else "",
             ]
             for r in comp_data
         ]
+        story.append(P("Full Competitive Table", S_SUB))
         story.append(make_table(
             ["Brand", "Visibility", "SOV", "Quality", "Mentions", "Avg Rank", "Target", "Focus"],
             comp_rows,
@@ -1757,6 +2117,16 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                 S_SMALL,
             ))
         story.append(Spacer(1, 10))
+    else:
+        story.append(advisory_panel(
+            "COMPETITOR SIGNAL STATUS",
+            [
+                "No competitor share-of-voice rows are available in this export payload yet.",
+                f"The current brand visibility score is {_pct(vis)}; competitor ranking needs measured mentions from model answers to populate.",
+                "Confirm configured competitors, then run prompt analysis so Answrdeck can compare answer visibility, average rank, and framing by brand.",
+            ],
+            bg=SLATE_50, accent=BRAND_BLUE,
+        ))
 
     framings = _as_list(payload.get("competitor_framings"))
     if framings:
@@ -1843,9 +2213,14 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                 ))
                 story.append(P(f"\u201c{_safe(d.get('displacement_context'), 280)}\u201d", S_QUOTE))
     else:
-        story.append(make_callout(
-            ["No displacement records stored yet for this project."],
-            bg=SLATE_50, accent=SLATE_400, title="NO DISPLACEMENT LOG",
+        story.append(advisory_panel(
+            "DISPLACEMENT INTERPRETATION",
+            [
+                "No stored displacement events are included in this export.",
+                "That means the current evidence set has not captured a competitor being explicitly preferred over the focus brand, or displacement tracking has not run for this project yet.",
+                "Use the competitor leaderboard and per-prompt rank tables above to spot likely displacement risk until event-level records accumulate.",
+            ],
+            bg=SLATE_50, accent=BRAND_BLUE,
         ))
 
     disp_domains = _as_list(ce.get("displacement_citation_domains"))
@@ -2034,6 +2409,17 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         if off_rows:
             story.append(make_table(["Field", "Value"], off_rows, [2.4 * inch, CONTENT_W - 2.4 * inch]))
 
+    if not any([moat, rollup, by_engine, domain_kpis, domains, classified, official]):
+        story.append(advisory_panel(
+            "CITATION DIAGNOSTICS STATUS",
+            [
+                "No citation-economics datasets are attached to this export yet.",
+                "The primary visibility score remains based on direct model answers; citation data is a supporting diagnostic layer, not a substitute for answer visibility.",
+                "Run analysis with source capture enabled to populate owned-domain citation rate, competitor-domain pressure, and top cited domains.",
+            ],
+            bg=SLATE_50, accent=BRAND_BLUE,
+        ))
+
     # ═════════════════════════════════════════════════════════════════════
     # 11 — AUDIT
     # ═════════════════════════════════════════════════════════════════════
@@ -2043,9 +2429,14 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     )
     audit_items = _as_list((payload.get("global_audit") or {}).get("items"))
     if not audit_items:
-        story.append(make_callout(
-            ["No audit findings yet. Run analysis on your tracked prompts to generate measured audit items."],
-            bg=SLATE_50, accent=SLATE_400, title="NO AUDIT DATA",
+        story.append(advisory_panel(
+            "AUDIT BASELINE",
+            [
+                "No measured global audit findings were generated for this export.",
+                f"Baseline checks: {_num(cov.get('n_prompts'))} prompt(s), {_num(cov.get('n_engines'))} engine(s), {_num(cov.get('n_responses'))} answer(s), {_pct(vis)} answer visibility.",
+                "Next audit pass should look for missing answer pages, weak comparison proof, unclear category positioning, and citation gaps around the lowest-visibility prompts.",
+            ],
+            bg=SLATE_50, accent=BRAND_BLUE,
         ))
     else:
         # Priority breakdown
@@ -2097,7 +2488,7 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
     if recs.get("recommendation_text"):
         story.append(make_callout(
             [recs["recommendation_text"]],
-            bg=GREEN_50, accent=GREEN_600, title="OVERALL RECOMMENDATION",
+            bg="#EFF6FF", accent=BRAND_BLUE, title="OVERALL RECOMMENDATION",
         ))
         story.append(Spacer(1, 10))
 
@@ -2147,6 +2538,41 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
             block.append(Spacer(1, 6))
             story.append(KeepTogether(block))
 
+    if not recs.get("recommendation_text") and not rec_items and not action_plan:
+        fallback_actions = [
+            [
+                "1",
+                "Evidence coverage",
+                f"Re-run {_num(cov.get('n_prompts'))} tracked prompt(s) across the configured engine set to establish a complete current baseline.",
+                "Required before movement, displacement, and audit deltas can be trusted.",
+            ],
+            [
+                "2",
+                "Content gaps",
+                "Create or refresh pages that answer the lowest-visibility buyer prompts directly in the first section.",
+                f"{low_visibility_count} prompt(s) currently sit below 25% visibility." if low_visibility_count else "No hard gap was detected, but every priority prompt still needs defensible proof.",
+            ],
+            [
+                "3",
+                "Citation support",
+                "Strengthen owned-domain pages and third-party proof on sources models already cite.",
+                f"Owned-site citation rate: {_pct(site_pct)}." if site_pct is not None else "Citation capture is not populated yet.",
+            ],
+        ]
+        if weak_engine_names:
+            fallback_actions.append([
+                "4",
+                "Engine-specific lift",
+                "Use engines that already mention the brand as the message pattern, then close weak-engine gaps.",
+                "Weak engines: " + ", ".join(weak_engine_names) + ".",
+            ])
+        story.append(P("Baseline Action Plan", S_SUB))
+        story.append(make_table(
+            ["Step", "Workstream", "Action", "Evidence"],
+            fallback_actions,
+            [0.5 * inch, 1.15 * inch, 2.6 * inch, CONTENT_W - 4.25 * inch],
+        ))
+
     # ═════════════════════════════════════════════════════════════════════
     # 13 — PER-PROMPT DEEP DIVES
     # ═════════════════════════════════════════════════════════════════════
@@ -2155,7 +2581,18 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         "What happened, why it matters, sentiment mix, ranking, audits, and next moves for each prompt.",
         force_page=bool(_as_list(payload.get("prompt_details"))),
     )
-    for detail in _as_list(payload.get("prompt_details")):
+    prompt_details_list = _as_list(payload.get("prompt_details"))
+    if not prompt_details_list:
+        story.append(advisory_panel(
+            "PROMPT DETAIL STATUS",
+            [
+                "No per-prompt detail payloads are attached to this export.",
+                "Run the tracked prompts to populate model answers, per-engine rank, sentiment, cited sources, audit findings, and next moves for each query.",
+                "Until then, the executive scorecard and methodology sections are the reliable baseline.",
+            ],
+            bg=SLATE_50, accent=BRAND_BLUE,
+        ))
+    for detail in prompt_details_list:
         prompt_text = detail.get("prompt_text", "")
         brief = detail.get("analysis_brief") or {}
         sentiment = detail.get("sentiment") or {}
@@ -2171,12 +2608,11 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         ]
 
         vis_pct = brief.get("visibility_pct", detail.get("visibility_pct"))
-        avg_rank = brief.get("avg_rank")
+        avg_rank = brief.get("avg_rank", detail.get("avg_rank"))
         mini_kpis = []
         if vis_pct is not None:
             mini_kpis.append((_pct(vis_pct), "VISIBILITY"))
-        if avg_rank is not None:
-            mini_kpis.append((_rank(avg_rank), "AVG RANK"))
+        mini_kpis.append((_pick_rank(avg_rank, brief.get("rank"), detail.get("rank")), "AVG RANK"))
         engines_mentioned = _as_list(brief.get("engines_mentioned"))
         engines_missing = _as_list(brief.get("engines_missing"))
         if engines_mentioned:
@@ -2213,33 +2649,95 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
 
         ranking = _as_list(detail.get("brand_ranking")) or _as_list(detail.get("competitors"))
         if ranking:
-            rk_rows = [
-                [
+            body_bits.append(P("Brand Ranking for this Prompt", S_SUB))
+            # Sort by avg_rank then mentions for a clear position column
+            def _br_key(r: dict) -> tuple:
+                try:
+                    return (0, float(r.get("avg_rank")))
+                except (TypeError, ValueError):
+                    return (1, -float(r.get("mentions") or 0))
+
+            sorted_ranking = sorted(ranking, key=_br_key)
+            rk_rows = []
+            for i, r in enumerate(sorted_ranking[:12], start=1):
+                rk_rows.append([
+                    f"#{i}",
                     r.get("name", r.get("brand", "")),
                     _num(r.get("mentions")),
-                    _rank(r.get("avg_rank")),
+                    _pick_rank(r.get("avg_rank"), r.get("rank")),
                     "Yes" if r.get("is_focus") else "",
-                ]
-                for r in ranking[:12]
-            ]
+                ])
             body_bits.append(Spacer(1, 4))
             body_bits.append(make_table(
-                ["Brand", "Mentions", "Avg Rank", "Focus"],
+                ["Pos", "Brand", "Mentions", "Avg Rank", "Focus"],
                 rk_rows,
-                [2.2 * inch, 0.8 * inch, 0.8 * inch, 0.5 * inch],
+                [0.4 * inch, 2.0 * inch, 0.75 * inch, 0.75 * inch, 0.5 * inch],
                 highlight_focus=True,
             ))
 
+        # Per-engine ranks from deep-analysis matrix for this prompt
+        matrix_match = next(
+            (
+                row for row in _as_list(deep.get("prompt_matrix"))
+                if isinstance(row, dict)
+                and str(row.get("prompt_text") or "").strip() == str(prompt_text or "").strip()
+            ),
+            None,
+        )
+        if matrix_match and isinstance(matrix_match.get("engines"), dict):
+            body_bits.append(P("Rank by Engine", S_SUB))
+            eng_rank_rows = []
+            for engine, cell in sorted(matrix_match["engines"].items()):
+                if not isinstance(cell, dict):
+                    continue
+                comps = _as_list(cell.get("top_competitors"))
+                top_comp = ""
+                if comps and isinstance(comps[0], dict):
+                    top_comp = f"{comps[0].get('brand', '')} {_pick_rank(comps[0].get('rank'))}".strip()
+                eng_rank_rows.append([
+                    engine,
+                    "Yes" if cell.get("mentioned") else "No",
+                    _pick_rank(cell.get("rank"), cell.get("avg_rank")),
+                    str(cell.get("sentiment") or "\u2014"),
+                    _safe(top_comp, 40),
+                ])
+            if eng_rank_rows:
+                body_bits.append(make_table(
+                    ["Engine", "Mention", "Your Rank", "Sent.", "Top Competitor"],
+                    eng_rank_rows,
+                    [0.9 * inch, 0.7 * inch, 0.75 * inch, 0.8 * inch, CONTENT_W - 3.15 * inch],
+                ))
+
         trend = _as_list(detail.get("trend"))
         if trend:
-            body_bits.append(P("Mention Trend", S_SUB))
-            t_rows = [
-                [str(t.get("date", t.get("x", ""))), str(t.get("mentions", t.get("y", t.get("score", ""))))]
-                for t in trend[-12:]
-                if isinstance(t, dict)
-            ]
+            body_bits.append(P("Mention & Rank Trend", S_SUB))
+            body_bits.append(P(
+                "Each measured answer: whether your brand was named and at what rank.",
+                S_SECTION_DESC,
+            ))
+            daily = _aggregate_mention_trend(trend)
+            if daily:
+                body_bits.append(make_table(
+                    ["Date", "Mentions", "Answers", "Mention Rate", "Avg Rank"],
+                    daily[-14:],
+                    [1.1 * inch, 0.75 * inch, 0.75 * inch, 1.0 * inch, 0.8 * inch],
+                ))
+                body_bits.append(Spacer(1, 4))
+            t_rows = _trend_rows(trend)[-20:]
             if t_rows:
-                body_bits.append(make_table(["Date", "Mentions / Score"], t_rows, [1.8 * inch, 1.2 * inch]))
+                # Detect whether rows are the 4-col detail format
+                if t_rows and len(t_rows[0]) == 4:
+                    body_bits.append(make_table(
+                        ["Timestamp", "Engine", "Mentioned", "Rank"],
+                        t_rows,
+                        [1.6 * inch, 1.0 * inch, 0.8 * inch, 0.7 * inch],
+                    ))
+                else:
+                    body_bits.append(make_table(
+                        ["Date", "Engine", "Metric", "Rank"],
+                        t_rows,
+                        [1.6 * inch, 1.0 * inch, 0.9 * inch, 0.7 * inch],
+                    ))
 
         audits = _as_list(detail.get("audit"))
         if audits:
@@ -2311,19 +2809,58 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
                         pt,
                         engine,
                         mentioned,
-                        _rank(cell.get("rank")),
+                        _pick_rank(cell.get("rank"), cell.get("avg_rank")),
                         str(cell.get("sentiment", "")),
                         _safe(comp_str, 55),
                         _safe(srcs, 45),
                     ])
         if matrix_rows:
             story.append(make_table(
-                ["Prompt", "Engine", "Mentioned", "Rank", "Sentiment", "Top Competitors", "Sources"],
+                ["Prompt", "Engine", "Mention", "Your Rank", "Sent.", "Top Competitors", "Sources"],
                 matrix_rows,
-                [1.5 * inch, 0.7 * inch, 0.6 * inch, 0.45 * inch, 0.65 * inch, 1.3 * inch, CONTENT_W - 5.2 * inch],
+                [1.5 * inch, 0.7 * inch, 0.6 * inch, 0.65 * inch, 0.65 * inch, 1.2 * inch, CONTENT_W - 5.3 * inch],
             ))
     else:
-        story.append(P("No matrix data available yet.", S_BODY_ITALIC))
+        fallback_matrix_rows = []
+        for detail in _as_list(payload.get("prompt_details")):
+            if not isinstance(detail, dict):
+                continue
+            prompt_text = _safe(detail.get("prompt_text", ""), 70)
+            latest_by_engine = {}
+            for point in _as_list(detail.get("trend")):
+                if isinstance(point, dict) and point.get("engine"):
+                    latest_by_engine[point.get("engine")] = point
+            for engine, point in sorted(latest_by_engine.items(), key=lambda item: str(item[0]).lower()):
+                fallback_matrix_rows.append([
+                    prompt_text,
+                    str(engine),
+                    "Yes" if point.get("mentioned") else "No",
+                    _pick_rank(point.get("rank")),
+                    "\u2014",
+                    "\u2014",
+                    "\u2014",
+                ])
+        if fallback_matrix_rows:
+            story.append(P("Prompt x Engine Snapshot", S_SUB))
+            story.append(P(
+                "The full deep-analysis matrix is not attached, so this table uses the latest per-engine trend point for each prompt.",
+                S_SECTION_DESC,
+            ))
+            story.append(make_table(
+                ["Prompt", "Engine", "Mention", "Your Rank", "Sent.", "Top Competitors", "Sources"],
+                fallback_matrix_rows[:80],
+                [1.5 * inch, 0.7 * inch, 0.6 * inch, 0.65 * inch, 0.65 * inch, 1.2 * inch, CONTENT_W - 5.3 * inch],
+            ))
+        else:
+            story.append(advisory_panel(
+                "MATRIX STATUS",
+                [
+                    "No prompt-by-engine matrix is available in this export.",
+                    "Run analysis across the configured engines to populate mention status, your rank, sentiment, top competitors, and cited sources for every prompt-engine pair.",
+                    "This matrix is the strongest proof table for client-facing diagnosis, so it should be populated before sending a final prospect report.",
+                ],
+                bg=SLATE_50, accent=BRAND_BLUE,
+            ))
 
     # ═════════════════════════════════════════════════════════════════════
     # 15 — APPENDIX
@@ -2344,6 +2881,22 @@ def render_full_report_pdf(payload: dict[str, Any]) -> bytes:
         bg=SLATE_50, accent=SLATE_400, title="NOTE",
     ))
     story.append(Spacer(1, 8))
+
+    has_raw_responses = any(
+        _as_list(d.get("raw_responses"))
+        for d in _as_list(payload.get("prompt_details"))
+        if isinstance(d, dict)
+    )
+    if not has_raw_responses:
+        story.append(advisory_panel(
+            "EVIDENCE APPENDIX STATUS",
+            [
+                "No raw model responses are attached to this export.",
+                "Run prompt analysis and export again to include the unedited answer evidence behind every visibility, rank, source, and audit claim.",
+                "For prospect-facing reports, include raw responses whenever possible so the client can verify the diagnosis.",
+            ],
+            bg=SLATE_50, accent=BRAND_BLUE,
+        ))
 
     for detail in _as_list(payload.get("prompt_details")):
         prompt_text = detail.get("prompt_text", "")
