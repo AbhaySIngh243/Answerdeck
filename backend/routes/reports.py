@@ -28,6 +28,7 @@ from engine.analyzer import (
     generate_recommendations,
     generate_strategic_action_plan,
     is_spurious_brand_mention,
+    is_tracked_brand,
     sanitize_display_response_text,
     sanitize_user_facing_value,
     _looks_like_spec_phrase,
@@ -1349,6 +1350,7 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
     project = Project.query.get(prompt.project_id)
     focus_brand = project.name if project else ""
     focus_aliases = build_focus_brand_aliases(focus_brand, project.website_url or "") if project else [focus_brand]
+    tracked_brands = [*focus_aliases, *(project.get_competitors_list() if project else [])]
     responses = Response.query.filter_by(prompt_id=prompt_id).order_by(Response.timestamp.asc()).all()
     if not responses:
         empty_brief = {
@@ -1459,12 +1461,14 @@ def _build_prompt_detail_payload(prompt_id: int) -> dict:
         for mention in visible_mentions:
             if mention.is_focus:
                 continue
-            if is_spurious_brand_mention(mention.brand or ""):
-                continue
-            if _looks_like_channel_noise(mention.brand or "", mention.context or ""):
-                continue
-            if _looks_like_spec_phrase(mention.brand or ""):
-                continue
+            brand_name = mention.brand or ""
+            if not is_tracked_brand(brand_name, tracked_brands):
+                if is_spurious_brand_mention(brand_name):
+                    continue
+                if _looks_like_channel_noise(brand_name, mention.context or ""):
+                    continue
+                if _looks_like_spec_phrase(brand_name):
+                    continue
             competitor_scores[mention.brand]["mentions"] += 1
             if mention.rank is not None:
                 competitor_scores[mention.brand]["ranks"].append(mention.rank)
@@ -1853,6 +1857,26 @@ def _percentile(values: list[float], pct: float) -> float | None:
     return round(sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac, 2)
 
 
+def _tracked_canonical_name(
+    brand: str,
+    focus_brand: str,
+    focus_aliases: list[str],
+    configured: list[str],
+) -> str:
+    """Map an extracted brand variant onto the tracked brand it belongs to.
+
+    Keeps the competitor table clean: "Dolby Atmos" / "Dolby Vision" roll up
+    into the focus brand "Dolby"; "DTS:X" rolls up into the configured
+    competitor "DTS". Returns "" when the brand matches no tracked name.
+    """
+    if focus_brand and is_focus_brand_match(brand, focus_aliases):
+        return focus_brand
+    for comp in configured:
+        if comp and is_focus_brand_match(brand, [comp]):
+            return comp
+    return ""
+
+
 def _build_competitor_visibility(project_id: int) -> dict:
     """Aggregate competitor visibility from real Mention rows with proper sample-size meta.
 
@@ -1890,6 +1914,7 @@ def _build_competitor_visibility(project_id: int) -> dict:
                         alias_reverse[a.lower()] = canonical_name
     configured_lower = {c.lower() for c in configured}
     focus_lower = focus_brand.lower() if focus_brand else ""
+    tracked_brands = [*focus_aliases, *configured]
 
     prompts = Prompt.query.filter_by(project_id=project_id).all()
     responses_by_prompt = _latest_responses_for_prompts(prompts)
@@ -1944,13 +1969,16 @@ def _build_competitor_visibility(project_id: int) -> dict:
         if not response or not _mention_is_visible_in_answer(response, mention, focus_aliases=focus_aliases):
             continue
         raw = (mention.brand or "").strip()
-        if not raw or is_spurious_brand_mention(raw):
+        if not raw:
             continue
-        if _looks_like_channel_noise(raw, mention.context or ""):
-            continue
-        if _looks_like_spec_phrase(raw):
-            continue
-        canonical = alias_reverse.get(raw.lower(), raw)
+        if not is_tracked_brand(raw, tracked_brands):
+            if is_spurious_brand_mention(raw):
+                continue
+            if _looks_like_channel_noise(raw, mention.context or ""):
+                continue
+            if _looks_like_spec_phrase(raw):
+                continue
+        canonical = alias_reverse.get(raw.lower()) or _tracked_canonical_name(raw, focus_brand, focus_aliases, configured) or raw
         key = canonical.lower()
         g = grouped[key]
         meta = response_meta.get(mention.response_id, {})
@@ -2008,7 +2036,9 @@ def _build_competitor_visibility(project_id: int) -> dict:
             if g["mentions"] < min_extra_mentions:
                 continue
             label = display_label(kl, kl)
-            if is_spurious_brand_mention(label) or _looks_like_spec_phrase(label):
+            if not is_tracked_brand(label, tracked_brands) and (
+                is_spurious_brand_mention(label) or _looks_like_spec_phrase(label)
+            ):
                 continue
             seen.add(kl)
             ordered.append((kl, label))
@@ -3195,9 +3225,14 @@ def _collect_prompt_engine_matrix(project_id: int) -> dict[str, Any]:
                     {"brand": m.brand, "rank": m.rank}
                     for m in visible_mentions
                     if not is_dynamic_focus(m.brand)
-                    and not is_spurious_brand_mention(m.brand or "")
-                    and not _looks_like_channel_noise(m.brand or "", m.context or "")
-                    and not _looks_like_spec_phrase(m.brand or "")
+                    and (
+                        is_tracked_brand(m.brand or "", competitor_list)
+                        or (
+                            not is_spurious_brand_mention(m.brand or "")
+                            and not _looks_like_channel_noise(m.brand or "", m.context or "")
+                            and not _looks_like_spec_phrase(m.brand or "")
+                        )
+                    )
                 ][:5],
                 "response_id": response.id,
             }

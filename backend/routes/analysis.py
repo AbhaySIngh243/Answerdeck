@@ -634,9 +634,10 @@ def async_run_analysis(
                 db.session.add(new_response)
                 db.session.flush()
 
+                tracked_for_filter = [*focus_brand_aliases, *competitor_brands]
                 for detail in analysis.get("all_brand_details", []):
                     brand = detail.get("brand", "").strip()
-                    if not brand or is_spurious_brand_mention(brand):
+                    if not brand or is_spurious_brand_mention(brand, tracked_brands=tracked_for_filter):
                         continue
                     is_focus = is_focus_brand_match(brand, focus_brand_aliases) and not is_focus_brand_match(brand, competitor_brands)
                     mention = Mention(
@@ -670,7 +671,7 @@ def async_run_analysis(
             else:
                 db.session.add(VisibilityMetric(project_id=project.id, score=score, date=today))
 
-            competitors = build_competitor_comparison(analyses, focus_brand)
+            competitors = build_competitor_comparison(analyses, focus_brand, tracked_brands=competitor_brands)
 
             # Persist research grounding as a dedicated *_research response so
             # reporting endpoints can reliably recover structured citations later.

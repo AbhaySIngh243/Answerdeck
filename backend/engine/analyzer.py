@@ -759,11 +759,50 @@ def _looks_like_spec_phrase(value: str) -> bool:
     return False
 
 
-def is_spurious_brand_mention(brand: str) -> bool:
-    """Reject protocol tokens, bare schemes, URL-looking strings, random IDs, and noise words."""
+def is_tracked_brand(brand: str, tracked_brands) -> bool:
+    """True when the brand matches, or contains, a user-configured brand name.
+
+    Tracked brands (the project's focus brand plus its configured competitors)
+    are real signal by definition and must never be discarded by the generic
+    noise filters. E.g. when the user tracks "Dolby", the extracted names
+    "Dolby", "Dolby Atmos", "Dolby Vision" and host aliases like "dolby.com"
+    are all tracked; same for "DTS" vs "DTS:X".
+    """
+    if not tracked_brands:
+        return False
+    canon = _canonical_brand(brand)
+    if not canon:
+        return False
+    token_canons = {_canonical_brand(t) for t in _tokenize_lower_words(brand)}
+    for tracked in tracked_brands:
+        tc = _canonical_brand(tracked)
+        if len(tc) < 3:
+            continue
+        if canon == tc:
+            return True
+        # Phrase contains the tracked brand as a standalone word ("Dolby Atmos").
+        if tc in token_canons:
+            return True
+        # Tracked brand is a prefix of a compound token ("DTS:X" -> "dtsx"),
+        # or vice versa, with a sane length ratio to avoid over-matching.
+        shorter, longer = (canon, tc) if len(canon) < len(tc) else (tc, canon)
+        if len(shorter) >= 3 and longer.startswith(shorter) and len(shorter) / len(longer) >= 0.5:
+            return True
+    return False
+
+
+def is_spurious_brand_mention(brand: str, tracked_brands=None) -> bool:
+    """Reject protocol tokens, bare schemes, URL-looking strings, random IDs, and noise words.
+
+    Brands the user explicitly tracks (focus brand + competitors) are always
+    exempt: the noise lists contain technology names like "dolby" or "dts"
+    that ARE the brand in some projects.
+    """
     raw = (brand or "").strip()
     if not raw:
         return True
+    if is_tracked_brand(raw, tracked_brands):
+        return False
     k = raw.lower().strip()
     tokens = _tokenize_lower_words(k)
     if tokens and len(tokens) <= 4 and all(token in BRAND_EXCLUDE_TOKENS or token in CHANNEL_NOUN_TOKENS for token in tokens):
@@ -806,6 +845,16 @@ def _brand_matches_alias(brand: str, aliases: list[str]) -> bool:
     brand_canonical = _canonical_brand(brand)
     if not brand_canonical:
         return False
+    # Brand-plus-product naming: "Dolby Atmos" belongs to alias "Dolby",
+    # "Sony Bravia" to "Sony". Only the LEADING word may match, so
+    # "American Express" never matches an alias "American Airlines".
+    brand_tokens = _tokenize_lower_words(brand)
+    if len(brand_tokens) >= 2:
+        first_token = _canonical_brand(brand_tokens[0])
+        if len(first_token) >= 3:
+            for alias in aliases:
+                if _canonical_brand(alias) == first_token:
+                    return True
     for alias in aliases:
         alias_canonical = _canonical_brand(alias)
         if not alias_canonical:
@@ -1093,7 +1142,7 @@ def _heuristic_analysis(
 
     details = []
     for item in mentions.values():
-        if is_spurious_brand_mention(item.get("brand", "")):
+        if is_spurious_brand_mention(item.get("brand", ""), tracked_brands=tracked_clean):
             continue
         details.append(
             {
@@ -1132,7 +1181,9 @@ def _llm_extract_brands(
 
 RULES:
 - Return ONLY actual manufacturer or product brand names (e.g. Samsung, BenQ, Epson, Egate).
-- Do NOT include technology names (Dolby, DLP, ANSI, HDR, Bluetooth).
+- The FOCUS BRAND and every KNOWN COMPETITOR listed below MUST ALWAYS be included when their name appears anywhere in the response, even inside a technology, format, or product name. Example: if the focus brand is "Dolby" and the response says "Dolby Atmos" or "Dolby Vision", report the brand "Dolby" as mentioned.
+- When the focus brand or a known competitor appears as part of a longer product/technology name, report it under its tracked name (e.g. "Dolby Atmos" -> "Dolby", "DTS:X" -> "DTS") and use that occurrence for rank/sentiment/context.
+- Other than the focus brand and known competitors, do NOT include generic technology standards (DLP, ANSI, HDR, Bluetooth).
 - Do NOT include product categories (projector, TV, speaker).
 - Do NOT include specifications (lumens, brightness, resolution, Ultra HD, 4K).
 - Do NOT include generic descriptions (easy, automatic, portable, home entertainment).
@@ -1163,11 +1214,12 @@ Return ONLY valid JSON:
         if not isinstance(parsed, dict) or not isinstance(parsed.get("all_brand_details"), list):
             return None
 
+        tracked = [focus_brand, *(competitors or [])]
         details = [
             d for d in parsed["all_brand_details"]
             if isinstance(d, dict)
             and d.get("brand", "").strip()
-            and not is_spurious_brand_mention(str(d["brand"]))
+            and not is_spurious_brand_mention(str(d["brand"]), tracked_brands=tracked)
         ]
         parsed["all_brand_details"] = details
         parsed["brands_mentioned"] = [d["brand"] for d in details if d.get("brand")]
@@ -1257,7 +1309,11 @@ def calculate_visibility_score(brand_mentions: list[dict], total_engines: int) -
     return float(round(min(100.0, mention_score + rank_score + max(0.0, sentiment_score)), 1))
 
 
-def build_competitor_comparison(analyses: dict[str, Any], focus_brand: str) -> list[dict]:
+def build_competitor_comparison(
+    analyses: dict[str, Any],
+    focus_brand: str,
+    tracked_brands: list[str] | None = None,
+) -> list[dict]:
     """Aggregate brand mentions across engines and annotate consensus.
 
     Adds ``engines_agreeing`` (number of distinct engines that mentioned this
@@ -1267,6 +1323,7 @@ def build_competitor_comparison(analyses: dict[str, Any], focus_brand: str) -> l
     brand_data: dict[str, dict[str, Any]] = {}
     engine_names = [e for e in analyses.keys() if e != "research_data"]
     total_engines = max(1, len(engine_names))
+    tracked_all = [focus_brand, *(tracked_brands or [])]
 
     for engine_name, analysis in analyses.items():
         if engine_name == "research_data":
@@ -1275,7 +1332,7 @@ def build_competitor_comparison(analyses: dict[str, Any], focus_brand: str) -> l
             continue
         for detail in analysis.get("all_brand_details", []):
             brand_name = detail.get("brand", "").strip()
-            if not brand_name or is_spurious_brand_mention(brand_name):
+            if not brand_name or is_spurious_brand_mention(brand_name, tracked_brands=tracked_all):
                 continue
             key = brand_name.lower()
             if key not in brand_data:
